@@ -1,0 +1,9 @@
+[package]
+name = "jwf-cli"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+jwf-core = { version = "0.1.0", path = "../jwf-core" }
+jwf-gpu = { version = "0.1.0", path = "../jwf-gpu" }
+png = "0.18.1"

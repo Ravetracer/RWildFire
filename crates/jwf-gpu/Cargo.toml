@@ -1,0 +1,11 @@
+[package]
+name = "jwf-gpu"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+bytemuck = { version = "1.25.2", features = ["derive"] }
+jwf-core = { version = "0.1.0", path = "../jwf-core" }
+naga = { version = "30.0.1", features = ["wgsl-in"] }
+pollster = "1.0.1"
+wgpu = "30.0.1"
