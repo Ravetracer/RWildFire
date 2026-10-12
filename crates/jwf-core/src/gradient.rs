@@ -101,7 +101,12 @@ impl Gradient {
     pub fn random(rng: &mut Rng) -> Self {
         let n = 3 + rng.random_int(6);
         let base_hue = rng.random();
-        let hue_spread = rng.range(0.1, 0.9);
+        // Mostly analogous palettes, sometimes complementary or fully colorful ones.
+        let hue_spread = match rng.random_int(3) {
+            0 => rng.range(0.15, 0.35),
+            1 => rng.range(0.35, 0.7),
+            _ => rng.range(0.7, 1.6),
+        };
         let mut keys = Vec::with_capacity(n);
         for i in 0..n {
             let pos = if i == 0 {
@@ -112,8 +117,8 @@ impl Gradient {
                 rng.random()
             };
             let h = (base_hue + rng.range(-hue_spread, hue_spread) * 0.5).rem_euclid(1.0);
-            let s = rng.range(0.4, 1.0);
-            let l = rng.range(0.15, 0.85);
+            let s = rng.range(0.45, 1.0);
+            let l = if i % 2 == 0 { rng.range(0.1, 0.45) } else { rng.range(0.5, 0.92) };
             let (r, g, b) = hsl_to_rgb(h, s, l);
             keys.push((pos, [to_u8(r * 255.0), to_u8(g * 255.0), to_u8(b * 255.0)]));
         }

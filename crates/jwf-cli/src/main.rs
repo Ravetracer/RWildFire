@@ -72,7 +72,30 @@ fn write_png(path: &PathBuf, w: u32, h: u32, rgba: &[u8]) -> std::io::Result<()>
     Ok(())
 }
 
+/// `jwf-cli random <out-dir> [count]`: generates random flames (.flame + preview .png).
+fn random_cmd() {
+    let mut it = std::env::args().skip(2);
+    let dir = PathBuf::from(it.next().unwrap_or_else(|| usage()));
+    let count: usize = it.next().and_then(|s| s.parse().ok()).unwrap_or(8);
+    std::fs::create_dir_all(&dir).expect("create output dir");
+    let mut rng = jwf_core::rng::Rng::from_entropy();
+    for i in 0..count {
+        let generator = jwf_core::random::Generator::ALL[i % jwf_core::random::Generator::ALL.len()];
+        let flame = jwf_core::random::generate(generator, &mut rng);
+        let base = dir.join(format!("random_{i:02}_{}", generator.label().replace(' ', "_")));
+        jwf_core::io::write_flame_to_file(&flame, base.with_extension("flame")).expect("write flame");
+        let (w, h) = (480, 270);
+        let img = jwf_core::render::render_image(&flame, w, h, 200.0, false);
+        write_png(&base.with_extension("png"), w, h, &img).expect("write png");
+        eprintln!("{}", base.display());
+    }
+}
+
 fn main() {
+    if std::env::args().nth(1).as_deref() == Some("random") {
+        random_cmd();
+        return;
+    }
     let args = parse_args();
     let flames = match read_flames_from_file(&args.input) {
         Ok(f) => f,

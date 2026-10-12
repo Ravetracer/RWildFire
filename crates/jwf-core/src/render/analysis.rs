@@ -52,6 +52,29 @@ pub fn auto_frame(flame: &mut Flame) -> bool {
     if pts.len() < 500 {
         return false;
     }
+    // Include the copies produced by post symmetry.
+    let ps = &flame.post_symmetry;
+    match ps.kind {
+        crate::model::PostSymmetryType::Point if ps.order > 1 => {
+            let base = pts.clone();
+            for i in 1..ps.order.min(16) {
+                let (s, c) = (std::f64::consts::TAU * i as f64 / ps.order as f64).sin_cos();
+                pts.extend(base.iter().step_by(4).map(|&(x, y)| {
+                    let (dx, dy) = (x - ps.centre_x, y - ps.centre_y);
+                    (ps.centre_x + dx * c + dy * s, ps.centre_y + dy * c - dx * s)
+                }));
+            }
+        }
+        crate::model::PostSymmetryType::XAxis => {
+            let base = pts.clone();
+            pts.extend(base.iter().map(|&(x, y)| (2.0 * ps.centre_x - x, y)));
+        }
+        crate::model::PostSymmetryType::YAxis => {
+            let base = pts.clone();
+            pts.extend(base.iter().map(|&(x, y)| (x, 2.0 * ps.centre_y - y)));
+        }
+        _ => {}
+    }
     let lo = pts.len() / 50;
     let hi = pts.len() - 1 - lo;
     pts.sort_by(|a, b| a.0.total_cmp(&b.0));
