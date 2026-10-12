@@ -17,6 +17,7 @@ pub enum Action {
     Redo,
     Randomize,
     ToggleExplorer,
+    ToggleTimeline,
 }
 
 pub struct TopBarInfo<'a> {
@@ -24,6 +25,7 @@ pub struct TopBarInfo<'a> {
     pub can_undo: bool,
     pub can_redo: bool,
     pub explorer_open: bool,
+    pub timeline_open: bool,
 }
 
 pub fn show(ui: &mut Ui, info: &TopBarInfo, generator: &mut Generator) -> Option<Action> {
@@ -89,6 +91,11 @@ pub fn show(ui: &mut Ui, info: &TopBarInfo, generator: &mut Generator) -> Option
         let mut open = info.explorer_open;
         if ui.toggle_value(&mut open, format!("{}  Explore", icons::SPARKLE)).on_hover_text("Browse random flames and mutations").clicked() {
             action = Some(Action::ToggleExplorer);
+        }
+
+        let mut tl = info.timeline_open;
+        if ui.toggle_value(&mut tl, format!("{}  Animate", icons::FILM_STRIP)).on_hover_text("Timeline, keyframes and playback").clicked() {
+            action = Some(Action::ToggleTimeline);
         }
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

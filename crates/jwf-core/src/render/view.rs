@@ -25,8 +25,11 @@ pub struct View {
     pub cam_perspective: f64,
     pub dimish_z: f64,
     pub dim_z_distance: f64,
+    pub dof: Option<super::dof::Dof>,
     /// Effective pixels per unit (scale * zoom * resolution scale).
     pub ppu: f64,
+    /// Output size relative to the flame's reference size (`pixelsPerUnitScale`).
+    pub ppu_scale: f64,
 }
 
 impl View {
@@ -88,13 +91,15 @@ impl View {
             cam_perspective: flame.cam_perspective,
             dimish_z: flame.dimish_z,
             dim_z_distance: flame.dim_z_distance,
+            dof: super::dof::Dof::new(flame),
             ppu,
+            ppu_scale,
         }
     }
 
     /// Projects a world point; returns `(px, py, intensity)` in raster units (not rounded).
     #[inline]
-    pub fn project(&self, x: f64, y: f64, z: f64) -> Option<(f64, f64, f64)> {
+    pub fn project(&self, x: f64, y: f64, z: f64, ctx: &mut crate::variations::Ctx) -> Option<(f64, f64, f64)> {
         let (mut x, mut y) = (x, y);
         let mut intensity = 1.0;
         if self.project_3d {
@@ -112,8 +117,17 @@ impl View {
                     intensity = (-zdist * zdist * self.dimish_z).exp();
                 }
             }
-            x = cx / zr;
-            y = cy / zr;
+            match self.dof.as_ref().and_then(|d| d.distance(cx, cy, cz).map(|dist| (d, dist))) {
+                Some((dof, dist)) => {
+                    let (bx, by) = dof.apply(ctx, cx, cy, dist);
+                    x = bx / zr;
+                    y = by / zr;
+                }
+                None => {
+                    x = cx / zr;
+                    y = cy / zr;
+                }
+            }
         }
         let px = x * self.cosa + y * self.sina + self.rc_x;
         if px < 0.0 || px > self.cam_w {

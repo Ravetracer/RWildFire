@@ -1131,6 +1131,8 @@ dependencies = [
 name = "jwf-core"
 version = "0.1.0"
 dependencies = [
+ "naga",
+ "png",
  "rayon",
  "thiserror 2.0.21",
 ]

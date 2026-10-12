@@ -30,6 +30,8 @@ pub struct ToneParams {
     pub inverse_vib_int: f64,
     pub alpha_scale: f64,
     pub mod_saturation: f64,
+    /// `1 / packets` for motion blur (JWildfire `motionBlurScl`), 1 otherwise.
+    pub motion_blur_scl: f64,
 }
 
 impl ToneParams {
@@ -63,11 +65,13 @@ impl ToneParams {
             inverse_vib_int: 256.0 - vib_int,
             alpha_scale: 1.0 - (3.0 * (flame.fg_opacity - 1.0)).atan() / 1.25,
             mod_saturation: (flame.saturation - 1.0).max(-1.0),
+            motion_blur_scl: 1.0,
         }
     }
 
     #[inline]
     pub fn log_scale(&self, count: f64) -> f64 {
+        let count = count * self.motion_blur_scl;
         (self.k1 * (1.0 + count * self.k2).log10() + self.bg_glow / (count + 1.0)) / (self.white_level * count)
     }
 }
@@ -137,6 +141,12 @@ impl ToneMapper {
             border,
             with_alpha,
         }
+    }
+
+    /// Normalizes counts for a histogram filled by `n` motion-blur packets.
+    pub fn with_packets(mut self, n: usize) -> Self {
+        self.params.motion_blur_scl = 1.0 / n.max(1) as f64;
+        self
     }
 
     /// Log-density filtered `[intensity, r, g, b]` for one output pixel.

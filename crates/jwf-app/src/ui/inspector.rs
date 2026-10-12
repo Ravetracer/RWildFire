@@ -35,6 +35,8 @@ pub struct GradientEdit {
 pub struct InspectorState {
     pub tab: Tab,
     pub gradient: GradientEdit,
+    pub keys: crate::gradients::KeyEditor,
+    pub library: crate::gradients::GradientLibrary,
     rotate_step: f64,
     scale_step: f64,
     move_step: f64,
@@ -253,6 +255,50 @@ fn camera_tab(ui: &mut Ui, doc: &mut Document) {
         slider(ui, "Depth fade", &mut f.dimish_z, 0.0..=4.0);
         drag(ui, "Fade distance", &mut f.dim_z_distance, 0.01);
     });
+    theme::section_label(ui, "Depth of field");
+    grid(ui, "dof", |ui| {
+        slider(ui, "Amount", &mut f.cam_dof, 0.0..=5.0).on_hover_text("0 = off. Needs a 3D camera (pitch/yaw/perspective) to be visible.");
+        if f.cam_dof.abs() > 1e-8 {
+            widgets::label(ui, "Mode");
+            ui.horizontal(|ui| {
+                ui.selectable_value(&mut f.new_cam_dof, false, "Z plane").on_hover_text("Legacy: blur grows with distance behind the camera plane");
+                ui.selectable_value(&mut f.new_cam_dof, true, "Focus point").on_hover_text("Sharp area around a focus point");
+            });
+            ui.end_row();
+            if f.new_cam_dof {
+                drag(ui, "Focus X", &mut f.focus_x, 0.01);
+                drag(ui, "Focus Y", &mut f.focus_y, 0.01);
+                drag(ui, "Focus Z", &mut f.focus_z, 0.01);
+                slider(ui, "Sharp area", &mut f.cam_dof_area, 0.0..=4.0);
+                slider(ui, "Exponent", &mut f.cam_dof_exponent, 0.1..=4.0);
+            } else {
+                drag(ui, "Focus plane Z", &mut f.cam_z, 0.01);
+            }
+            widgets::label(ui, "Bokeh shape");
+            let mut shape = f.cam_dof_shape;
+            egui::ComboBox::from_id_salt("dofshape").selected_text(shape.label()).show_ui(ui, |ui| {
+                for s in jwf_core::render::dof::DofShape::ALL {
+                    let avail = s.variation().is_none_or(|(n, _, _)| jwf_core::variations::find(n).is_some());
+                    ui.add_enabled_ui(avail, |ui| {
+                        ui.selectable_value(&mut shape, *s, s.label());
+                    });
+                }
+            });
+            if shape != f.cam_dof_shape {
+                f.set_dof_shape(shape);
+            }
+            ui.end_row();
+            slider(ui, "Shape scale", &mut f.cam_dof_scale, 0.0..=4.0);
+            slider(ui, "Shape angle", &mut f.cam_dof_angle, -180.0..=180.0);
+            slider(ui, "Fade", &mut f.cam_dof_fade, 0.0..=1.0);
+            let names = f.cam_dof_shape.param_names();
+            let params = [&mut f.cam_dof_param1, &mut f.cam_dof_param2, &mut f.cam_dof_param3, &mut f.cam_dof_param4, &mut f.cam_dof_param5, &mut f.cam_dof_param6];
+            for (name, v) in names.iter().zip(params) {
+                drag(ui, name, v, 0.01);
+            }
+        }
+    });
+
     theme::section_label(ui, "Image size");
     grid(ui, "size", |ui| {
         widgets::label(ui, "Size");
@@ -342,37 +388,14 @@ fn look_tab(ui: &mut Ui, doc: &mut Document, st: &mut InspectorState) {
 
 fn gradient_editor(ui: &mut Ui, doc: &mut Document, st: &mut InspectorState) {
     theme::section_label(ui, "Gradient");
-    let ge = &mut st.gradient;
     let layer = doc.layer_mut();
-    // Re-capture the base whenever the gradient changed by other means (load, undo, random...).
-    if ge.last.as_ref() != Some(&layer.gradient) {
-        ge.base = Some(layer.gradient.clone());
-        ge.shift = 0;
-        ge.hue = 0.0;
-        ge.sat = 0.0;
-        ge.lum = 0.0;
-    }
-    widgets::gradient_strip(ui, &layer.gradient, 28.0, None);
-    ui.add_space(4.0);
-    let mut changed = false;
-    grid(ui, "grad", |ui| {
-        widgets::label(ui, "Shift");
-        changed |= ui.add(egui::Slider::new(&mut ge.shift, -128..=128)).changed();
-        ui.end_row();
-        changed |= slider(ui, "Hue", &mut ge.hue, -0.5..=0.5).changed();
-        changed |= slider(ui, "Saturation", &mut ge.sat, -1.0..=1.0).changed();
-        changed |= slider(ui, "Lightness", &mut ge.lum, -0.5..=0.5).changed();
-    });
-    if changed && let Some(base) = &ge.base {
-        let mut g = base.clone();
-        g.shift(ge.shift);
-        if ge.hue != 0.0 || ge.sat != 0.0 || ge.lum != 0.0 {
-            g.adjust_hsl(ge.hue, ge.sat, ge.lum);
-        }
-        layer.gradient = g;
-    }
+    st.keys.show(ui, &mut layer.gradient);
+    ui.add_space(2.0);
     let mut recapture = false;
     ui.horizontal(|ui| {
+        if ui.button(format!("{} Library", icons::PALETTE)).on_hover_text("Browse ~1600 gradients, save your own").clicked() {
+            st.library.open = true;
+        }
         if ui.button(format!("{} Random", icons::DICE)).clicked() {
             let mut rng = jwf_core::rng::Rng::from_entropy();
             layer.gradient = Gradient::random(&mut rng);
@@ -384,8 +407,36 @@ fn gradient_editor(ui: &mut Ui, doc: &mut Document, st: &mut InspectorState) {
         }
         ui.checkbox(&mut layer.smooth_gradient, "Smooth");
     });
-    // A new base is captured next frame after destructive edits.
-    ge.last = if recapture { None } else { Some(layer.gradient.clone()) };
+
+    // Relative adjustments on top of a captured base gradient.
+    let ge = &mut st.gradient;
+    if recapture || ge.last.as_ref() != Some(&layer.gradient) {
+        ge.base = Some(layer.gradient.clone());
+        ge.shift = 0;
+        ge.hue = 0.0;
+        ge.sat = 0.0;
+        ge.lum = 0.0;
+    }
+    egui::CollapsingHeader::new(RichText::new("Adjust").color(theme::TEXT_MUTED)).id_salt("grad-adjust").show(ui, |ui| {
+        let mut changed = false;
+        grid(ui, "grad", |ui| {
+            widgets::label(ui, "Shift");
+            changed |= ui.add(egui::Slider::new(&mut ge.shift, -128..=128)).changed();
+            ui.end_row();
+            changed |= slider(ui, "Hue", &mut ge.hue, -0.5..=0.5).changed();
+            changed |= slider(ui, "Saturation", &mut ge.sat, -1.0..=1.0).changed();
+            changed |= slider(ui, "Lightness", &mut ge.lum, -0.5..=0.5).changed();
+        });
+        if changed && let Some(base) = &ge.base {
+            let mut g = base.clone();
+            g.shift(ge.shift);
+            if ge.hue != 0.0 || ge.sat != 0.0 || ge.lum != 0.0 {
+                g.adjust_hsl(ge.hue, ge.sat, ge.lum);
+            }
+            layer.gradient = g;
+        }
+    });
+    ge.last = Some(layer.gradient.clone());
 }
 
 fn render_tab(ui: &mut Ui, doc: &mut Document, preview: &mut Preview, canvas: &mut CanvasState) {
@@ -429,6 +480,13 @@ fn render_tab(ui: &mut Ui, doc: &mut Document, preview: &mut Preview, canvas: &m
         ui.end_row();
         slider(ui, "Antialias amount", &mut f.antialias_amount, 0.0..=1.0);
         slider(ui, "Antialias radius", &mut f.antialias_radius, 0.0..=2.0);
+    });
+
+    theme::section_label(ui, "Density estimation");
+    grid(ui, "de", |ui| {
+        slider(ui, "Radius", &mut f.de_radius, 0.0..=2.0).on_hover_text("Adaptive smoothing of sparse areas (0 = off)");
+        slider(ui, "Curve", &mut f.de_curve, 0.0..=1.0);
+        slider(ui, "Compare line", &mut f.de_comparison_line, 0.0..=1.0).on_hover_text("Shows the image with/without density estimation side by side (0 = off)");
     });
 
     theme::section_label(ui, "Symmetry");

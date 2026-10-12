@@ -92,6 +92,18 @@ impl Document {
         self.dirty = true;
     }
 
+    /// The flame state before the pending (not yet committed) edit.
+    pub fn committed(&self) -> &Flame {
+        &self.committed
+    }
+
+    /// Evaluates the animation at `frame` without creating an undo step.
+    pub fn show_frame(&mut self, frame: f64) {
+        self.commit_if_settled(false);
+        self.flame.apply_animation(frame);
+        self.committed = self.flame.clone();
+    }
+
     /// Replaces the whole flame as one undoable step.
     pub fn replace(&mut self, flame: Flame) {
         self.commit_if_settled(false);

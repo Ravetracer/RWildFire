@@ -5,9 +5,11 @@ mod canvas;
 mod doc;
 mod export;
 mod explorer;
+mod gradients;
 mod icons;
 mod preview;
 mod theme;
+mod timeline;
 mod ui;
 
 use std::sync::Arc;

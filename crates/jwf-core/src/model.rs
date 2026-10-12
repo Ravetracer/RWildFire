@@ -388,6 +388,24 @@ pub struct Flame {
     pub cam_pos_z: f64,
     pub cam_z: f64,
     pub cam_dof: f64,
+    /// `true` = focus-point DOF (`new_dof`), `false` = legacy z-plane DOF.
+    pub new_cam_dof: bool,
+    pub cam_dof_shape: crate::render::dof::DofShape,
+    pub cam_dof_scale: f64,
+    /// Degrees.
+    pub cam_dof_angle: f64,
+    pub cam_dof_fade: f64,
+    pub cam_dof_param1: f64,
+    pub cam_dof_param2: f64,
+    pub cam_dof_param3: f64,
+    pub cam_dof_param4: f64,
+    pub cam_dof_param5: f64,
+    pub cam_dof_param6: f64,
+    pub cam_dof_area: f64,
+    pub cam_dof_exponent: f64,
+    pub focus_x: f64,
+    pub focus_y: f64,
+    pub focus_z: f64,
     pub dimish_z: f64,
     pub dim_z_distance: f64,
 
@@ -410,6 +428,10 @@ pub struct Flame {
     pub spatial_oversampling: u32,
     pub antialias_amount: f64,
     pub antialias_radius: f64,
+    /// Density estimation radius (0 = off), curve and the before/after comparison line (0..1).
+    pub de_radius: f64,
+    pub de_curve: f64,
+    pub de_comparison_line: f64,
 
     /// When set, 2D variations pass the z coordinate through (`preserve_z`).
     pub preserve_z: bool,
@@ -418,6 +440,7 @@ pub struct Flame {
     pub post_symmetry: PostSymmetry,
 
     pub layers: Vec<Layer>,
+    pub animation: crate::animation::Animation,
     /// Attributes not understood by this port, kept for round-tripping.
     pub extra_attrs: Vec<(String, String)>,
 }
@@ -442,6 +465,22 @@ impl Default for Flame {
             cam_pos_z: 0.0,
             cam_z: 0.0,
             cam_dof: 0.0,
+            new_cam_dof: false,
+            cam_dof_shape: crate::render::dof::DofShape::Bubble,
+            cam_dof_scale: 1.0,
+            cam_dof_angle: 0.0,
+            cam_dof_fade: 1.0,
+            cam_dof_param1: 0.0,
+            cam_dof_param2: 0.0,
+            cam_dof_param3: 0.0,
+            cam_dof_param4: 0.0,
+            cam_dof_param5: 0.0,
+            cam_dof_param6: 0.0,
+            cam_dof_area: 0.5,
+            cam_dof_exponent: 2.0,
+            focus_x: 0.0,
+            focus_y: 0.0,
+            focus_z: 0.0,
             dimish_z: 0.0,
             dim_z_distance: 0.0,
             brightness: 4.0,
@@ -462,17 +501,31 @@ impl Default for Flame {
             spatial_oversampling: 1,
             antialias_amount: 0.25,
             antialias_radius: 0.5,
+            de_radius: 1.0,
+            de_curve: 0.8,
+            de_comparison_line: 0.0,
             preserve_z: false,
             background: Background::default(),
             bg_transparency: true,
             post_symmetry: PostSymmetry::default(),
             layers: vec![Layer::default()],
+            animation: crate::animation::Animation::default(),
             extra_attrs: Vec::new(),
         }
     }
 }
 
 impl Flame {
+    /// Selects a bokeh shape and applies its default parameters (JWildfire `setDefaultParams`).
+    pub fn set_dof_shape(&mut self, shape: crate::render::dof::DofShape) {
+        let (fade, scale, angle, p) = shape.defaults();
+        self.cam_dof_shape = shape;
+        self.cam_dof_fade = fade;
+        self.cam_dof_scale = scale;
+        self.cam_dof_angle = angle;
+        [self.cam_dof_param1, self.cam_dof_param2, self.cam_dof_param3, self.cam_dof_param4, self.cam_dof_param5, self.cam_dof_param6] = p;
+    }
+
     pub fn first_layer(&self) -> &Layer {
         &self.layers[0]
     }
@@ -492,6 +545,7 @@ impl Flame {
             || self.cam_bank.abs() > EPSILON
             || self.cam_perspective.abs() > EPSILON
             || self.dimish_z.abs() > EPSILON
+            || self.cam_dof.abs() > EPSILON
             || self.cam_pos_x.abs() > EPSILON
             || self.cam_pos_y.abs() > EPSILON
             || self.cam_pos_z.abs() > EPSILON

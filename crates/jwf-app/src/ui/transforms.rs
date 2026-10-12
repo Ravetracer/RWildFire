@@ -120,22 +120,7 @@ fn new_xform(doc: &Document) -> XForm {
 }
 
 pub fn show(ui: &mut Ui, doc: &mut Document, st: &mut TransformsState) {
-    // Layers (only shown if the flame has more than one).
-    if doc.flame.layers.len() > 1 {
-        theme::section_label(ui, "Layers");
-        ui.horizontal_wrapped(|ui| {
-            for i in 0..doc.flame.layers.len() {
-                let name = if doc.flame.layers[i].name.is_empty() { format!("Layer {}", i + 1) } else { doc.flame.layers[i].name.clone() };
-                if ui.selectable_label(doc.layer == i, name).clicked() {
-                    doc.layer = i;
-                    doc.selection = Selection::XForm(0);
-                    doc.fix_selection();
-                }
-                ui.checkbox(&mut doc.flame.layers[i].visible, "");
-            }
-        });
-        ui.separator();
-    }
+    layers_section(ui, doc);
 
     if header(ui, "Transforms", "Add transform") {
         let xf = new_xform(doc);
@@ -178,6 +163,93 @@ pub fn show(ui: &mut Ui, doc: &mut Document, st: &mut TransformsState) {
     ui.add_space(8.0);
     ui.separator();
     variations_editor(ui, doc, st);
+}
+
+/// Layer list with add/duplicate/delete; collapsed into one line for single-layer flames.
+fn layers_section(ui: &mut Ui, doc: &mut Document) {
+    let n = doc.flame.layers.len();
+    let title = if n > 1 { format!("Layers ({n})") } else { "Layers".to_string() };
+    egui::CollapsingHeader::new(RichText::new(title.to_uppercase()).size(10.5).color(theme::TEXT_MUTED).strong())
+        .id_salt("layers")
+        .default_open(n > 1)
+        .show(ui, |ui| {
+            let mut action: Option<(usize, &str)> = None;
+            for i in 0..doc.flame.layers.len() {
+                let selected = doc.layer == i;
+                egui::Frame::new()
+                    .fill(if selected { theme::SURFACE_HOVER } else { theme::SURFACE })
+                    .corner_radius(6)
+                    .inner_margin(egui::Margin::symmetric(8, 4))
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            let layer = &mut doc.flame.layers[i];
+                            let eye = if layer.visible { icons::EYE } else { icons::EYE_SLASH };
+                            if widgets::icon_button(ui, eye, "Show / hide").clicked() {
+                                layer.visible = !layer.visible;
+                            }
+                            let name = if layer.name.is_empty() { format!("Layer {}", i + 1) } else { layer.name.clone() };
+                            if ui.selectable_label(selected, name).clicked() {
+                                action = Some((i, "select"));
+                            }
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                ui.add_enabled_ui(n > 1, |ui| {
+                                    if widgets::icon_button(ui, icons::X, "Delete layer").clicked() {
+                                        action = Some((i, "delete"));
+                                    }
+                                });
+                                if widgets::icon_button(ui, icons::COPY, "Duplicate layer").clicked() {
+                                    action = Some((i, "dup"));
+                                }
+                            });
+                        });
+                        if selected {
+                            let layer = &mut doc.flame.layers[i];
+                            egui::Grid::new(("layer-props", i)).num_columns(2).spacing([10.0, 4.0]).show(ui, |ui| {
+                                widgets::label(ui, "Name");
+                                ui.text_edit_singleline(&mut layer.name);
+                                ui.end_row();
+                                widgets::label(ui, "Weight");
+                                ui.add(egui::Slider::new(&mut layer.weight, 0.0..=4.0).clamping(egui::SliderClamping::Never));
+                                ui.end_row();
+                                widgets::label(ui, "Density");
+                                ui.add(egui::Slider::new(&mut layer.density, 0.0..=1.0));
+                                ui.end_row();
+                            });
+                        }
+                    });
+                ui.add_space(2.0);
+            }
+            if ui.add_sized([ui.available_width(), 24.0], egui::Button::new(format!("{}  Add layer", icons::PLUS))).clicked() {
+                let mut l = jwf_core::Layer { gradient: doc.layer().gradient.clone(), ..Default::default() };
+                let mut xf = XForm::with_variation("linear3D", 1.0);
+                xf.coefs.scale(0.5);
+                l.xforms.push(xf);
+                doc.flame.layers.push(l);
+                doc.layer = doc.flame.layers.len() - 1;
+                doc.selection = Selection::XForm(0);
+            }
+            match action {
+                Some((i, "select")) => {
+                    doc.layer = i;
+                    doc.selection = Selection::XForm(0);
+                }
+                Some((i, "dup")) => {
+                    let mut l = doc.flame.layers[i].clone();
+                    if !l.name.is_empty() {
+                        l.name.push_str(" copy");
+                    }
+                    doc.flame.layers.insert(i + 1, l);
+                    doc.layer = i + 1;
+                }
+                Some((i, "delete")) if doc.flame.layers.len() > 1 => {
+                    doc.flame.layers.remove(i);
+                    doc.layer = doc.layer.min(doc.flame.layers.len() - 1);
+                }
+                _ => {}
+            }
+            doc.fix_selection();
+        });
+    ui.add_space(4.0);
 }
 
 fn apply_row_action(doc: &mut Document, sel: Selection, a: RowAction) {

@@ -9,6 +9,7 @@ cargo run --release -p jwf-app                      # editor
 cargo run --release -p jwf-app -- some.flame        # open a file
 cargo run --release -p jwf-cli -- render in.flame -o out.png -w 1920 -h 1080 -q 1000 --gpu
 cargo run --release -p jwf-cli -- random out_dir 8  # random flames (.flame + .png)
+cargo run --release -p jwf-cli -- render-anim in.flame -o out.mp4 --gpu   # animation (mp4/mov/webm via ffmpeg, or a folder for PNGs)
 ```
 
 ## Workspace
@@ -44,13 +45,31 @@ Each variation is a `VarDef` with a CPU function and a WGSL snippet that read th
 - Tone changes (brightness, gamma, vibrancy, background, ...) update instantly without restarting the render.
 - Unlimited undo/redo, drag & drop of `.flame` files, keyboard shortcuts (Ctrl+O/S/E/Z, Space = random flame, F = fit, Del = delete transform).
 
+## Rendering features
+
+- Density estimation (`de_radius`, `de_curve`, comparison line), CPU and GPU, enabled by default as in JWildfire
+- Depth of field: legacy z-plane and focus-point modes, bokeh shapes (bubble plus the variation-based JWildfire shapes)
+- Layers: add, duplicate, delete, hide, weight and density per layer
+- Post symmetry, 3D camera, anti-aliasing, filter kernels
+
+## Gradients
+
+- Key-point editor: gradients are fitted to a few color stops that can be dragged, added (click the bar) and recolored
+- Library with ~1600 bundled gradients (flam3 classics, UltraFractal collections), user gradients in `~/.config/jwildfire-rs/gradients`, import of `.ugr` / `.map` / flam3 palette files
+- Relative adjustments (shift, hue, saturation, lightness), random gradients
+
+## Animation
+
+- Keyframe tracks on any numeric property (camera, tone, layers, transform coefficients, variation amounts and parameters) with smooth, linear or hold interpolation
+- Timeline with playback, scrubbing, per-track keyframe lanes, auto-key (edits at the current frame create keyframes) and quick keying of camera / transform / tone
+- Motion blur (JWildfire-compatible sub-frames)
+- Export as MP4 (H.264), MOV (ProRes), WebM (VP9) via ffmpeg, or PNG sequences, rendered in the background on the GPU or CPU
+- JWildfire motion curves are imported when opening animated `.flame` files
+
 ## Status / roadmap
 
 Done (milestone 1): core editor, file compatibility, CPU and GPU renderer, 140 variations, gradient editing, random generators, mutations, PNG export.
 
 Next:
-- remaining JWildfire variations (~880)
-- density estimation (`de_radius`), DOF / bokeh, adaptive filter
-- gradient editor with key points, gradient library (`.ugr`/`.map`)
-- animation: motion curves, keyframes, video export
-- layers editing, solid rendering, post-blur, denoiser
+- remaining JWildfire variations (~880, in progress)
+- adaptive filter, solid rendering, post-blur, denoiser

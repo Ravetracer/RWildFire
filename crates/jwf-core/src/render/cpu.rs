@@ -83,16 +83,21 @@ impl Raster for FloatRaster {
 }
 
 /// Everything a render thread needs, shared read-only.
-struct Shared {
+/// One flame state iterated into the shared histogram (several for motion blur).
+struct Packet {
     prepared: PreparedFlame,
     view: View,
+    antialias_amount: f64,
+    antialias_radius: f64,
+    symmetry: Symmetry,
+}
+
+struct Shared {
+    packets: Vec<Packet>,
     histogram: Histogram,
     samples: AtomicU64,
     stop: AtomicBool,
     target_samples: u64,
-    antialias_amount: f64,
-    antialias_radius: f64,
-    symmetry: Symmetry,
     dimish_color: [f64; 3],
 }
 
@@ -152,29 +157,46 @@ pub struct RenderOptions {
 
 impl CpuRender {
     pub fn start(flame: &Flame, opts: RenderOptions) -> Self {
-        let prepared = PreparedFlame::new(flame);
+        Self::start_packets(std::slice::from_ref(flame), opts)
+    }
+
+    /// Renders an animation frame (incl. motion blur sub-frames if enabled).
+    pub fn start_frame(flame: &Flame, frame: f64, opts: RenderOptions) -> Self {
+        Self::start_packets(&super::frame_packets(flame, frame), opts)
+    }
+
+    /// Iterates several flame states into one histogram (motion blur). `flames[0]` is the
+    /// main state; all must have the same image settings.
+    pub fn start_packets(flames: &[Flame], opts: RenderOptions) -> Self {
+        let flame = &flames[0];
         let filter_size = flame.filter_kernel.filter_size(flame.spatial_filter_radius, flame.spatial_oversampling.max(1));
-        let view = View::new(flame, opts.width.max(1), opts.height.max(1), filter_size);
+        let packets: Vec<Packet> = flames
+            .iter()
+            .map(|f| Packet {
+                prepared: PreparedFlame::new(f),
+                view: View::new(f, opts.width.max(1), opts.height.max(1), filter_size),
+                antialias_amount: f.antialias_amount,
+                antialias_radius: f.antialias_radius,
+                symmetry: Symmetry::new(f),
+            })
+            .collect();
+        let view = &packets[0].view;
         let raster_size = view.raster_width as u64 * view.raster_height as u64;
         let target_samples = match opts.max_density {
-            Some(d) => (d * raster_size as f64 / view.oversample as f64 + 0.5) as u64,
+            Some(d) => ((d * raster_size as f64 / view.oversample as f64 + 0.5) as u64).saturating_mul(packets.len() as u64),
             None => u64::MAX,
         };
         let shared = Arc::new(Shared {
             histogram: Histogram::new(view.raster_width, view.raster_height),
-            view,
             samples: AtomicU64::new(0),
             stop: AtomicBool::new(false),
             target_samples,
-            antialias_amount: flame.antialias_amount,
-            antialias_radius: flame.antialias_radius,
-            symmetry: Symmetry::new(flame),
             dimish_color: [0.0; 3],
-            prepared,
+            packets,
         });
         let n = opts.threads.max(1);
         let mut threads = Vec::with_capacity(n);
-        if !shared.prepared.layers.is_empty() {
+        if !shared.packets[0].prepared.layers.is_empty() {
             for i in 0..n {
                 let sh = shared.clone();
                 let seed = opts.seed.wrapping_add((i as u64 + 1).wrapping_mul(0x9E37_79B9_7F4A_7C15));
@@ -193,10 +215,10 @@ impl CpuRender {
         self.shared.samples.load(Ordering::Relaxed)
     }
 
-    /// Current sample density ("quality" in JWildfire terms).
+    /// Current sample density per packet ("quality" in JWildfire terms).
     pub fn density(&self) -> f64 {
-        let v = &self.shared.view;
-        self.samples() as f64 / (v.raster_width as f64 * v.raster_height as f64) * v.oversample as f64
+        let v = &self.shared.packets[0].view;
+        self.samples() as f64 / (v.raster_width as f64 * v.raster_height as f64) * v.oversample as f64 / self.shared.packets.len() as f64
     }
 
     pub fn is_finished(&self) -> bool {
@@ -204,11 +226,11 @@ impl CpuRender {
     }
 
     pub fn view(&self) -> &View {
-        &self.shared.view
+        &self.shared.packets[0].view
     }
 
     pub fn missing_variations(&self) -> &[String] {
-        &self.shared.prepared.missing_variations
+        &self.shared.packets[0].prepared.missing_variations
     }
 
     pub fn stop(&self) {
@@ -231,11 +253,24 @@ impl CpuRender {
         &self.flame
     }
 
-    /// Tonemaps the current state into an RGBA8 image.
-    pub fn image(&self, with_alpha: bool) -> Vec<u8> {
-        let v = &self.shared.view;
-        let tm = ToneMapper::new(&self.flame, v.image_width, v.image_height, v.ppu, self.density(), with_alpha);
+    /// Tonemaps without density estimation (cheap, for progressive previews).
+    pub fn image_fast(&self, with_alpha: bool) -> Vec<u8> {
+        let v = &self.shared.packets[0].view;
+        let tm = ToneMapper::new(&self.flame, v.image_width, v.image_height, v.ppu, self.density(), with_alpha).with_packets(self.shared.packets.len());
         tm.render(&self.flame, &self.shared.histogram, v.image_width, v.image_height)
+    }
+
+    /// Tonemaps the current state into an RGBA8 image (with density estimation if enabled).
+    pub fn image(&self, with_alpha: bool) -> Vec<u8> {
+        let v = &self.shared.packets[0].view;
+        let tm = ToneMapper::new(&self.flame, v.image_width, v.image_height, v.ppu, self.density(), with_alpha).with_packets(self.shared.packets.len());
+        match super::de::DeParams::new(&self.flame, v.ppu_scale) {
+            Some(de) => {
+                let raster = super::de::apply(&self.shared.histogram, &de);
+                tm.render(&self.flame, &raster, v.image_width, v.image_height)
+            }
+            None => tm.render(&self.flame, &self.shared.histogram, v.image_width, v.image_height),
+        }
     }
 }
 
@@ -256,35 +291,42 @@ pub fn render_image(flame: &Flame, width: u32, height: u32, quality: f64, with_a
 }
 
 fn render_thread(sh: Arc<Shared>, seed: u64) {
-    let mut ctx = Ctx::new(seed, sh.prepared.preserve_z);
-    let layers = &sh.prepared.layers;
-    let mut states: Vec<LayerState> = layers.iter().map(|_| LayerState { p: Pt::default(), xf: 0, valid: false }).collect();
-    for (l, st) in layers.iter().zip(states.iter_mut()) {
-        pre_fuse(l, st, &mut ctx);
+    let mut ctx = Ctx::new(seed, sh.packets[0].prepared.preserve_z);
+    let mut states: Vec<Vec<LayerState>> =
+        sh.packets.iter().map(|pk| pk.prepared.layers.iter().map(|_| LayerState { p: Pt::default(), xf: 0, valid: false }).collect()).collect();
+    for (pk, sts) in sh.packets.iter().zip(states.iter_mut()) {
+        for (l, st) in pk.prepared.layers.iter().zip(sts.iter_mut()) {
+            ctx.palette.clone_from(&l.palette);
+            pre_fuse(l, st, &mut ctx);
+        }
     }
+    let per_round: u64 = sh.packets.iter().map(|pk| pk.prepared.layers.len() as u64).sum();
     const BATCH: u64 = 4096;
-    let mut local: u64 = 0;
     loop {
         if sh.stop.load(Ordering::Relaxed) {
             break;
         }
-        for (l, st) in layers.iter().zip(states.iter_mut()) {
-            if !st.valid || st.p.is_bad() {
-                pre_fuse(l, st, &mut ctx);
-                if !st.valid {
-                    continue;
+        for (pk, sts) in sh.packets.iter().zip(states.iter_mut()) {
+            let layers = &pk.prepared.layers;
+            for (l, st) in layers.iter().zip(sts.iter_mut()) {
+                if ctx.palette != l.palette {
+                    ctx.palette.clone_from(&l.palette);
+                }
+                if !st.valid || st.p.is_bad() {
+                    pre_fuse(l, st, &mut ctx);
+                    if !st.valid {
+                        continue;
+                    }
+                }
+                for _ in 0..BATCH {
+                    iterate(&sh, pk, l, st, &mut ctx);
                 }
             }
-            for _ in 0..BATCH {
-                iterate(&sh, l, st, &mut ctx);
-            }
         }
-        local += BATCH * layers.len() as u64;
-        let total = sh.samples.fetch_add(BATCH * layers.len() as u64, Ordering::Relaxed);
+        let total = sh.samples.fetch_add(BATCH * per_round, Ordering::Relaxed);
         if total >= sh.target_samples {
             break;
         }
-        let _ = local;
     }
 }
 
@@ -307,7 +349,7 @@ fn pre_fuse(layer: &PreparedLayer, st: &mut LayerState, ctx: &mut Ctx) {
 }
 
 #[inline]
-fn iterate(sh: &Shared, layer: &PreparedLayer, st: &mut LayerState, ctx: &mut Ctx) {
+fn iterate(sh: &Shared, pk: &Packet, layer: &PreparedLayer, st: &mut LayerState, ctx: &mut Ctx) {
     if layer.density < 1.0 && ctx.random() > layer.density * layer.density {
         return;
     }
@@ -333,16 +375,16 @@ fn iterate(sh: &Shared, layer: &PreparedLayer, st: &mut LayerState, ctx: &mut Ct
     if q.do_hide {
         return;
     }
-    let sym = &sh.symmetry;
+    let sym = &pk.symmetry;
     match sym.kind {
-        PostSymmetryType::None => plot(sh, layer, &st.p, &q, q.x, q.y, ctx),
+        PostSymmetryType::None => plot(sh, pk, layer, &st.p, &q, q.x, q.y, ctx),
         PostSymmetryType::Point => {
             let (cx, cy) = sym.centre;
             let dx = q.x - cx;
             let dy = q.y - cy;
-            plot(sh, layer, &st.p, &q, q.x, q.y, ctx);
+            plot(sh, pk, layer, &st.p, &q, q.x, q.y, ctx);
             for &(s, c) in &sym.rotations {
-                plot(sh, layer, &st.p, &q, cx + dx * c + dy * s, cy + dy * c - dx * s, ctx);
+                plot(sh, pk, layer, &st.p, &q, cx + dx * c + dy * s, cy + dy * c - dx * s, ctx);
             }
         }
         PostSymmetryType::XAxis | PostSymmetryType::YAxis => {
@@ -365,29 +407,29 @@ fn iterate(sh: &Shared, layer: &PreparedLayer, st: &mut LayerState, ctx: &mut Ct
                 bx = cx + dx * c - dy * s;
                 by = cy + dy * c + dx * s;
             }
-            plot(sh, layer, &st.p, &q, ax, ay, ctx);
-            plot(sh, layer, &st.p, &q, bx, by, ctx);
+            plot(sh, pk, layer, &st.p, &q, ax, ay, ctx);
+            plot(sh, pk, layer, &st.p, &q, bx, by, ctx);
         }
     }
 }
 
 #[inline]
-fn plot(sh: &Shared, layer: &PreparedLayer, p: &Pt, q: &Pt, x: f64, y: f64, ctx: &mut Ctx) {
-    let Some((mut raw_x, mut raw_y, dz)) = sh.view.project(x, y, q.z) else {
+fn plot(sh: &Shared, pk: &Packet, layer: &PreparedLayer, p: &Pt, q: &Pt, x: f64, y: f64, ctx: &mut Ctx) {
+    let Some((mut raw_x, mut raw_y, dz)) = pk.view.project(x, y, q.z, ctx) else {
         return;
     };
     if !(x.is_finite() && y.is_finite()) {
         return;
     }
-    if sh.antialias_amount > EPSILON && sh.antialias_radius > EPSILON && ctx.random() > 1.0 - sh.antialias_amount {
-        let dr = (sh.antialias_radius * (-ctx.random().ln()).sqrt()).exp() - 1.0;
+    if pk.antialias_amount > EPSILON && pk.antialias_radius > EPSILON && ctx.random() > 1.0 - pk.antialias_amount {
+        let dr = (pk.antialias_radius * (-ctx.random().ln()).sqrt()).exp() - 1.0;
         let da = ctx.random() * 2.0 * M_PI;
         raw_x += dr * da.cos();
         raw_y += dr * da.sin();
     }
     let sx = (raw_x + 0.5) as i64;
     let sy = (raw_y + 0.5) as i64;
-    let v = &sh.view;
+    let v = &pk.view;
     if sx < 0 || sy < 0 || sx >= v.raster_width as i64 || sy >= v.raster_height as i64 {
         return;
     }

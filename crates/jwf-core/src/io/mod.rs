@@ -2,6 +2,7 @@
 
 pub mod xml;
 
+
 use std::collections::HashSet;
 use std::fmt::Write as _;
 use std::path::Path;
@@ -91,6 +92,10 @@ fn collect_flames<'a>(el: &'a Element, out: &mut Vec<&'a Element>) {
 
 fn parse_flame(el: &Element) -> Flame {
     let mut flame = Flame::default();
+    // The shape sets its defaults first; explicit attributes override them below.
+    if let Some(shape) = el.attr("cam_dof_shape").and_then(crate::render::dof::DofShape::parse) {
+        flame.set_dof_shape(shape);
+    }
     let has_bg_type = el.attr("background_type").is_some();
     let mut smooth_gradient = None;
     for (k, v) in &el.attrs {
@@ -153,6 +158,22 @@ fn parse_flame(el: &Element) -> Flame {
             "cam_pos_z" => flame.cam_pos_z = f.unwrap_or(0.0),
             "cam_zpos" => flame.cam_z = f.unwrap_or(0.0),
             "cam_dof" => flame.cam_dof = f.unwrap_or(0.0),
+            "new_dof" => flame.new_cam_dof = v == "1",
+            "cam_dof_shape" => {}
+            "cam_dof_scale" => flame.cam_dof_scale = f.unwrap_or(1.0),
+            "cam_dof_rotate" => flame.cam_dof_angle = f.unwrap_or(0.0),
+            "cam_dof_fade" => flame.cam_dof_fade = f.unwrap_or(1.0),
+            "cam_dof_param1" => flame.cam_dof_param1 = f.unwrap_or(0.0),
+            "cam_dof_param2" => flame.cam_dof_param2 = f.unwrap_or(0.0),
+            "cam_dof_param3" => flame.cam_dof_param3 = f.unwrap_or(0.0),
+            "cam_dof_param4" => flame.cam_dof_param4 = f.unwrap_or(0.0),
+            "cam_dof_param5" => flame.cam_dof_param5 = f.unwrap_or(0.0),
+            "cam_dof_param6" => flame.cam_dof_param6 = f.unwrap_or(0.0),
+            "cam_dof_area" => flame.cam_dof_area = f.unwrap_or(0.5),
+            "cam_dof_exponent" => flame.cam_dof_exponent = f.unwrap_or(2.0),
+            "cam_xfocus" => flame.focus_x = f.unwrap_or(0.0),
+            "cam_yfocus" => flame.focus_y = f.unwrap_or(0.0),
+            "cam_zfocus" => flame.focus_z = f.unwrap_or(0.0),
             "cam_zdimish" => flame.dimish_z = f.unwrap_or(0.0),
             "cam_zdimdist" => flame.dim_z_distance = f.unwrap_or(0.0),
             "low_density_brightness" => flame.low_density_brightness = f.unwrap_or(0.24),
@@ -165,6 +186,9 @@ fn parse_flame(el: &Element) -> Flame {
                     flame.antialias_radius = r;
                 }
             }
+            "de_radius" => flame.de_radius = f.unwrap_or(1.0),
+            "de_curve" => flame.de_curve = f.unwrap_or(0.8),
+            "de_comparison_line" => flame.de_comparison_line = f.unwrap_or(0.0),
             "post_symmetry_type" => flame.post_symmetry.kind = PostSymmetryType::parse(v),
             "post_symmetry_order" => flame.post_symmetry.order = f.unwrap_or(3.0) as i32,
             "post_symmetry_centre_x" => flame.post_symmetry.centre_x = f.unwrap_or(0.0),
@@ -174,6 +198,13 @@ fn parse_flame(el: &Element) -> Flame {
             "preserve_z" => flame.preserve_z = v == "1",
             "new_linear" => flame.preserve_z = v.trim() == "1",
             "smooth_gradient" => smooth_gradient = Some(v == "1"),
+            "frame_count" => flame.animation.frame_count = f.unwrap_or(100.0).max(1.0) as u32,
+            "fps" => flame.animation.fps = f.unwrap_or(25.0).max(1.0),
+            "motion_blur_length" => flame.animation.motion_blur_length = f.unwrap_or(0.0).max(0.0) as u32,
+            "motion_blur_timestep" => flame.animation.motion_blur_time_step = f.unwrap_or(0.05),
+            "motion_blur_decay" => flame.animation.motion_blur_decay = f.unwrap_or(0.03),
+            // The current frame is not stored by this port.
+            "frame" => {}
             // Regenerated on save.
             "version" => {}
             _ => known = false,
@@ -209,7 +240,79 @@ fn parse_flame(el: &Element) -> Flame {
             })
             .collect();
     }
+    match el.children_named("animation").next() {
+        Some(a) => parse_animation(a, &mut flame),
+        None => import_jwf_curves(&mut flame),
+    }
     flame
+}
+
+fn parse_animation(el: &Element, flame: &mut Flame) {
+    use crate::animation::{Interp, Key, Track};
+    for t in el.children_named("track") {
+        let Some(path) = t.attr("path") else { continue };
+        let keys: Vec<Key> = t
+            .attr("keys")
+            .unwrap_or("")
+            .split_whitespace()
+            .filter_map(|kv| {
+                let (f, v) = kv.split_once(':')?;
+                Some(Key { frame: f.parse().ok()?, value: v.parse().ok()? })
+            })
+            .collect();
+        if !keys.is_empty() {
+            let mut tr = Track { path: path.to_string(), interp: Interp::parse(t.attr("interp").unwrap_or("smooth")), keys };
+            tr.keys.sort_by(|a, b| a.frame.total_cmp(&b.frame));
+            flame.animation.tracks.push(tr);
+        }
+    }
+}
+
+/// Converts JWildfire motion curves (`<name>Curve_*` attributes) into animation tracks.
+fn import_jwf_curves(flame: &mut Flame) {
+    use crate::animation::{jwf_curve_track, jwf_flame_curve_path, jwf_xform_curve_suffix};
+    let is_curve_attr = |k: &str, prefix: &str| k.starts_with(prefix);
+    // Flame-level curves
+    let names: Vec<String> = flame.extra_attrs.iter().filter_map(|(k, _)| k.strip_suffix("Curve_enabled").map(str::to_string)).collect();
+    for n in names {
+        let prefix = format!("{n}Curve_");
+        if let Some(path) = jwf_flame_curve_path(&n)
+            && let Some(t) = jwf_curve_track(&flame.extra_attrs, &prefix, path)
+        {
+            flame.animation.tracks.push(t);
+        }
+        flame.extra_attrs.retain(|(k, _)| !is_curve_attr(k, &prefix));
+    }
+    // XForm and variation parameter curves
+    let mut tracks = Vec::new();
+    for (li, layer) in flame.layers.iter_mut().enumerate() {
+        for (fin, list) in [(false, &mut layer.xforms), (true, &mut layer.final_xforms)] {
+            for (xi, xf) in list.iter_mut().enumerate() {
+                let base = if fin { format!("layer{li}.final{xi}") } else { format!("layer{li}.xf{xi}") };
+                let names: Vec<String> = xf.extra_attrs.iter().filter_map(|(k, _)| k.strip_suffix("Curve_enabled").map(str::to_string)).collect();
+                for n in names {
+                    let prefix = format!("{n}Curve_");
+                    if let Some(suffix) = jwf_xform_curve_suffix(&n)
+                        && let Some(t) = jwf_curve_track(&xf.extra_attrs, &prefix, &format!("{base}.{suffix}"))
+                    {
+                        tracks.push(t);
+                    }
+                    xf.extra_attrs.retain(|(k, _)| !is_curve_attr(k, &prefix));
+                }
+                for (vi, var) in xf.variations.iter_mut().enumerate() {
+                    let pnames: Vec<String> = var.raw_params.iter().filter_map(|(k, _)| k.strip_suffix("_enabled").map(str::to_string)).collect();
+                    for p in pnames {
+                        let prefix = format!("{p}_");
+                        if let Some(t) = jwf_curve_track(&var.raw_params, &prefix, &format!("{base}.var{vi}.p.{p}")) {
+                            tracks.push(t);
+                        }
+                        var.raw_params.retain(|(k, _)| !(k.starts_with(&prefix) && k != &p));
+                    }
+                }
+            }
+        }
+    }
+    flame.animation.tracks.extend(tracks);
 }
 
 fn parse_layer_content(el: &Element) -> Layer {
@@ -384,6 +487,9 @@ pub fn write_flame(flame: &Flame) -> String {
     attr(&mut s, "filter_type", if flame.filter_kernel == FilterKernel::MitchellSinePow { "ADAPTIVE" } else if flame.filter_kernel.is_sharpening() { "GLOBAL_SHARPENING" } else { "GLOBAL_SMOOTHING" });
     attr(&mut s, "filter_kernel", flame.filter_kernel.as_str());
     attr(&mut s, "oversample", flame.spatial_oversampling.to_string());
+    attr(&mut s, "de_radius", fmt_f(flame.de_radius));
+    attr(&mut s, "de_curve", fmt_f(flame.de_curve));
+    attr(&mut s, "de_comparison_line", fmt_f(flame.de_comparison_line));
     attr(&mut s, "quality", fmt_f(flame.sample_density));
     attr(&mut s, "background_type", flame.background.kind.as_str());
     attr(&mut s, "background_ul", fmt_color(flame.background.ul));
@@ -414,6 +520,21 @@ pub fn write_flame(flame: &Flame) -> String {
     attr(&mut s, "cam_pos_z", fmt_f(flame.cam_pos_z));
     attr(&mut s, "cam_zpos", fmt_f(flame.cam_z));
     attr(&mut s, "cam_dof", fmt_f(flame.cam_dof));
+    if flame.new_cam_dof {
+        attr(&mut s, "new_dof", "1");
+    }
+    attr(&mut s, "cam_dof_shape", flame.cam_dof_shape.as_str());
+    attr(&mut s, "cam_dof_scale", fmt_f(flame.cam_dof_scale));
+    attr(&mut s, "cam_dof_rotate", fmt_f(flame.cam_dof_angle));
+    attr(&mut s, "cam_dof_fade", fmt_f(flame.cam_dof_fade));
+    for (i, v) in [flame.cam_dof_param1, flame.cam_dof_param2, flame.cam_dof_param3, flame.cam_dof_param4, flame.cam_dof_param5, flame.cam_dof_param6].iter().enumerate() {
+        attr(&mut s, &format!("cam_dof_param{}", i + 1), fmt_f(*v));
+    }
+    attr(&mut s, "cam_dof_area", fmt_f(flame.cam_dof_area));
+    attr(&mut s, "cam_dof_exponent", fmt_f(flame.cam_dof_exponent));
+    attr(&mut s, "cam_xfocus", fmt_f(flame.focus_x));
+    attr(&mut s, "cam_yfocus", fmt_f(flame.focus_y));
+    attr(&mut s, "cam_zfocus", fmt_f(flame.focus_z));
     attr(&mut s, "low_density_brightness", fmt_f(flame.low_density_brightness));
     attr(&mut s, "balancing_red", fmt_f(flame.balance_red));
     attr(&mut s, "balancing_green", fmt_f(flame.balance_green));
@@ -433,6 +554,12 @@ pub fn write_flame(flame: &Flame) -> String {
     if !multi_layer {
         attr(&mut s, "smooth_gradient", if flame.first_layer().smooth_gradient { "1" } else { "0" });
     }
+    let anim = &flame.animation;
+    attr(&mut s, "frame_count", anim.frame_count.to_string());
+    attr(&mut s, "fps", fmt_f(anim.fps));
+    attr(&mut s, "motion_blur_length", anim.motion_blur_length.to_string());
+    attr(&mut s, "motion_blur_timestep", fmt_f(anim.motion_blur_time_step));
+    attr(&mut s, "motion_blur_decay", fmt_f(anim.motion_blur_decay));
     for (k, v) in &flame.extra_attrs {
         attr(&mut s, k, v);
     }
@@ -457,6 +584,17 @@ pub fn write_flame(flame: &Flame) -> String {
         }
     } else {
         write_layer_content(&mut s, flame.first_layer(), "  ");
+    }
+    if flame.animation.is_animated() {
+        s.push_str("  <animation>\n");
+        for t in &flame.animation.tracks {
+            if t.keys.is_empty() {
+                continue;
+            }
+            let keys: Vec<String> = t.keys.iter().map(|k| format!("{}:{}", fmt_f(k.frame), fmt_f(k.value))).collect();
+            let _ = writeln!(s, "    <track path=\"{}\" interp=\"{}\" keys=\"{}\" />", escape(&t.path), t.interp.as_str(), keys.join(" "));
+        }
+        s.push_str("  </animation>\n");
     }
     let _ = writeln!(s, "</{tag}>");
     s

@@ -78,6 +78,8 @@ pub struct PreparedLayer {
     pub xforms: Vec<PreparedXForm>,
     pub finals: Vec<PreparedXForm>,
     pub colormap: Vec<[f64; 3]>,
+    /// Raw gradient colors (0..255), for variations that read the palette.
+    pub palette: Vec<[u8; 3]>,
     pub smooth_gradient: bool,
 }
 
@@ -227,6 +229,7 @@ fn prepare_layer(layer: &Layer, missing: &mut Vec<String>) -> PreparedLayer {
         xforms,
         finals,
         colormap,
+        palette: layer.gradient.colors.clone(),
         smooth_gradient: layer.smooth_gradient,
     }
 }

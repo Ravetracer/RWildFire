@@ -26,6 +26,7 @@ pub struct JwfApp {
     inspector: InspectorState,
     explorer: Explorer,
     explorer_open: bool,
+    timeline: crate::timeline::Timeline,
     export: ExportDialog,
     generator: Generator,
     rng: Rng,
@@ -47,6 +48,7 @@ impl JwfApp {
             inspector: InspectorState::default(),
             explorer: Explorer::default(),
             explorer_open: false,
+            timeline: Default::default(),
             export: ExportDialog::default(),
             generator: Generator::Classic,
             rng,
@@ -126,6 +128,7 @@ impl JwfApp {
                 self.doc.replace(f);
                 self.doc.path = None;
             }
+            Action::ToggleTimeline => self.timeline.open = !self.timeline.open,
             Action::ToggleExplorer => {
                 self.explorer_open = !self.explorer_open;
                 if self.explorer_open {
@@ -158,7 +161,11 @@ impl JwfApp {
             } else if i.consume_shortcut(&KeyboardShortcut::new(c, Key::E)) {
                 act = Some(Action::Export);
             } else if !typing && i.consume_key(Modifiers::NONE, Key::Space) {
-                act = Some(Action::Randomize);
+                if self.timeline.open {
+                    self.timeline.playing = !self.timeline.playing;
+                } else {
+                    act = Some(Action::Randomize);
+                }
             }
         });
         if !typing {
@@ -199,11 +206,18 @@ impl eframe::App for JwfApp {
         }
 
         let mut action = self.shortcuts(&ctx);
+        self.timeline.update(&ctx, &mut self.doc);
 
         // ---- top bar ----
         egui::Panel::top("topbar").exact_size(46.0).frame(egui::Frame::new().fill(theme::PANEL).inner_margin(egui::Margin::symmetric(12, 6))).show(ui, |ui| {
             let title = self.doc.title();
-            let info = TopBarInfo { title: &title, can_undo: self.doc.can_undo(), can_redo: self.doc.can_redo(), explorer_open: self.explorer_open };
+            let info = TopBarInfo {
+                title: &title,
+                can_undo: self.doc.can_undo(),
+                can_redo: self.doc.can_redo(),
+                explorer_open: self.explorer_open,
+                timeline_open: self.timeline.open,
+            };
             if let Some(a) = topbar::show(ui, &info, &mut self.generator) {
                 action = Some(a);
             }
@@ -215,6 +229,13 @@ impl eframe::App for JwfApp {
                 if let Some(f) = self.explorer.show(ui, &self.doc.flame, &self.doc.library) {
                     self.doc.replace(f);
                 }
+            });
+        }
+
+        // ---- timeline ----
+        if self.timeline.open {
+            egui::Panel::bottom("timeline").resizable(false).exact_size(crate::timeline::Timeline::panel_height(&self.doc.flame)).frame(egui::Frame::new().fill(theme::PANEL).inner_margin(egui::Margin::symmetric(12, 8))).show(ui, |ui| {
+                self.timeline.show(ui, &mut self.doc);
             });
         }
 
@@ -236,6 +257,10 @@ impl eframe::App for JwfApp {
         });
 
         self.export.show(&ctx, &self.doc.flame, self.preview.gpu_context());
+        let current = self.doc.layer().gradient.clone();
+        if let Some(g) = self.inspector.library.show_window(&ctx, &current) {
+            self.doc.layer_mut().gradient = g;
+        }
 
         if let Some(a) = action {
             self.run(a);
@@ -257,6 +282,7 @@ impl eframe::App for JwfApp {
 
         // History + window title
         let pointer_down = ctx.input(|i| i.pointer.any_down());
+        self.timeline.auto_key(&mut self.doc, pointer_down);
         self.doc.commit_if_settled(pointer_down);
         let title = format!("{} — JWildfire", self.doc.title());
         if title != self.last_title {

@@ -24,6 +24,7 @@ pub struct Preview {
     cpu_texture: Option<egui::TextureHandle>,
     cpu_last_upload: Instant,
     cpu_uploaded_samples: u64,
+    cpu_final_uploaded: bool,
     last_frame: Instant,
     size: (u32, u32),
     samples_per_sec: f64,
@@ -59,6 +60,7 @@ impl Preview {
             cpu_texture: None,
             cpu_last_upload: Instant::now(),
             cpu_uploaded_samples: 0,
+            cpu_final_uploaded: false,
             last_frame: Instant::now(),
             size: (0, 0),
             samples_per_sec: 0.0,
@@ -195,19 +197,25 @@ impl Preview {
                 RenderOptions { width: size.0, height: size.1, threads, max_density: Some(self.target_quality), seed: 7 },
             ));
             self.cpu_uploaded_samples = u64::MAX;
+            self.cpu_final_uploaded = false;
             self.cpu_last_upload = Instant::now() - Duration::from_secs(1);
         } else if let Some(r) = &mut self.cpu
             && r.flame() != flame
         {
             r.update_tone(flame);
             self.cpu_uploaded_samples = u64::MAX;
+            self.cpu_final_uploaded = false;
         }
         let samples = self.cpu.as_ref()?.samples();
         self.track_rate(samples);
         let r = self.cpu.as_ref()?;
         let interval = if samples < 2_000_000 { 60 } else { 250 };
-        if samples != self.cpu_uploaded_samples && self.cpu_last_upload.elapsed() >= Duration::from_millis(interval) {
-            let img = r.image(false);
+        let finished = r.is_finished();
+        let needs_final = finished && !self.cpu_final_uploaded;
+        if (samples != self.cpu_uploaded_samples || needs_final) && self.cpu_last_upload.elapsed() >= Duration::from_millis(interval) {
+            // Density estimation is costly on the CPU: only for the converged image.
+            let img = if finished { r.image(false) } else { r.image_fast(false) };
+            self.cpu_final_uploaded = finished;
             let color = egui::ColorImage::from_rgba_unmultiplied([size.0 as usize, size.1 as usize], &img);
             match &mut self.cpu_texture {
                 Some(t) => t.set(color, egui::TextureOptions::LINEAR),
@@ -216,7 +224,7 @@ impl Preview {
             self.cpu_uploaded_samples = samples;
             self.cpu_last_upload = Instant::now();
         }
-        if !r.is_finished() || samples != self.cpu_uploaded_samples {
+        if !finished || samples != self.cpu_uploaded_samples || !self.cpu_final_uploaded {
             ctx.request_repaint_after(Duration::from_millis(30));
         }
         let t = self.cpu_texture.as_ref()?;

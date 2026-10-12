@@ -1,23 +1,7 @@
-//! Validates the WGSL of every variation and of full generated programs with naga.
+//! Validates full generated programs with naga (variation snippets are validated in jwf-core).
 
 use jwf_core::render::PreparedFlame;
-use jwf_core::variations;
-use jwf_gpu::codegen::{Program, validate_wgsl, variation_test_shader};
-
-#[test]
-fn every_variation_snippet_is_valid_wgsl() {
-    let mut failures = Vec::new();
-    for def in variations::all() {
-        if !def.supports_gpu() {
-            continue;
-        }
-        let src = variation_test_shader(def);
-        if let Err(e) = validate_wgsl(&src) {
-            failures.push(format!("--- {} ---\n{}", def.name, e));
-        }
-    }
-    assert!(failures.is_empty(), "invalid WGSL snippets:\n{}", failures.join("\n"));
-}
+use jwf_gpu::codegen::{Program, validate_wgsl};
 
 #[test]
 fn sample_flames_generate_valid_programs() {

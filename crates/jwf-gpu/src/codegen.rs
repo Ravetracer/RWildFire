@@ -10,6 +10,7 @@ use std::fmt::Write as _;
 use jwf_core::model::{ColorType, DrawMode, Flame, PostSymmetryType};
 use jwf_core::render::prepared::{AffineMode, NEXT_XFORM_TABLE_SIZE, PreparedFlame, PreparedXForm, StepMode, VarStep};
 use jwf_core::variations::VarDef;
+use jwf_core::variations::wgsl::{prelude, var_fn_name, variation_function};
 
 /// Offsets inside an xform parameter block.
 mod xo {
@@ -36,35 +37,6 @@ mod lo {
     pub const SIZE: usize = 2;
 }
 
-/// Shared WGSL prelude: types, RNG and math helpers available to variation snippets.
-pub const PRELUDE: &str = r#"
-const PI: f32 = 3.14159265358979;
-const TWO_PI: f32 = 6.28318530717959;
-const HALF_PI: f32 = 1.5707963267949;
-const EPS: f32 = 1.0e-20;
-const EPSILON: f32 = 1.0e-8;
-
-struct Pt { x: f32, y: f32, z: f32, color: f32, r: f32, g: f32, b: f32 }
-struct PtPair { a: Pt, v: Pt }
-
-var<private> rng_state: u32;
-
-fn rnd_u32() -> u32 {
-    rng_state = rng_state * 747796405u + 2891336453u;
-    let w = ((rng_state >> ((rng_state >> 28u) + 4u)) ^ rng_state) * 277803737u;
-    return (w >> 22u) ^ w;
-}
-fn rnd() -> f32 { return f32(rnd_u32() >> 8u) * (1.0 / 16777216.0); }
-
-fn sqr(x: f32) -> f32 { return x * x; }
-fn sumsq(p: Pt) -> f32 { return p.x * p.x + p.y * p.y; }
-fn rad(p: Pt) -> f32 { return sqrt(p.x * p.x + p.y * p.y) + EPS; }
-fn atan_xy(p: Pt) -> f32 { return atan2(p.x, p.y); }
-fn atan_yx(p: Pt) -> f32 { return atan2(p.y, p.x); }
-fn log10(x: f32) -> f32 { return log(x) * 0.434294481903252; }
-fn fmod(a: f32, b: f32) -> f32 { return a - b * trunc(a / b); }
-fn sgn(x: f32) -> f32 { return sign(x); }
-"#;
 
 #[derive(Clone, Debug)]
 pub struct LayerLayout {
@@ -85,6 +57,93 @@ pub struct Program {
     pub layer_count: usize,
     /// Variation names without GPU implementation (ignored on the GPU).
     pub unsupported: Vec<String>,
+    /// Start of the DOF parameter block in `prm` (if DOF is active).
+    pub dof_base: Option<usize>,
+}
+
+/// Offsets inside the DOF parameter block.
+mod dofo {
+    pub const LEGACY: usize = 0;
+    pub const CAM_DOF_10: usize = 1;
+    pub const SCALE: usize = 2;
+    pub const FADE: usize = 3;
+    pub const ROT_ON: usize = 4;
+    pub const SIN: usize = 5;
+    pub const COS: usize = 6;
+    pub const CAM_Z: usize = 7;
+    pub const FOCUS: usize = 8;
+    pub const AREA: usize = 11;
+    pub const FADE_DIST: usize = 12;
+    pub const AREA_MINUS_FADE: usize = 13;
+    pub const EXPONENT: usize = 14;
+    pub const WIDTH: usize = 15;
+    pub const VAR_DATA: usize = 16;
+}
+
+/// WGSL for `dof_distance` / `dof_apply` (mirrors `jwf_core::render::dof`).
+fn dof_wgsl(dof: &jwf_core::render::dof::Dof, base: usize) -> String {
+    use jwf_core::render::dof::ShapeMode;
+    let b = format!("{base}u");
+    let p = |o: usize| format!("prm[{b} + {o}u]");
+    let mut w = String::new();
+    let _ = write!(
+        w,
+        "fn dof_fade() -> f32 {{\n  let f = {fade};\n  if (f <= EPSILON) {{ return 1.0; }}\n  if (f >= 1.0 - EPSILON) {{ return rnd(); }}\n  if (rnd() <= f) {{ return rnd(); }}\n  return 1.0;\n}}\n\
+fn dof_distance(c: vec3<f32>) -> f32 {{\n  if ({legacy} > 0.5) {{ let zd = {camz} - c.z; return select(-1.0, zd, zd > 0.0); }}\n  let d = c - vec3<f32>({fx}, {fy}, {fz});\n  let dist = pow(dot(d, d), 1.0 / {exp});\n  if (dist > {area}) {{ return dist; }}\n  if (dist > {amf}) {{ let t = clamp((dist - {amf}) / {fd}, 0.0, 1.0); return t * t * t * (t * (t * 6.0 - 15.0) + 10.0) * dist; }}\n  return -1.0;\n}}\n\
+fn dof_rotate(o: vec2<f32>, d: vec2<f32>) -> vec2<f32> {{\n  if ({rot} < 0.5) {{ return d; }}\n  let dx = d.x - o.x; let dy = d.y - o.y;\n  return vec2<f32>(o.x + dx * {cos} - dy * {sin}, o.y + dx * {sin} + dy * {cos});\n}}\n",
+        fade = p(dofo::FADE),
+        legacy = p(dofo::LEGACY),
+        camz = p(dofo::CAM_Z),
+        fx = p(dofo::FOCUS),
+        fy = p(dofo::FOCUS + 1),
+        fz = p(dofo::FOCUS + 2),
+        exp = p(dofo::EXPONENT),
+        area = p(dofo::AREA),
+        amf = p(dofo::AREA_MINUS_FADE),
+        fd = p(dofo::FADE_DIST),
+        rot = p(dofo::ROT_ON),
+        sin = p(dofo::SIN),
+        cos = p(dofo::COS),
+    );
+    let k = p(dofo::CAM_DOF_10);
+    let sc = p(dofo::SCALE);
+    let var = dof.var.as_ref().filter(|(d, _)| d.supports_gpu());
+    let body = match (dof.mode, var) {
+        (Some(mode), Some((def, _))) => {
+            let f = var_fn_name(def);
+            let vb = format!("{b} + {}u", dofo::VAR_DATA);
+            let abs_dr = if def.name == "xheart_blur_wf" { "abs" } else { "" };
+            match mode {
+                ShapeMode::Offset | ShapeMode::OffsetNoRotate | ShapeMode::Rect => {
+                    let mut s = format!(
+                        "  let dr = {abs_dr}({k} * zdist * {sc} * dof_fade());\n  let src = Pt(x, y, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);\n  let r = {f}(src, src, {vb}, dr);\n  var d = vec2<f32>(r.v.x, r.v.y);\n"
+                    );
+                    if mode == ShapeMode::Rect {
+                        let _ = writeln!(s, "  d.x = r.a.x + (d.x - r.a.x) * {};", p(dofo::WIDTH));
+                    }
+                    if mode != ShapeMode::OffsetNoRotate {
+                        s.push_str("  d = dof_rotate(vec2<f32>(r.a.x, r.a.y), d);\n");
+                    }
+                    s.push_str("  return d;\n");
+                    s
+                }
+                ShapeMode::RandomSource { scale_by_fade, dr_factor, refade } => {
+                    format!(
+                        "  let fade = dof_fade();\n  let drf = {};\n  let dr = abs({k} * zdist * {sc} * drf) * {dr_factor:.6};\n  let fs = {};\n  let s = Pt((1.0 - 2.0 * rnd()) * fs, (1.0 - 2.0 * rnd()) * fs, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);\n  let r = {f}(s, Pt(x, y, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0), {vb}, dr);\n  return dof_rotate(vec2<f32>(x, y), vec2<f32>(r.v.x, r.v.y));\n",
+                        if refade { "dof_fade()" } else { "fade" },
+                        if scale_by_fade { "fade" } else { "1.0" },
+                    )
+                }
+                ShapeMode::Taurus => format!(
+                    "  let fade = dof_fade();\n  let dr = abs({k} * zdist * {sc} * fade) * 0.25;\n  let s = Pt((TWO_PI - 4.0 * rnd() * PI) * fade, (TWO_PI - 4.0 * rnd() * PI) * fade, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);\n  let r = {f}(s, Pt(x, y, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0), {vb}, dr);\n  return dof_rotate(vec2<f32>(x, y), vec2<f32>(r.v.x, r.v.y));\n"
+                ),
+            }
+        }
+        // Bubble (also the fallback for shapes without GPU support)
+        _ => format!("  let dr = dof_fade() * {k} * zdist * {sc};\n  let a = TWO_PI * rnd();\n  return vec2<f32>(x + dr * cos(a), y + dr * sin(a));\n"),
+    };
+    let _ = write!(w, "fn dof_apply(x: f32, y: f32, zdist: f32) -> vec2<f32> {{\n{body}}}\n");
+    w
 }
 
 fn mode_tag(m: AffineMode) -> &'static str {
@@ -122,45 +181,6 @@ fn color_tag(c: ColorType) -> &'static str {
 
 fn steps(xf: &PreparedXForm) -> impl Iterator<Item = &VarStep> {
     xf.pre.iter().chain(&xf.normal).chain(&xf.post_vars)
-}
-
-/// Replaces `D(k)` with `prm[base + k]` in a snippet.
-fn expand_snippet(src: &str) -> String {
-    let mut out = String::with_capacity(src.len() + 64);
-    let b = src.as_bytes();
-    let mut i = 0;
-    while i < b.len() {
-        let is_ident_before = i > 0 && (b[i - 1].is_ascii_alphanumeric() || b[i - 1] == b'_');
-        if !is_ident_before && b[i] == b'D' && i + 1 < b.len() && b[i + 1] == b'(' {
-            if let Some(end) = src[i + 2..].find(')') {
-                let inner = src[i + 2..i + 2 + end].trim();
-                if !inner.is_empty() && inner.bytes().all(|c| c.is_ascii_digit()) {
-                    let _ = write!(out, "prm[base + {inner}u]");
-                    i += 2 + end + 1;
-                    continue;
-                }
-            }
-        }
-        out.push(b[i] as char);
-        i += 1;
-    }
-    out
-}
-
-/// WGSL function name for a variation.
-fn var_fn_name(def: &VarDef) -> String {
-    let clean: String = def.name.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '_' }).collect();
-    format!("var_{clean}")
-}
-
-/// Emits a variation as a WGSL function `fn var_x(a_in, v_in, base, AMOUNT) -> PtPair`.
-pub fn variation_function(def: &VarDef, preserve_z: bool) -> String {
-    let body = expand_snippet(def.wgsl).replace("PRESERVE_Z", if preserve_z { "true" } else { "false" });
-    format!(
-        "fn {}(a_in: Pt, v_in: Pt, base: u32, AMOUNT: f32) -> PtPair {{\n  var a = a_in;\n  var v = v_in;\n  {{\n{}\n  }}\n  return PtPair(a, v);\n}}\n",
-        var_fn_name(def),
-        body
-    )
 }
 
 fn emit_affine(out: &mut String, mode: AffineMode, b: &str, xy: usize, yz: usize, zx: usize, dst: &str, src: &str) {
@@ -211,14 +231,14 @@ fn emit_xform(out: &mut String, fname: &str, xf: &PreparedXForm, base: usize, la
     let b = format!("{base}u");
     let _ = writeln!(out, "fn {fname}(src: Pt) -> Pt {{");
     let _ = writeln!(out, "  let B = {b};");
-    out.push_str("  var a = Pt(0.0, 0.0, 0.0, 0.0, src.r, src.g, src.b);\n");
+    out.push_str("  var a = Pt(0.0, 0.0, 0.0, 0.0, src.r, src.g, src.b, 0.0);\n");
     if xf.color_type == ColorType::Cyclic {
         let _ = writeln!(out, "  var c = fmod(src.color + prm[B + {}u], 1.0); if (c < 0.0) {{ c += 1.0; }} a.color = c;", xo::COLOR_SYM);
     } else {
         let _ = writeln!(out, "  a.color = src.color * prm[B + {}u] + prm[B + {}u];", xo::C1, xo::C2);
     }
     emit_affine(out, xf.affine_mode, "B", xo::COEFS, xo::YZ, xo::ZX, "a", "src");
-    out.push_str("  var v = Pt(0.0, 0.0, 0.0, a.color, a.r, a.g, a.b);\n");
+    out.push_str("  var v = Pt(0.0, 0.0, 0.0, a.color, a.r, a.g, a.b, a.rgbc);\n");
     let mut off = xo::VARS;
     let mut emit_steps = |out: &mut String, list: &[VarStep]| {
         for s in list {
@@ -240,11 +260,12 @@ fn emit_xform(out: &mut String, fname: &str, xf: &PreparedXForm, base: usize, la
         }
     };
     emit_steps(out, &xf.pre);
-    out.push_str("  v.color = a.color; v.r = a.r; v.g = a.g; v.b = a.b;\n");
+    out.push_str("  v.color = a.color; v.r = a.r; v.g = a.g; v.b = a.b; v.rgbc = a.rgbc;\n");
     emit_steps(out, &xf.normal);
     emit_steps(out, &xf.post_vars);
     out.push_str("  var d = v;\n");
     emit_affine(out, xf.post_mode, "B", xo::POST, xo::YZ_POST, xo::ZX_POST, "d", "v");
+    out.push_str("  if (d.rgbc == 0.0) {\n");
     match xf.color_type {
         ColorType::Diffusion | ColorType::Cyclic => {
             if smooth {
@@ -279,6 +300,7 @@ fn emit_xform(out: &mut String, fname: &str, xf: &PreparedXForm, base: usize, la
         }
         ColorType::None | ColorType::Unset => {}
     }
+    out.push_str("  }\n");
     let _ = layer;
     out.push_str("  return d;\n}\n");
 }
@@ -339,7 +361,7 @@ impl Program {
 
         // ---- WGSL ----
         let mut w = String::with_capacity(32 * 1024);
-        w.push_str(PRELUDE);
+        w.push_str(&prelude());
         w.push_str(ITER_BINDINGS);
         for def in used_vars.values() {
             w.push_str(&variation_function(def, prepared.preserve_z));
@@ -396,7 +418,28 @@ impl Program {
         }
 
         // Plot with post symmetry
-        w.push_str(PROJECT_FN);
+        // Depth of field
+        let dof = jwf_core::render::dof::Dof::new(flame);
+        let mut dof_base = None;
+        if let Some(d) = &dof {
+            let base = param_len;
+            let data_len = d.var.as_ref().map(|v| v.1.len()).unwrap_or(0);
+            param_len += dofo::VAR_DATA + data_len;
+            dof_base = Some(base);
+            if let Some((def, _)) = d.var.as_ref().filter(|(d, _)| d.supports_gpu())
+                && !used_vars.contains_key(def.name)
+            {
+                w.push_str(&variation_function(def, prepared.preserve_z));
+            }
+            let _ = write!(sig, "dof{}{:?}{}|", d.legacy, d.mode, d.var.as_ref().map(|v| v.0.name).unwrap_or("-"));
+            w.push_str(&dof_wgsl(d, base));
+            w.push_str(&PROJECT_FN.replace(
+                "        x = cx / zr;\n        y = cy / zr;",
+                "        let dd = dof_distance(vec3<f32>(cx, cy, cz));\n        if (dd >= 0.0) { let bp = dof_apply(cx, cy, dd); x = bp.x / zr; y = bp.y / zr; } else { x = cx / zr; y = cy / zr; }",
+            ));
+        } else {
+            w.push_str(PROJECT_FN);
+        }
         match flame.post_symmetry.kind {
             PostSymmetryType::None => w.push_str("fn plot_sym(q: Pt, col: vec3<f32>) { plot(q.x, q.y, q.z, col); }\n"),
             PostSymmetryType::Point => w.push_str(PLOT_POINT_SYM),
@@ -410,23 +453,51 @@ impl Program {
             let lay = &layers[li];
             let _ = writeln!(
                 w,
-                "    case {li}u: {{\n      let density = prm[{h}u + {d}u];\n      let weight = prm[{h}u + {wt}u];\n      for (var i = 0u; i < U.iters; i++) {{\n        if (density < 1.0 && rnd() > density * density) {{ continue; }}\n        if (!has_next_{li}(xf)) {{ break; }}\n        xf = nxt[{nb}u + xf * {ts}u + (rnd_u32() & {mask}u)];\n        p = apply_xf_{li}(xf, p);\n        if (bad(p)) {{ p = fresh_point(); skip = FUSE_ITERS; continue; }}\n        if (skip > 0u) {{ skip -= 1u; continue; }}\n        if (!visible_{li}(xf)) {{ continue; }}\n        let q = finals_{li}(p);\n        plot_sym(q, vec3<f32>(q.r, q.g, q.b) * weight);\n      }}\n    }}",
+                "    case {li}u: {{\n      cmap_base = {cb}u;\n      let density = prm[{h}u + {d}u];\n      let weight = prm[{h}u + {wt}u];\n      for (var i = 0u; i < U.iters; i++) {{\n        if (density < 1.0 && rnd() > density * density) {{ continue; }}\n        if (!has_next_{li}(xf)) {{ break; }}\n        xf = nxt[{nb}u + xf * {ts}u + (rnd_u32() & {mask}u)];\n        p = apply_xf_{li}(xf, p);\n        if (bad(p)) {{ p = fresh_point(); skip = FUSE_ITERS; continue; }}\n        if (skip > 0u) {{ skip -= 1u; continue; }}\n        if (!visible_{li}(xf)) {{ continue; }}\n        let q = finals_{li}(p);\n        plot_sym(q, vec3<f32>(q.r, q.g, q.b) * weight);\n      }}\n    }}",
                 h = lay.header,
                 d = lo::DENSITY,
                 wt = lo::WEIGHT,
                 nb = lay.next_base,
                 ts = NEXT_XFORM_TABLE_SIZE,
                 mask = NEXT_XFORM_TABLE_SIZE - 1,
+                cb = lay.cmap_base,
             );
         }
         w.push_str(ITER_MAIN_TAIL);
 
-        Self { signature: sig, wgsl: w, layer_count: layers.len(), layers, param_len, next_len, unsupported }
+        Self { signature: sig, wgsl: w, layer_count: layers.len(), layers, param_len, next_len, unsupported, dof_base }
     }
 
     /// Packs all numeric values into the `prm` buffer layout of this program.
-    pub fn pack_params(&self, prepared: &PreparedFlame) -> Vec<f32> {
+    pub fn pack_params(&self, flame: &Flame, prepared: &PreparedFlame) -> Vec<f32> {
         let mut p = vec![0.0f32; self.param_len.max(1)];
+        if let (Some(base), Some(d)) = (self.dof_base, jwf_core::render::dof::Dof::new(flame)) {
+            let mut put = |o: usize, v: f64| p[base + o] = v as f32;
+            put(dofo::LEGACY, d.legacy as u8 as f64);
+            put(dofo::CAM_DOF_10, d.cam_dof_10);
+            put(dofo::SCALE, d.scale);
+            put(dofo::FADE, d.fade);
+            put(dofo::ROT_ON, d.rotate.is_some() as u8 as f64);
+            let (s, c) = d.rotate.unwrap_or((0.0, 1.0));
+            put(dofo::SIN, s);
+            put(dofo::COS, c);
+            put(dofo::CAM_Z, d.cam_z);
+            for i in 0..3 {
+                put(dofo::FOCUS + i, d.focus[i]);
+            }
+            put(dofo::AREA, d.area);
+            put(dofo::FADE_DIST, d.fade_dist);
+            put(dofo::AREA_MINUS_FADE, d.area_minus_fade);
+            put(dofo::EXPONENT, d.exponent);
+            put(dofo::WIDTH, d.width);
+            if let Some((_, data)) = &d.var {
+                for (i, v) in data.iter().enumerate() {
+                    if base + dofo::VAR_DATA + i < p.len() {
+                        p[base + dofo::VAR_DATA + i] = *v as f32;
+                    }
+                }
+            }
+        }
         for (li, layer) in prepared.layers.iter().enumerate() {
             let lay = &self.layers[li];
             p[lay.header + lo::WEIGHT] = layer.weight as f32;
@@ -537,7 +608,6 @@ struct State { x: f32, y: f32, z: f32, color: f32, r: f32, g: f32, b: f32, xf: u
 @group(0) @binding(0) var<uniform> U: IterUniforms;
 @group(0) @binding(1) var<storage, read> prm: array<f32>;
 @group(0) @binding(2) var<storage, read> nxt: array<u32>;
-@group(0) @binding(3) var<storage, read> cmap: array<vec4<f32>>;
 @group(0) @binding(4) var<storage, read_write> states: array<State>;
 @group(0) @binding(5) var<storage, read_write> hist: array<atomic<i32>>;
 
@@ -549,7 +619,7 @@ fn bad(p: Pt) -> bool {
 }
 
 fn fresh_point() -> Pt {
-    return Pt(2.0 * rnd() - 1.0, 2.0 * rnd() - 1.0, 0.0, rnd(), 0.0, 0.0, 0.0);
+    return Pt(2.0 * rnd() - 1.0, 2.0 * rnd() - 1.0, 0.0, rnd(), 0.0, 0.0, 0.0, 0.0);
 }
 "#;
 
@@ -640,7 +710,7 @@ fn iterate(@builtin(global_invocation_id) gid: vec3<u32>) {
     if (tid >= U.thread_count) { return; }
     var s = states[tid];
     rng_state = s.rng;
-    var p = Pt(s.x, s.y, s.z, s.color, s.r, s.g, s.b);
+    var p = Pt(s.x, s.y, s.z, s.color, s.r, s.g, s.b, 0.0);
     var xf = s.xf;
     var skip = s.skip;
     let layer = tid % max(U.layer_count, 1u);
@@ -664,16 +734,3 @@ pub fn validate_wgsl(src: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// A tiny shader exercising one variation, for validating snippets in isolation.
-pub fn variation_test_shader(def: &VarDef) -> String {
-    let mut w = String::new();
-    w.push_str(PRELUDE);
-    w.push_str("@group(0) @binding(0) var<storage, read_write> prm: array<f32>;\n");
-    w.push_str(&variation_function(def, true));
-    let _ = write!(
-        w,
-        "@compute @workgroup_size(1)\nfn main() {{\n  rng_state = 1u;\n  let a = Pt(prm[0], prm[1], prm[2], 0.5, 0.0, 0.0, 0.0);\n  let r = {}(a, Pt(0.0, 0.0, 0.0, 0.5, 0.0, 0.0, 0.0), 4u, prm[3]);\n  prm[0] = r.v.x + r.v.y + r.v.z + r.a.x;\n}}\n",
-        var_fn_name(def)
-    );
-    w
-}

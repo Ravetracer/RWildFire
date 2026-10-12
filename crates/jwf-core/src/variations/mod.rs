@@ -16,6 +16,14 @@
 use crate::model::Affine;
 use crate::rng::Rng;
 
+pub mod wgsl;
+mod wgsl_libs;
+
+// Shared helpers for variation ports (see `PORTING.md`).
+pub mod complex;
+pub mod glsl;
+pub mod noise;
+
 mod basic;
 mod batch_a;
 mod batch_b;
@@ -79,11 +87,19 @@ pub struct Ctx {
     pub rng: Rng,
     /// Flame flag `preserve_z`: 2D variations pass the z coordinate through when set.
     pub preserve_z: bool,
+    /// Gradient (0..255 RGB) of the layer currently being iterated.
+    pub palette: Vec<[u8; 3]>,
 }
 
 impl Ctx {
     pub fn new(seed: u64, preserve_z: bool) -> Self {
-        Self { rng: Rng::new(seed), preserve_z }
+        Self { rng: Rng::new(seed), preserve_z, palette: vec![[0, 0, 0]; 256] }
+    }
+    /// Gradient color `i` (clamped to 0..255) as 0..255 floats (JWildfire `RGBPalette.getColor`).
+    #[inline]
+    pub fn palette_rgb(&self, i: i32) -> [f64; 3] {
+        let c = self.palette[i.clamp(0, self.palette.len() as i32 - 1) as usize];
+        [c[0] as f64, c[1] as f64, c[2] as f64]
     }
     /// Uniform random number in [0, 1).
     #[inline]

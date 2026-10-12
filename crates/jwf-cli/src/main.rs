@@ -91,7 +91,77 @@ fn random_cmd() {
     }
 }
 
+/// `jwf-cli render-anim <file.flame> -o out.mp4|out_dir [-w W] [-h H] [-q Q] [--gpu] [--from F] [--to T]`
+fn render_anim_cmd() {
+    let args: Vec<String> = std::env::args().skip(2).collect();
+    let mut input = None;
+    let mut output = None;
+    let (mut w, mut h, mut q, mut gpu, mut from, mut to) = (None, None, None, false, None, None);
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        let mut val = || it.next().cloned().unwrap_or_else(|| usage());
+        match a.as_str() {
+            "-o" => output = Some(PathBuf::from(val())),
+            "-w" => w = val().parse::<u32>().ok(),
+            "-h" => h = val().parse::<u32>().ok(),
+            "-q" => q = val().parse::<f64>().ok(),
+            "--from" => from = val().parse::<u32>().ok(),
+            "--to" => to = val().parse::<u32>().ok(),
+            "--gpu" => gpu = true,
+            _ => input = Some(PathBuf::from(a)),
+        }
+    }
+    let (Some(input), Some(output)) = (input, output) else { usage() };
+    let flame = read_flames_from_file(&input).ok().and_then(|f| f.into_iter().next()).unwrap_or_else(|| {
+        eprintln!("could not read {}", input.display());
+        std::process::exit(1);
+    });
+    let w = w.unwrap_or(flame.width);
+    let h = h.unwrap_or_else(|| (w as f64 * flame.height as f64 / flame.width as f64).round() as u32);
+    let q = q.unwrap_or(flame.sample_density);
+    let from = from.unwrap_or(0);
+    let to = to.unwrap_or(flame.animation.frame_count.saturating_sub(1));
+    let format = jwf_core::video::VideoFormat::from_path(&output);
+    let mut sink = jwf_core::video::VideoSink::new(&output, format, w, h, flame.animation.fps).unwrap_or_else(|e| {
+        eprintln!("{e}");
+        std::process::exit(1);
+    });
+    let mut gpu_renderer = gpu.then(|| jwf_gpu::GpuRenderer::new(jwf_gpu::GpuContext::new_headless().expect("GPU")));
+    let t0 = Instant::now();
+    for frame in from..=to {
+        let img = match &mut gpu_renderer {
+            Some(r) => {
+                r.set_with_alpha(false);
+                r.render_frame(&flame, frame as f64, w, h, q).unwrap_or_else(|e| {
+                    eprintln!("{e}");
+                    std::process::exit(1);
+                })
+            }
+            None => {
+                let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+                CpuRender::start_frame(&flame, frame as f64, RenderOptions { width: w, height: h, threads, max_density: Some(q), seed: 42 + frame as u64 })
+                    .wait()
+                    .image(false)
+            }
+        };
+        sink.write_frame(frame - from, &img).expect("write frame");
+        eprintln!("frame {frame}/{to}");
+    }
+    sink.finish().expect("finish video");
+    eprintln!("rendered {} frames in {:.1}s -> {}", to - from + 1, t0.elapsed().as_secs_f64(), output.display());
+}
+
 fn main() {
+    if std::env::args().nth(1).as_deref() == Some("render-anim") {
+        render_anim_cmd();
+        return;
+    }
+    if std::env::args().nth(1).as_deref() == Some("variations") {
+        for d in jwf_core::variations::all() {
+            println!("{}\t{}\t{}", d.name, if d.supports_gpu() { "gpu" } else { "cpu" }, if d.is_3d { "3d" } else { "2d" });
+        }
+        return;
+    }
     if std::env::args().nth(1).as_deref() == Some("random") {
         random_cmd();
         return;

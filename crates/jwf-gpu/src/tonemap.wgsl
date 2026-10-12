@@ -29,7 +29,7 @@ struct ToneU {
     gamma: f32, gamma_threshold: f32, scl_gamma: f32, vib_int: f32,
     inv_vib_int: f32, alpha_scale: f32, mod_sat: f32, bg_kind: u32,
     bg_ul: vec4<f32>, bg_ur: vec4<f32>, bg_ll: vec4<f32>, bg_lr: vec4<f32>, bg_cc: vec4<f32>, bg_single: vec4<f32>,
-    smooth_offset: u32, _p1: u32, _p2: u32, _p3: u32,
+    smooth_offset: u32, mb_scl: f32, _p2: u32, _p3: u32,
 }
 
 @group(0) @binding(0) var<uniform> T: ToneU;
@@ -37,7 +37,8 @@ struct ToneU {
 @group(0) @binding(2) var<storage, read> filt: array<f32>;
 @group(0) @binding(3) var out_tex: texture_storage_2d<rgba8unorm, write>;
 
-fn log_scale(count: f32) -> f32 {
+fn log_scale(count_raw: f32) -> f32 {
+    let count = count_raw * T.mb_scl;
     return (T.k1 * log(1.0 + count * T.k2) * 0.434294481903252 + T.bg_glow / (count + 1.0)) / (T.white_level * count);
 }
 
@@ -192,4 +193,60 @@ fn tonemap(@builtin(global_invocation_id) gid: vec3<u32>) {
         rgb = vec3<f32>(round_color(hsl_to_rgb(hsl).x * 255.0), round_color(hsl_to_rgb(hsl).y * 255.0), round_color(hsl_to_rgb(hsl).z * 255.0));
     }
     textureStore(out_tex, vec2<i32>(px, py), vec4<f32>(rgb / 255.0, alpha_out / 255.0));
+}
+
+// ---- density estimation (port of DeCalculator) ----
+struct DeU { raster_w: u32, raster_h: u32, radius: i32, show_splitter: u32, curve: f32, splitter_pos: i32, _p0: u32, _p1: u32 }
+
+@group(0) @binding(0) var<uniform> DU: DeU;
+@group(0) @binding(1) var<storage, read> de_src: array<f32>;
+@group(0) @binding(2) var<storage, read_write> de_dst: array<f32>;
+
+fn de_erf(z: f32) -> f32 {
+    let t = 1.0 / (1.0 + 0.5 * abs(z));
+    let ans = 1.0 - t * exp(-z * z - 1.26551223 + t * (1.00002368 + t * (0.37409196 + t * (0.09678418 + t * (-0.18628806 + t * (0.27886807 + t * (-1.13520398 + t * (1.48851587 + t * (-0.82215223 + t * 0.17087277)))))))));
+    return select(-ans, ans, z >= 0.0);
+}
+
+@compute @workgroup_size(16, 16)
+fn density_estimate(@builtin(global_invocation_id) gid: vec3<u32>) {
+    if (gid.x >= DU.raster_w || gid.y >= DU.raster_h) { return; }
+    let x = i32(gid.x);
+    let y = i32(gid.y);
+    let w = i32(DU.raster_w);
+    let h = i32(DU.raster_h);
+    let ci = (gid.y * DU.raster_w + gid.x) * 4u;
+    let center_w = floor(de_src[ci] + 0.5);
+    let m1 = sqrt(8.0 * center_w) + 5.0;
+    let m2 = pow(center_w + 1.0, -0.25);
+    var sum = vec4<f32>(0.0);
+    var cnt = 0.0;
+    let r = DU.radius;
+    for (var dy = -r; dy <= r; dy++) {
+        let ly = y + dy;
+        if (ly < 0 || ly >= h) { continue; }
+        for (var dx = -r; dx <= r; dx++) {
+            let lx = x + dx;
+            if (lx < 0 || lx >= w) { continue; }
+            let li = (u32(ly) * DU.raster_w + u32(lx)) * 4u;
+            let la = floor(de_src[li] + 0.5);
+            let inv_dist = 1.0 / (f32(dx * dx + dy * dy) + 1.0);
+            let thresh = pow(DU.curve, sqrt(1.0 / inv_dist)) * m2;
+            if (abs(de_erf((la - center_w) / m1)) <= thresh) {
+                sum += vec4<f32>(la, de_src[li + 1u], de_src[li + 2u], de_src[li + 3u]) * inv_dist;
+                cnt += inv_dist;
+            }
+        }
+    }
+    if (DU.show_splitter != 0u && DU.splitter_pos >= x - 2 && DU.splitter_pos <= x + 2) {
+        let c = center_w + 10.0;
+        de_dst[ci] = c; de_dst[ci + 1u] = 180.0 * c; de_dst[ci + 2u] = 180.0 * c; de_dst[ci + 3u] = 0.0;
+    } else if (DU.show_splitter != 0u && DU.splitter_pos < x - 2) {
+        de_dst[ci] = center_w; de_dst[ci + 1u] = de_src[ci + 1u]; de_dst[ci + 2u] = de_src[ci + 2u]; de_dst[ci + 3u] = de_src[ci + 3u];
+    } else if (cnt > 1.0e-8) {
+        let m = sum / cnt;
+        de_dst[ci] = floor(m.x + 0.5); de_dst[ci + 1u] = m.y; de_dst[ci + 2u] = m.z; de_dst[ci + 3u] = m.w;
+    } else {
+        de_dst[ci] = 0.0; de_dst[ci + 1u] = 0.0; de_dst[ci + 2u] = 0.0; de_dst[ci + 3u] = 0.0;
+    }
 }
