@@ -222,6 +222,15 @@ impl CpuRender {
         self
     }
 
+    /// Replaces the flame used for tonemapping (only valid if [`super::same_iteration`] holds).
+    pub fn update_tone(&mut self, flame: &Flame) {
+        self.flame = flame.clone();
+    }
+
+    pub fn flame(&self) -> &Flame {
+        &self.flame
+    }
+
     /// Tonemaps the current state into an RGBA8 image.
     pub fn image(&self, with_alpha: bool) -> Vec<u8> {
         let v = &self.shared.view;

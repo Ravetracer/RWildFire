@@ -406,7 +406,7 @@ impl Program {
 
         // Main kernel
         w.push_str(ITER_MAIN_HEAD);
-        for (li, layer) in prepared.layers.iter().enumerate() {
+        for li in 0..prepared.layers.len() {
             let lay = &layers[li];
             let _ = writeln!(
                 w,
