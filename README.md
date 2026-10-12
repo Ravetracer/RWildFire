@@ -71,5 +71,6 @@ Each variation is a `VarDef` with a CPU function and a WGSL snippet that read th
 Done (milestone 1): core editor, file compatibility, CPU and GPU renderer, 140 variations, gradient editing, random generators, mutations, PNG export.
 
 Next:
-- remaining JWildfire variations (~880, in progress)
+- remaining JWildfire variations (~510; 13 batch files are prepared but empty, see `variations/batch_w*.rs` and the `wNN` features)
+- "prepost" (priority 2) variations need inverse-transform support
 - adaptive filter, solid rendering, post-blur, denoiser

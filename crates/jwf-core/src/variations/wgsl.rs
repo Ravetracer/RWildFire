@@ -18,7 +18,8 @@ const EPS: f32 = 1.0e-20;
 const EPSILON: f32 = 1.0e-8;
 
 // rgbc != 0 means the variation set a true color in r/g/b (0..255 scale, JWildfire `rgbColor`).
-struct Pt { x: f32, y: f32, z: f32, color: f32, r: f32, g: f32, b: f32, rgbc: f32 }
+// hide != 0 means the point is not plotted (JWildfire `doHide`); it propagates like in JWildfire.
+struct Pt { x: f32, y: f32, z: f32, color: f32, r: f32, g: f32, b: f32, rgbc: f32, hide: f32 }
 struct PtPair { a: Pt, v: Pt }
 
 var<private> rng_state: u32;
@@ -131,11 +132,11 @@ pub fn test_shader(defs: &[&VarDef]) -> String {
         w.push_str(&variation_function(d, true));
     }
     w.push_str("@compute @workgroup_size(1)\nfn main() {\n  rng_state = 1u;\n  cmap_base = 0u;\n");
-    w.push_str("  let a = Pt(prm[0], prm[1], prm[2], 0.5, 0.0, 0.0, 0.0, 0.0);\n  var acc = 0.0;\n");
+    w.push_str("  let a = Pt(prm[0], prm[1], prm[2], 0.5, 0.0, 0.0, 0.0, 0.0, 0.0);\n  var acc = 0.0;\n");
     for d in defs {
         let _ = writeln!(
             w,
-            "  {{ let r = {}(a, Pt(0.0, 0.0, 0.0, 0.5, 0.0, 0.0, 0.0, 0.0), 4u, prm[3]); acc += r.v.x + r.v.y + r.v.z + r.a.x + r.v.r; }}",
+            "  {{ let r = {}(a, Pt(0.0, 0.0, 0.0, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0), 4u, prm[3]); acc += r.v.x + r.v.y + r.v.z + r.a.x + r.v.r + r.v.hide; }}",
             var_fn_name(d)
         );
     }

@@ -29,6 +29,57 @@ mod batch_a;
 mod batch_b;
 mod batch_c;
 mod batch_d;
+// Batches of the full port; each is behind its own feature while being ported.
+#[cfg(feature = "w01")]
+mod batch_w01;
+#[cfg(feature = "w02")]
+mod batch_w02;
+#[cfg(feature = "w03")]
+mod batch_w03;
+#[cfg(feature = "w04")]
+mod batch_w04;
+#[cfg(feature = "w05")]
+mod batch_w05;
+#[cfg(feature = "w06")]
+mod batch_w06;
+#[cfg(feature = "w07")]
+mod batch_w07;
+#[cfg(feature = "w08")]
+mod batch_w08;
+#[cfg(feature = "w09")]
+mod batch_w09;
+#[cfg(feature = "w10")]
+mod batch_w10;
+#[cfg(feature = "w11")]
+mod batch_w11;
+#[cfg(feature = "w12")]
+mod batch_w12;
+#[cfg(feature = "w13")]
+mod batch_w13;
+#[cfg(feature = "w14")]
+mod batch_w14;
+#[cfg(feature = "w15")]
+mod batch_w15;
+#[cfg(feature = "w16")]
+mod batch_w16;
+#[cfg(feature = "w17")]
+mod batch_w17;
+#[cfg(feature = "w18")]
+mod batch_w18;
+#[cfg(feature = "w19")]
+mod batch_w19;
+#[cfg(feature = "w20")]
+mod batch_w20;
+#[cfg(feature = "w21")]
+mod batch_w21;
+#[cfg(feature = "w22")]
+mod batch_w22;
+#[cfg(feature = "w23")]
+mod batch_w23;
+#[cfg(feature = "w24")]
+mod batch_w24;
+#[cfg(feature = "w25")]
+mod batch_w25;
 
 /// Point flowing through the transform chain (`XYZPoint`).
 #[derive(Clone, Copy, Debug, Default)]
@@ -212,7 +263,59 @@ fn registry() -> &'static Registry {
     static REG: OnceLock<Registry> = OnceLock::new();
     REG.get_or_init(|| {
         let mut defs: Vec<&'static VarDef> = Vec::new();
-        for list in [basic::DEFS, batch_a::DEFS, batch_b::DEFS, batch_c::DEFS, batch_d::DEFS] {
+        #[allow(unused_mut)]
+        let mut lists: Vec<&'static [VarDef]> = vec![basic::DEFS, batch_a::DEFS, batch_b::DEFS, batch_c::DEFS, batch_d::DEFS];
+        #[cfg(feature = "w01")]
+        lists.push(batch_w01::DEFS);
+        #[cfg(feature = "w02")]
+        lists.push(batch_w02::DEFS);
+        #[cfg(feature = "w03")]
+        lists.push(batch_w03::DEFS);
+        #[cfg(feature = "w04")]
+        lists.push(batch_w04::DEFS);
+        #[cfg(feature = "w05")]
+        lists.push(batch_w05::DEFS);
+        #[cfg(feature = "w06")]
+        lists.push(batch_w06::DEFS);
+        #[cfg(feature = "w07")]
+        lists.push(batch_w07::DEFS);
+        #[cfg(feature = "w08")]
+        lists.push(batch_w08::DEFS);
+        #[cfg(feature = "w09")]
+        lists.push(batch_w09::DEFS);
+        #[cfg(feature = "w10")]
+        lists.push(batch_w10::DEFS);
+        #[cfg(feature = "w11")]
+        lists.push(batch_w11::DEFS);
+        #[cfg(feature = "w12")]
+        lists.push(batch_w12::DEFS);
+        #[cfg(feature = "w13")]
+        lists.push(batch_w13::DEFS);
+        #[cfg(feature = "w14")]
+        lists.push(batch_w14::DEFS);
+        #[cfg(feature = "w15")]
+        lists.push(batch_w15::DEFS);
+        #[cfg(feature = "w16")]
+        lists.push(batch_w16::DEFS);
+        #[cfg(feature = "w17")]
+        lists.push(batch_w17::DEFS);
+        #[cfg(feature = "w18")]
+        lists.push(batch_w18::DEFS);
+        #[cfg(feature = "w19")]
+        lists.push(batch_w19::DEFS);
+        #[cfg(feature = "w20")]
+        lists.push(batch_w20::DEFS);
+        #[cfg(feature = "w21")]
+        lists.push(batch_w21::DEFS);
+        #[cfg(feature = "w22")]
+        lists.push(batch_w22::DEFS);
+        #[cfg(feature = "w23")]
+        lists.push(batch_w23::DEFS);
+        #[cfg(feature = "w24")]
+        lists.push(batch_w24::DEFS);
+        #[cfg(feature = "w25")]
+        lists.push(batch_w25::DEFS);
+        for list in lists {
             defs.extend(list.iter());
         }
         defs.sort_by(|a, b| a.name.cmp(b.name));

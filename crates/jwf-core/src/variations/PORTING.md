@@ -40,6 +40,7 @@ overloading, so vector variants of non-builtins get a size suffix (`glsl_mod2`, 
 | `pXForm.getCoeff20()` etc.                    | in `prepare`: `coefs.c20` (`c00 c01 c10 c11 c20 c21`) | `D(k)` |
 | `pVarTP.color = ...`                          | `v.color = ...`                    | `v.color = ...;`                   |
 | true color: `pVarTP.rgbColor = true; pVarTP.redColor = r;` (0..255) | `v.rgb_color = true; v.red = r; v.green = g; v.blue = b;` | `v.rgbc = 1.0; v.r = r; v.g = g; v.b = b;` |
+| hide point: `pVarTP.doHide = true/false` | `v.do_hide = true/false` | `v.hide = 1.0` / `v.hide = 0.0` (supported on the GPU: hidden points are not plotted, the flag propagates like in Java) |
 | gradient color `layer.getPalette().getColor(i)` | `ctx.palette_rgb(i)` -> `[f64; 3]` (0..255) | `palette_rgb(i)` -> `vec3<f32>` |
 | `getPriority()` -1 / 1                        | `kind: VarKind::Pre` / `VarKind::Post` | same snippet rules             |
 

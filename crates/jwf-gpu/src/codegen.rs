@@ -116,7 +116,7 @@ fn dof_rotate(o: vec2<f32>, d: vec2<f32>) -> vec2<f32> {{\n  if ({rot} < 0.5) {{
             match mode {
                 ShapeMode::Offset | ShapeMode::OffsetNoRotate | ShapeMode::Rect => {
                     let mut s = format!(
-                        "  let dr = {abs_dr}({k} * zdist * {sc} * dof_fade());\n  let src = Pt(x, y, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);\n  let r = {f}(src, src, {vb}, dr);\n  var d = vec2<f32>(r.v.x, r.v.y);\n"
+                        "  let dr = {abs_dr}({k} * zdist * {sc} * dof_fade());\n  let src = Pt(x, y, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);\n  let r = {f}(src, src, {vb}, dr);\n  var d = vec2<f32>(r.v.x, r.v.y);\n"
                     );
                     if mode == ShapeMode::Rect {
                         let _ = writeln!(s, "  d.x = r.a.x + (d.x - r.a.x) * {};", p(dofo::WIDTH));
@@ -129,13 +129,13 @@ fn dof_rotate(o: vec2<f32>, d: vec2<f32>) -> vec2<f32> {{\n  if ({rot} < 0.5) {{
                 }
                 ShapeMode::RandomSource { scale_by_fade, dr_factor, refade } => {
                     format!(
-                        "  let fade = dof_fade();\n  let drf = {};\n  let dr = abs({k} * zdist * {sc} * drf) * {dr_factor:.6};\n  let fs = {};\n  let s = Pt((1.0 - 2.0 * rnd()) * fs, (1.0 - 2.0 * rnd()) * fs, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);\n  let r = {f}(s, Pt(x, y, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0), {vb}, dr);\n  return dof_rotate(vec2<f32>(x, y), vec2<f32>(r.v.x, r.v.y));\n",
+                        "  let fade = dof_fade();\n  let drf = {};\n  let dr = abs({k} * zdist * {sc} * drf) * {dr_factor:.6};\n  let fs = {};\n  let s = Pt((1.0 - 2.0 * rnd()) * fs, (1.0 - 2.0 * rnd()) * fs, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);\n  let r = {f}(s, Pt(x, y, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0), {vb}, dr);\n  return dof_rotate(vec2<f32>(x, y), vec2<f32>(r.v.x, r.v.y));\n",
                         if refade { "dof_fade()" } else { "fade" },
                         if scale_by_fade { "fade" } else { "1.0" },
                     )
                 }
                 ShapeMode::Taurus => format!(
-                    "  let fade = dof_fade();\n  let dr = abs({k} * zdist * {sc} * fade) * 0.25;\n  let s = Pt((TWO_PI - 4.0 * rnd() * PI) * fade, (TWO_PI - 4.0 * rnd() * PI) * fade, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);\n  let r = {f}(s, Pt(x, y, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0), {vb}, dr);\n  return dof_rotate(vec2<f32>(x, y), vec2<f32>(r.v.x, r.v.y));\n"
+                    "  let fade = dof_fade();\n  let dr = abs({k} * zdist * {sc} * fade) * 0.25;\n  let s = Pt((TWO_PI - 4.0 * rnd() * PI) * fade, (TWO_PI - 4.0 * rnd() * PI) * fade, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);\n  let r = {f}(s, Pt(x, y, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0), {vb}, dr);\n  return dof_rotate(vec2<f32>(x, y), vec2<f32>(r.v.x, r.v.y));\n"
                 ),
             }
         }
@@ -231,14 +231,14 @@ fn emit_xform(out: &mut String, fname: &str, xf: &PreparedXForm, base: usize, la
     let b = format!("{base}u");
     let _ = writeln!(out, "fn {fname}(src: Pt) -> Pt {{");
     let _ = writeln!(out, "  let B = {b};");
-    out.push_str("  var a = Pt(0.0, 0.0, 0.0, 0.0, src.r, src.g, src.b, 0.0);\n");
+    out.push_str("  var a = Pt(0.0, 0.0, 0.0, 0.0, src.r, src.g, src.b, 0.0, src.hide);\n");
     if xf.color_type == ColorType::Cyclic {
         let _ = writeln!(out, "  var c = fmod(src.color + prm[B + {}u], 1.0); if (c < 0.0) {{ c += 1.0; }} a.color = c;", xo::COLOR_SYM);
     } else {
         let _ = writeln!(out, "  a.color = src.color * prm[B + {}u] + prm[B + {}u];", xo::C1, xo::C2);
     }
     emit_affine(out, xf.affine_mode, "B", xo::COEFS, xo::YZ, xo::ZX, "a", "src");
-    out.push_str("  var v = Pt(0.0, 0.0, 0.0, a.color, a.r, a.g, a.b, a.rgbc);\n");
+    out.push_str("  var v = Pt(0.0, 0.0, 0.0, a.color, a.r, a.g, a.b, a.rgbc, a.hide);\n");
     let mut off = xo::VARS;
     let mut emit_steps = |out: &mut String, list: &[VarStep]| {
         for s in list {
@@ -260,7 +260,7 @@ fn emit_xform(out: &mut String, fname: &str, xf: &PreparedXForm, base: usize, la
         }
     };
     emit_steps(out, &xf.pre);
-    out.push_str("  v.color = a.color; v.r = a.r; v.g = a.g; v.b = a.b; v.rgbc = a.rgbc;\n");
+    out.push_str("  v.color = a.color; v.r = a.r; v.g = a.g; v.b = a.b; v.rgbc = a.rgbc; v.hide = a.hide;\n");
     emit_steps(out, &xf.normal);
     emit_steps(out, &xf.post_vars);
     out.push_str("  var d = v;\n");
@@ -453,7 +453,7 @@ impl Program {
             let lay = &layers[li];
             let _ = writeln!(
                 w,
-                "    case {li}u: {{\n      cmap_base = {cb}u;\n      let density = prm[{h}u + {d}u];\n      let weight = prm[{h}u + {wt}u];\n      for (var i = 0u; i < U.iters; i++) {{\n        if (density < 1.0 && rnd() > density * density) {{ continue; }}\n        if (!has_next_{li}(xf)) {{ break; }}\n        xf = nxt[{nb}u + xf * {ts}u + (rnd_u32() & {mask}u)];\n        p = apply_xf_{li}(xf, p);\n        if (bad(p)) {{ p = fresh_point(); skip = FUSE_ITERS; continue; }}\n        if (skip > 0u) {{ skip -= 1u; continue; }}\n        if (!visible_{li}(xf)) {{ continue; }}\n        let q = finals_{li}(p);\n        plot_sym(q, vec3<f32>(q.r, q.g, q.b) * weight);\n      }}\n    }}",
+                "    case {li}u: {{\n      cmap_base = {cb}u;\n      let density = prm[{h}u + {d}u];\n      let weight = prm[{h}u + {wt}u];\n      for (var i = 0u; i < U.iters; i++) {{\n        if (density < 1.0 && rnd() > density * density) {{ continue; }}\n        if (!has_next_{li}(xf)) {{ break; }}\n        xf = nxt[{nb}u + xf * {ts}u + (rnd_u32() & {mask}u)];\n        p = apply_xf_{li}(xf, p);\n        if (bad(p)) {{ p = fresh_point(); skip = FUSE_ITERS; continue; }}\n        if (skip > 0u) {{ skip -= 1u; continue; }}\n        if (!visible_{li}(xf)) {{ continue; }}\n        let q = finals_{li}(p);\n        if (q.hide != 0.0) {{ continue; }}\n        plot_sym(q, vec3<f32>(q.r, q.g, q.b) * weight);\n      }}\n    }}",
                 h = lay.header,
                 d = lo::DENSITY,
                 wt = lo::WEIGHT,
@@ -603,7 +603,7 @@ struct IterUniforms {
     sym_rot_sin: f32, sym_rot_cos: f32, sym_do_rot: u32, _pad0: u32,
 }
 
-struct State { x: f32, y: f32, z: f32, color: f32, r: f32, g: f32, b: f32, xf: u32, rng: u32, skip: u32, _p0: u32, _p1: u32 }
+struct State { x: f32, y: f32, z: f32, color: f32, r: f32, g: f32, b: f32, xf: u32, rng: u32, skip: u32, hide: f32, _p1: u32 }
 
 @group(0) @binding(0) var<uniform> U: IterUniforms;
 @group(0) @binding(1) var<storage, read> prm: array<f32>;
@@ -619,7 +619,7 @@ fn bad(p: Pt) -> bool {
 }
 
 fn fresh_point() -> Pt {
-    return Pt(2.0 * rnd() - 1.0, 2.0 * rnd() - 1.0, 0.0, rnd(), 0.0, 0.0, 0.0, 0.0);
+    return Pt(2.0 * rnd() - 1.0, 2.0 * rnd() - 1.0, 0.0, rnd(), 0.0, 0.0, 0.0, 0.0, 0.0);
 }
 "#;
 
@@ -710,7 +710,7 @@ fn iterate(@builtin(global_invocation_id) gid: vec3<u32>) {
     if (tid >= U.thread_count) { return; }
     var s = states[tid];
     rng_state = s.rng;
-    var p = Pt(s.x, s.y, s.z, s.color, s.r, s.g, s.b, 0.0);
+    var p = Pt(s.x, s.y, s.z, s.color, s.r, s.g, s.b, 0.0, s.hide);
     var xf = s.xf;
     var skip = s.skip;
     let layer = tid % max(U.layer_count, 1u);
@@ -721,7 +721,7 @@ const ITER_MAIN_TAIL: &str = r#"
     default: {}
     }
     s.x = p.x; s.y = p.y; s.z = p.z; s.color = p.color; s.r = p.r; s.g = p.g; s.b = p.b;
-    s.xf = xf; s.skip = skip; s.rng = rng_state;
+    s.xf = xf; s.skip = skip; s.rng = rng_state; s.hide = p.hide;
     states[tid] = s;
 }
 "#;

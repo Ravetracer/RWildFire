@@ -64,7 +64,7 @@ mod tests {
   acc += m3[1].y + glsl_app(v3, x, m3).z;
   acc += glsl_vec4_times_mat4(v4, mat4x4<f32>(v4, v4, v4, v4)).w;
   acc += glsl_dbl2int(v3).x + dc_greyscale(v3) + dc_find_key(v3).y;
-  var pt = Pt(x, y, z, 0.5, 0.0, 0.0, 0.0, 0.0);
+  var pt = Pt(x, y, z, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0);
   dc_output(&pt, x, v2, v3, n, y, z, n);
   acc += pt.x + pt.z + pt.r + pt.color;
   // complex.wgsl
