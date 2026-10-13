@@ -65,6 +65,9 @@ pub fn erf(z: f64) -> f64 {
     if z >= 0.0 { ans } else { -ans }
 }
 
+/// Size of the per-pixel deviation memo of [`apply`] (a power of two).
+const DE_MEMO: usize = 256;
+
 /// Applies density estimation to `raster` (`[count, r, g, b]` cells).
 pub fn apply<R: Raster>(raster: &R, p: &DeParams) -> FloatRaster {
     let (w, h) = (raster.width() as i32, raster.height() as i32);
@@ -98,11 +101,15 @@ pub fn apply<R: Raster>(raster: &R, p: &DeParams) -> FloatRaster {
     let mut data = vec![0.0f32; (w * h * 4) as usize];
     data.par_chunks_mut((w * 4) as usize).enumerate().for_each(|(y, row)| {
         let y = y as i32;
+        // memo entries: (count, deviation, pixel the entry belongs to)
+        let mut memo = vec![(0.0f64, 0.0f64, i32::MIN); DE_MEMO];
         for x in 0..w {
             let center = src[(y * w + x) as usize];
             let center_w = center[0];
             let m1 = (8.0 * center_w).sqrt() + 5.0;
             let m2 = (center_w + 1.0).powf(-0.25);
+            // The deviation only depends on the neighbour's (integer) count: memo of
+            // `|erf((count - center_w) / m1)|` for this pixel (direct mapped).
             let (mut sr, mut sg, mut sb, mut sa, mut cnt) = (0.0, 0.0, 0.0, 0.0, 0.0);
             for dy in -r..=r {
                 let ly = y + dy;
@@ -116,7 +123,14 @@ pub fn apply<R: Raster>(raster: &R, p: &DeParams) -> FloatRaster {
                     }
                     let i = ((dx + r) as usize) * n + (dy + r) as usize;
                     let c = src[(ly * w + lx) as usize];
-                    let deviation = erf((c[0] - center_w) / m1).abs();
+                    let slot = &mut memo[(c[0] as usize) & (DE_MEMO - 1)];
+                    let deviation = if slot.2 == x && slot.0 == c[0] {
+                        slot.1
+                    } else {
+                        let dev = erf((c[0] - center_w) / m1).abs();
+                        *slot = (c[0], dev, x);
+                        dev
+                    };
                     if deviation <= thresh[i] * m2 {
                         let id = inv_dist[i];
                         sr += c[1] * id;
