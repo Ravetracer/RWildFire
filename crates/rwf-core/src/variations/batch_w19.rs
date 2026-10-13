@@ -1220,9 +1220,10 @@ if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
         kind: VarKind::Pre,
         is_3d: false,
         apply: |d, ctx, a, _, _| {
-            // Stateless: the Java "first call" restart is dropped, only the random restart
-            // (probability p / 1000) remains.
-            if ctx.random() < d[2] / 1000.0 {
+            // JWildfire restarts on the first call of an instance (here: of a render thread) and
+            // then with probability p / 1000. The GPU only does the random restarts.
+            let started = ctx.orbits.insert(d.as_ptr() as usize, [1.0, 0.0]).is_some();
+            if !started || ctx.random() < d[2] / 1000.0 {
                 let n = d[0] as usize;
                 let i = ctx.random_int(n).min(n - 1);
                 let k = 4 + 3 * i;
