@@ -4193,4 +4193,133 @@ v.x += AMOUNT * nr * cos(theta);
 v.y += AMOUNT * nr * sin(theta);
 if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
     },
+    VarDef {
+        name: "log_apo",
+        params: &[ParamDef::new("base", 2.71828182845905)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            v.x += amount * (a.x * a.x + a.y * a.y).ln() * d[1];
+            v.y += amount * a.y.atan2(a.x);
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: Some(|p, _| vec![p[0], 0.5 / p[0].ln()]),
+        wgsl: "v.x += AMOUNT * log(a.x * a.x + a.y * a.y) * D(1);
+v.y += AMOUNT * atan2(a.y, a.x);
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "log_db",
+        params: &[ParamDef::new("base", 1.0), ParamDef::new("fix_period", 1.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        // d = [base, fix_period, denom (without amount), fixpe]
+        apply: |d, ctx, a, v, amount| {
+            let mut fix = 0.0;
+            for _ in 0..7 {
+                let adp = ctx.random_int(10) as i32 - 5;
+                if adp.abs() < 3 {
+                    fix += adp as f64;
+                }
+            }
+            v.x += d[2] * amount * a.sumsq().ln();
+            v.y += amount * (a.atan_yx() + fix * d[3]);
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: Some(|p, _| {
+            let denom = if p[0] > 1e-20 { 0.5 / (2.71828182845905 * p[0]).ln() } else { 0.5 };
+            let fixpe = if p[1] > 1e-20 { M_PI * p[1] } else { M_PI };
+            vec![p[0], p[1], denom, fixpe]
+        }),
+        wgsl: "var fix = 0.0;
+for (var i = 0; i < 7; i++) {
+  let adp = min(i32(rnd() * 10.0), 9) - 5;
+  if (abs(adp) < 3) { fix += f32(adp); }
+}
+v.x += D(2) * AMOUNT * log(sumsq(a));
+v.y += AMOUNT * (atan_yx(a) + fix * D(3));
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "log_tile2",
+        params: &[ParamDef::new("spreadx", 2.0), ParamDef::new("spready", 2.0), ParamDef::new("spreadz", 0.0)],
+        kind: VarKind::Normal,
+        is_3d: true,
+        apply: |d, ctx, a, v, amount| {
+            let sx = if ctx.random() < 0.5 { d[0] } else { -d[0] };
+            let sy = if ctx.random() < 0.5 { d[1] } else { -d[1] };
+            let sz = if ctx.random() < 0.5 { d[2] } else { -d[2] };
+            v.x += amount * (a.x + sx * java_round(ctx.random().ln()));
+            v.y += amount * (a.y + sy * java_round(ctx.random().ln()));
+            v.z += amount * (a.z + sz * java_round(ctx.random().ln()));
+        },
+        prepare: None,
+        wgsl: "let sx = select(-D(0), D(0), rnd() < 0.5);
+let sy = select(-D(1), D(1), rnd() < 0.5);
+let sz = select(-D(2), D(2), rnd() < 0.5);
+v.x += AMOUNT * (a.x + sx * java_round(log(rnd())));
+v.y += AMOUNT * (a.y + sy * java_round(log(rnd())));
+v.z += AMOUNT * (a.z + sz * java_round(log(rnd())));",
+    },
+    VarDef {
+        name: "loonie2",
+        params: &[ParamDef::int("sides", 4.0, 1.0, 50.0), ParamDef::range("star", 0.15, -1.0, 1.0), ParamDef::range("circle", 0.25, -1.0, 1.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        // d = [sides, star, circle, sina, cosa, sins, coss, sinc, cosc]
+        apply: |d, ctx, a, v, amount| {
+            let (sina, cosa, sins, coss, sinc, cosc) = (d[3], d[4], d[5], d[6], d[7], d[8]);
+            let sqrvvar = amount * amount;
+            let (mut xrt, mut yrt) = (a.x, a.y);
+            let mut r2 = xrt * coss + yrt.abs() * sins;
+            let circle = (xrt * xrt + yrt * yrt).sqrt();
+            let mut i = 0;
+            while i < d[0] as i32 - 1 {
+                (xrt, yrt) = (xrt * cosa - yrt * sina, xrt * sina + yrt * cosa);
+                r2 = java_max(r2, xrt * coss + yrt.abs() * sins);
+                i += 1;
+            }
+            r2 = r2 * cosc + circle * sinc;
+            r2 = if i > 1 { r2 * r2 } else { r2.abs() * r2 };
+            let r = if r2 > 0.0 && r2 < sqrvvar {
+                amount * (sqrvvar / r2 - 1.0).abs().sqrt()
+            } else if r2 < 0.0 {
+                amount / ((sqrvvar / r2).abs() - 1.0).sqrt()
+            } else {
+                amount
+            };
+            v.x += r * a.x;
+            v.y += r * a.y;
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: Some(|p, _| {
+            let sides = limit_value(ftoi(p[0]), 1, 50) as f64;
+            let (star, circle) = (limit_value(p[1], -1.0, 1.0), limit_value(p[2], -1.0, 1.0));
+            let (sa, ss, sc) = (M_2PI / sides, -M_PI_2 * star, M_PI_2 * circle);
+            vec![sides, star, circle, sa.sin(), sa.cos(), ss.sin(), ss.cos(), sc.sin(), sc.cos()]
+        }),
+        wgsl: "let sqrvvar = AMOUNT * AMOUNT;
+var xrt = a.x;
+var yrt = a.y;
+var r2 = xrt * D(6) + abs(yrt) * D(5);
+let circle = sqrt(xrt * xrt + yrt * yrt);
+var i = 0;
+let n = i32(D(0)) - 1;
+loop {
+  if (i >= n) { break; }
+  let swp = xrt * D(4) - yrt * D(3);
+  yrt = xrt * D(3) + yrt * D(4);
+  xrt = swp;
+  r2 = max(r2, xrt * D(6) + abs(yrt) * D(5));
+  i++;
+}
+r2 = r2 * D(8) + circle * D(7);
+if (i > 1) { r2 = r2 * r2; } else { r2 = abs(r2) * r2; }
+var r = AMOUNT;
+if (r2 > 0.0 && r2 < sqrvvar) { r = AMOUNT * sqrt(abs(sqrvvar / r2 - 1.0)); }
+else if (r2 < 0.0) { r = AMOUNT / sqrt(abs(sqrvvar / r2) - 1.0); }
+v.x += r * a.x;
+v.y += r * a.y;
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
 ];
