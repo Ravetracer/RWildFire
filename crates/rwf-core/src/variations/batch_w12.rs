@@ -498,6 +498,9 @@ fn prepost_affine_prepare(p: &[f64]) -> Vec<f64> {
     d
 }
 
+/// In-place `Complex` operation.
+type ComplexOp = fn(&mut Complex);
+
 /// `cern.jet.math.Arithmetic.longFactorial` as a double (`k` in 0..=20).
 fn long_factorial(k: i32) -> f64 {
     (1..=k.max(0) as i64).product::<i64>() as f64
@@ -3016,5 +3019,408 @@ let cosa = cos(AMOUNT * PI * 0.5);
 let y = cosa * v.y - sina * v.x;
 v.x = sina * v.y + cosa * v.x;
 v.y = y;",
+    },
+    VarDef {
+        name: "post_smartcrop",
+        params: &[
+            ParamDef::new("power", 4.0),
+            ParamDef::new("radius", 1.0),
+            ParamDef::new("roundstr", 0.0),
+            ParamDef::new("roundwidth", 1.0),
+            ParamDef::new("distortion", 1.0),
+            ParamDef::new("edge", 0.0),
+            ParamDef::new("scatter", 0.0),
+            ParamDef::new("offset", 0.0),
+            ParamDef::int("cropmode", 1.0, 0.0, 2.0),
+            ParamDef::int("static", 2.0, -1.0, 2.0),
+        ],
+        kind: VarKind::Post,
+        is_3d: true,
+        apply: |d, ctx, a, v, amount| {
+            // d = [power, radius, roundstr, roundwidth, distortion, edge, scatter, offset, cropmode, static,
+            //      mode 10, radial 11, workradius 12, workpower 13, alpha 14, roundcoeff 15]
+            let (cropmode, stat) = (d[8] as i32, d[9] as i32);
+            let (xi, yi, zi) = if stat == 2 { (v.x, v.y, v.z) } else { (a.x, a.y, a.z) };
+            let ang = yi.atan2(xi);
+            let rad = (xi * xi + yi * yi).sqrt();
+            let mode = d[10] != 0.0;
+            let (scatter, offset) = (d[6], d[7]);
+            let assign = stat == 2 || stat == -1;
+            // The last uncropped point lives across calls (per render thread here).
+            let restore = |ctx: &mut Ctx, v: &mut Pt| {
+                let [sx, sy] = *state_slot(ctx, d, 0, [0.0; 2]);
+                let [sz, sc] = *state_slot(ctx, d, 1, [0.0; 2]);
+                if assign {
+                    (v.x, v.y, v.z) = (sx, sy, sz);
+                } else {
+                    v.x += sx;
+                    v.y += sy;
+                    v.z += sz;
+                }
+                v.color = sc;
+            };
+            let place = |v: &mut Pt, r: f64, an: f64| {
+                let (s, c) = an.sin_cos();
+                if assign {
+                    (v.x, v.y, v.z) = (amount * r * c, amount * r * s, amount * zi);
+                } else {
+                    v.x += amount * r * c;
+                    v.y += amount * r * s;
+                    v.z += amount * zi;
+                }
+            };
+            if d[11] != 0.0 {
+                let edge = d[5] * (ctx.random() - 0.5);
+                let mut xang = ang / M_2PI + 1.0 + edge;
+                xang = (xang - (xang as i32) as f64) * M_2PI;
+                if (xang > d[13]) == mode {
+                    if cropmode == 2 {
+                        restore(ctx, v);
+                    } else {
+                        let an = if (ctx.random() * 2.0) as i32 > 0 {
+                            d[13] + (ctx.random() * scatter + offset + edge) * M_PI
+                        } else {
+                            -(ctx.random() * scatter + offset + edge) * M_PI
+                        };
+                        place(v, rad, an);
+                    }
+                }
+            } else {
+                let mut coeff = 1.0;
+                if d[4] != 0.0 {
+                    let mut xang = (ang + M_PI) / d[14];
+                    xang -= (xang as i32) as f64;
+                    xang = if xang < 0.5 { xang } else { 1.0 - xang };
+                    coeff = 1.0 / (xang * d[14]).cos();
+                    if d[2] != 0.0 {
+                        let w = (if d[3] != 1.0 { ((xang * 2.0).ln() * d[3]).exp() } else { xang * 2.0 }) * d[15];
+                        coeff = ((1.0 - w) * coeff + w).abs();
+                    }
+                    if d[4] != 1.0 {
+                        coeff = (coeff.ln() * d[4]).exp();
+                    }
+                }
+                let xr = coeff * if d[5] != 0.0 { d[12] + d[5] * (ctx.random() - 0.5) } else { d[12] };
+                if (rad > xr) == mode {
+                    if cropmode == 2 {
+                        restore(ctx, v);
+                    } else {
+                        let rdc = (if cropmode > 0 { 1.0 } else { 0.0 }) * xr + coeff * (ctx.random() * scatter + offset);
+                        place(v, rdc, ang);
+                    }
+                } else {
+                    let (sx, sy, sz) = (amount * xi, amount * yi, amount * zi);
+                    *state_slot(ctx, d, 0, [0.0; 2]) = [sx, sy];
+                    let slot = state_slot(ctx, d, 1, [0.0; 2]);
+                    slot[0] = sz;
+                    if cropmode == 2 {
+                        slot[1] = v.color;
+                    }
+                    if stat > 0 {
+                        (v.x, v.y, v.z) = (sx, sy, sz);
+                    } else {
+                        v.x += sx;
+                        v.y += sy;
+                        v.z += sz;
+                    }
+                }
+            }
+        },
+        prepare: Some(|p, _| {
+            let mut d = p.to_vec();
+            d[8] = limit_value(ftoi(p[8]), 0, 2) as f64;
+            d[9] = limit_value(ftoi(p[9]), -1, 2) as f64;
+            let mode = (p[0] > 0.0) == (p[1] > 0.0);
+            let workradius = p[1].abs();
+            let mut workpower = p[0].abs();
+            let (radial, alpha, roundcoeff) = if workpower < 2.0 {
+                workpower *= M_PI;
+                (true, 0.0, 0.0)
+            } else {
+                let alpha = M_2PI / workpower;
+                (false, alpha, p[2] / (alpha / 2.0).sin() / workpower * 2.0)
+            };
+            d.extend([if mode { 1.0 } else { 0.0 }, if radial { 1.0 } else { 0.0 }, workradius, workpower, alpha, roundcoeff]);
+            d
+        }),
+        // GPU: no memory of the last uncropped point (cropmode 2 uses the origin and color 0).
+        wgsl: "let cropmode = i32(D(8));
+let stat = i32(D(9));
+var pin = vec3<f32>(a.x, a.y, a.z);
+if (stat == 2) { pin = vec3<f32>(v.x, v.y, v.z); }
+let ang = atan2(pin.y, pin.x);
+let rad = length(pin.xy);
+let mode = D(10) != 0.0;
+let assign = stat == 2 || stat == -1;
+var crop = false;
+var rr = rad;
+var an = ang;
+if (D(11) != 0.0) {
+  let edge = D(5) * (rnd() - 0.5);
+  var xang = ang / TWO_PI + 1.0 + edge;
+  xang = (xang - trunc(xang)) * TWO_PI;
+  if ((xang > D(13)) == mode) {
+    crop = true;
+    if (cropmode != 2) {
+      if (i32(rnd() * 2.0) > 0) {
+        an = D(13) + (rnd() * D(6) + D(7) + edge) * PI;
+      } else {
+        an = -(rnd() * D(6) + D(7) + edge) * PI;
+      }
+    }
+  }
+} else {
+  var coeff = 1.0;
+  if (D(4) != 0.0) {
+    var xang = (ang + PI) / D(14);
+    xang = xang - trunc(xang);
+    if (xang >= 0.5) { xang = 1.0 - xang; }
+    coeff = 1.0 / cos(xang * D(14));
+    if (D(2) != 0.0) {
+      var w = xang * 2.0;
+      if (D(3) != 1.0) { w = exp(log(xang * 2.0) * D(3)); }
+      w *= D(15);
+      coeff = abs((1.0 - w) * coeff + w);
+    }
+    if (D(4) != 1.0) { coeff = exp(log(coeff) * D(4)); }
+  }
+  var xr = coeff * D(12);
+  if (D(5) != 0.0) { xr = coeff * (D(12) + D(5) * (rnd() - 0.5)); }
+  if ((rad > xr) == mode) {
+    crop = true;
+    if (cropmode != 2) {
+      var cm = 0.0;
+      if (cropmode > 0) { cm = 1.0; }
+      rr = cm * xr + coeff * (rnd() * D(6) + D(7));
+    }
+  } else {
+    let sp = AMOUNT * pin;
+    if (stat > 0) {
+      v.x = sp.x;
+      v.y = sp.y;
+      v.z = sp.z;
+    } else {
+      v.x += sp.x;
+      v.y += sp.y;
+      v.z += sp.z;
+    }
+  }
+}
+if (crop) {
+  if (cropmode == 2) {
+    if (assign) {
+      v.x = 0.0;
+      v.y = 0.0;
+      v.z = 0.0;
+    }
+    v.color = 0.0;
+  } else if (assign) {
+    v.x = AMOUNT * rr * cos(an);
+    v.y = AMOUNT * rr * sin(an);
+    v.z = AMOUNT * pin.z;
+  } else {
+    v.x += AMOUNT * rr * cos(an);
+    v.y += AMOUNT * rr * sin(an);
+    v.z += AMOUNT * pin.z;
+  }
+}",
+    },
+    VarDef {
+        name: "post_spherical",
+        params: &[],
+        kind: VarKind::Post,
+        is_3d: false,
+        apply: |_, _, _a, v, amount| {
+            let r = amount / (v.x * v.x + v.y * v.y + SMALL_EPSILON);
+            v.x *= r;
+            v.y *= r;
+        },
+        prepare: None,
+        wgsl: "let r = AMOUNT / (v.x * v.x + v.y * v.y + EPS);
+v.x = v.x * r;
+v.y = v.y * r;",
+    },
+    VarDef {
+        name: "post_spin_z",
+        params: &[],
+        kind: VarKind::Post,
+        is_3d: false,
+        apply: |_, _, _a, v, amount| {
+            let (s, c) = (amount * M_PI_2).sin_cos();
+            let y = c * v.y - s * v.x;
+            v.x = s * v.y + c * v.x;
+            v.y = y;
+        },
+        prepare: None,
+        wgsl: "let s = sin(AMOUNT * HALF_PI);
+let c = cos(AMOUNT * HALF_PI);
+let y = c * v.y - s * v.x;
+v.x = s * v.y + c * v.x;
+v.y = y;",
+    },
+    VarDef {
+        name: "post_trig",
+        params: &[
+            ParamDef::new("reciprocalpow", 1.0),
+            ParamDef::new("log_dividepow", 0.0),
+            ParamDef::new("sqrtpow", 0.0),
+            ParamDef::new("exppow", 0.0),
+            ParamDef::new("logpow", 0.0),
+            ParamDef::new("asinhpow", 0.0),
+            ParamDef::new("acoshpow", 0.0),
+            ParamDef::new("atanhpow", 0.0),
+            ParamDef::new("asinpow", 0.0),
+            ParamDef::new("acospow", 0.0),
+            ParamDef::new("atanpow", 0.0),
+            ParamDef::new("sinpow", 0.0),
+            ParamDef::new("cospow", 0.0),
+            ParamDef::new("tanpow", 0.0),
+            ParamDef::new("sinhpow", 0.0),
+            ParamDef::new("coshpow", 0.0),
+            ParamDef::new("tanhpow", 0.0),
+        ],
+        kind: VarKind::Post,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            // d = [reciprocal, log_divide, sqrt, exp, log, asinh, acosh, atanh, asin, acos, atan, sin, cos,
+            //      tan, sinh, cosh, tanh] weights
+            let (mut xr, mut yr) = (v.x, v.y);
+            let (mut xx, mut yy) = (0.0, 0.0);
+            let f = |xr: f64, yr: f64, op: fn(&mut Complex), scale: f64| {
+                let mut z = Complex::new(xr, yr);
+                op(&mut z);
+                z.scale(scale);
+                z
+            };
+            if d[0] != 0.0 {
+                let z = f(xr, yr, Complex::recip, amount);
+                (xr, yr) = (d[0] * z.re, d[0] * z.im);
+            }
+            if d[1] != 0.0 {
+                let mut z = Complex::new(xr, yr);
+                let mut z2 = Complex::new(xr, yr);
+                z2.dec();
+                z.inc();
+                z.div(&z2);
+                z.log();
+                z.scale(amount * M_2_PI);
+                (xr, yr) = (d[1] * z.re, d[1] * z.im);
+            }
+            if d[2] != 0.0 {
+                let z = f(xr, yr, Complex::sqrt, amount);
+                (xr, yr) = if ctx.random() < 0.5 { (d[2] * z.re, d[2] * z.im) } else { (d[2] * -z.re, d[2] * -z.im) };
+            }
+            if d[3] != 0.0 {
+                let z = f(xr, yr, Complex::exp, amount);
+                (xr, yr) = (d[3] * z.re, d[3] * z.im);
+            }
+            if d[4] != 0.0 {
+                let z = f(xr, yr, Complex::log, amount);
+                (xr, yr) = (d[4] * z.re, d[4] * z.im);
+            }
+            let ops: [(usize, ComplexOp, f64); 12] = [
+                (5, Complex::asinh, M_2_PI),
+                (6, Complex::acosh, M_2_PI),
+                (7, Complex::atanh, M_2_PI),
+                (8, Complex::asin, M_2_PI),
+                (9, Complex::acos, M_2_PI),
+                (10, Complex::atan, M_2_PI),
+                (11, Complex::sin, 1.0),
+                (12, Complex::cos, 1.0),
+                (13, |z| {
+                    let mut z2 = Complex::copy_of(z);
+                    z.sin();
+                    z2.cos();
+                    z.div(&z2);
+                }, 1.0),
+                (14, Complex::sinh, 1.0),
+                (15, Complex::cosh, 1.0),
+                (16, |z| {
+                    let mut z2 = Complex::copy_of(z);
+                    z.sinh();
+                    z2.cosh();
+                    z.div(&z2);
+                }, 1.0),
+            ];
+            for (k, op, s) in ops {
+                if d[k] != 0.0 {
+                    let z = f(xr, yr, op, amount * s);
+                    if k == 6 && ctx.random() >= 0.5 {
+                        xx += d[k] * -z.re;
+                        yy += d[k] * -z.im;
+                    } else {
+                        xx += d[k] * z.re;
+                        yy += d[k] * z.im;
+                    }
+                }
+            }
+            if d[5] + d[6] + d[7] + d[11] + d[12] + d[13] + d[14] + d[15] + d[16] + d[8] + d[9] + d[10] == 0.0 {
+                v.x = xr;
+                v.y = yr;
+            } else {
+                v.x = xx;
+                v.y = yy;
+            }
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "var zr = vec2<f32>(v.x, v.y);
+var acc = vec2<f32>(0.0);
+let sc = AMOUNT * 2.0 / PI;
+if (D(0) != 0.0) { zr = D(0) * cx_scale(cx_recip(zr), AMOUNT); }
+if (D(1) != 0.0) { zr = D(1) * cx_scale(cx_log(cx_div(cx_inc(zr), cx_dec(zr))), sc); }
+if (D(2) != 0.0) {
+  var z = cx_scale(cx_sqrt(zr), AMOUNT);
+  if (!(rnd() < 0.5)) { z = -z; }
+  zr = D(2) * z;
+}
+if (D(3) != 0.0) { zr = D(3) * cx_scale(cx_exp(zr), AMOUNT); }
+if (D(4) != 0.0) { zr = D(4) * cx_scale(cx_log(zr), AMOUNT); }
+if (D(5) != 0.0) { acc += D(5) * cx_scale(cx_asinh(zr), sc); }
+if (D(6) != 0.0) {
+  var z = cx_scale(cx_acosh(zr), sc);
+  if (!(rnd() < 0.5)) { z = -z; }
+  acc += D(6) * z;
+}
+if (D(7) != 0.0) { acc += D(7) * cx_scale(cx_atanh(zr), sc); }
+if (D(8) != 0.0) { acc += D(8) * cx_scale(cx_asin(zr), sc); }
+if (D(9) != 0.0) { acc += D(9) * cx_scale(cx_acos(zr), sc); }
+if (D(10) != 0.0) { acc += D(10) * cx_scale(cx_atan(zr), sc); }
+if (D(11) != 0.0) { acc += D(11) * cx_scale(cx_sin(zr), AMOUNT); }
+if (D(12) != 0.0) { acc += D(12) * cx_scale(cx_cos(zr), AMOUNT); }
+if (D(13) != 0.0) { acc += D(13) * cx_scale(cx_div(cx_sin(zr), cx_cos(zr)), AMOUNT); }
+if (D(14) != 0.0) { acc += D(14) * cx_scale(cx_sinh(zr), AMOUNT); }
+if (D(15) != 0.0) { acc += D(15) * cx_scale(cx_cosh(zr), AMOUNT); }
+if (D(16) != 0.0) { acc += D(16) * cx_scale(cx_div(cx_sinh(zr), cx_cosh(zr)), AMOUNT); }
+if (D(5) + D(6) + D(7) + D(11) + D(12) + D(13) + D(14) + D(15) + D(16) + D(8) + D(9) + D(10) == 0.0) {
+  v.x = zr.x;
+  v.y = zr.y;
+} else {
+  v.x = acc.x;
+  v.y = acc.y;
+}
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "post_zscale_wf",
+        params: &[ParamDef::new("ztranslate", 0.0)],
+        kind: VarKind::Normal,
+        is_3d: true,
+        apply: |d, _, _a, v, amount| {
+            v.z = amount * v.z + d[0];
+        },
+        prepare: None,
+        wgsl: "v.z = AMOUNT * v.z + D(0);",
+    },
+    VarDef {
+        name: "post_ztranslate_wf",
+        params: &[],
+        kind: VarKind::Post,
+        is_3d: true,
+        apply: |_, _, _a, v, amount| {
+            v.z += amount;
+        },
+        prepare: None,
+        wgsl: "v.z += AMOUNT;",
     },
 ];
