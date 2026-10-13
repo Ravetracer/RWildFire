@@ -306,6 +306,135 @@ fn gmandel_color(d: &[f64], p: Vec2) -> Vec3 {
     }
 }
 
+/// `FloraFunc` leaf outline for the angle `t0 = atan2(y, x)`: `[lx, ly]`.
+fn flora_leaf(kind: i32, sm: f64, t0: f64) -> (f64, f64) {
+    let t = t0 + M_PI_2;
+    match kind {
+        0 => {
+            let mut r = 0.0;
+            if t.sin() > 0.0 {
+                r = 1.0;
+                r -= (sm * 0.8) * t.cos().powf(50.0);
+                r *= 1.0 + 0.05 * (8.0 * t).cos();
+            }
+            (r * t.cos(), r * t.sin())
+        }
+        1 => {
+            let r = (1.0 + (0.5 + sm * 0.8) * (8.0 * t).cos()) * (1.0 + 0.1 * (24.0 * t).cos()) * (0.9 + 0.05 * (200.0 * t).cos()) * (1.0 + t.sin());
+            (r * t.sin(), -r * t.cos())
+        }
+        2 => {
+            let cleft = 0.5 + (-6.0 * sm + 0.5) * 0.5;
+            let t = t0 + M_PI / 4.0;
+            let r = (1.0 + 0.8 * (4.0 * t).cos()) * (1.0 - cleft * (4.0 * t).sin().powf(2.0));
+            (r * t.cos(), r * t.sin())
+        }
+        3 => {
+            let mut r = t.sin();
+            if r < 0.0 {
+                r = 0.0;
+            }
+            r *= 1.0 + (sm * 0.1) * (40.0 * t).cos();
+            (r * t.cos() * 0.7, r * t.sin())
+        }
+        4 => {
+            let r = 0.6 * (1.2 + ((8.0 + sm * 16.0) * t).cos());
+            (r * t.cos(), r * t.sin())
+        }
+        5 => {
+            let r = (t.cos().exp() - 2.0 * (4.0 * t).cos() + (t / 12.0).sin().powf(5.0)) * (0.7 + sm * 0.6);
+            (r * t.sin(), -r * t.cos())
+        }
+        6 => {
+            let r = (1.0 + 0.8 * t.sin()) * (1.0 + (0.1 + sm * 0.2) * (14.0 * t).cos());
+            (r * t.sin(), -r * t.cos())
+        }
+        7 => {
+            let r = (1.0 - 0.9 * t.sin()) * (1.0 + 0.02 * (60.0 * t).cos());
+            (r * t.cos() * (0.6 + sm * 0.4), r * t.sin())
+        }
+        8 => {
+            let r = 1.0 + 0.05 * (12.0 * t0).cos();
+            (r * t0.cos(), r * t0.sin() + (0.1 + sm * 0.4) * (1.0 - r))
+        }
+        9 => {
+            let r = (1.0 - 0.5 * t.sin()) * (1.0 + (0.1 + sm * 0.4) * (5.0 * t).cos()) * (1.0 + 0.05 * (25.0 * t).cos());
+            (r * t.sin(), -r * t.cos())
+        }
+        10 => {
+            let r = if t.sin() > 0.0 { t.sin() * (1.0 + (0.05 + sm * 0.3) * (30.0 * t).cos()) } else { 0.0 };
+            (r * t.cos() * 0.6, r * t.sin())
+        }
+        11 => {
+            let mut base = 1.0 - 0.9 * t.sin();
+            if base < 0.0 {
+                base = 0.0;
+            }
+            let mut fen = 1.0 - (sm * 0.8) * (t * 2.5).sin().powf(10.0);
+            fen *= 1.0 - (sm * 0.7) * (t * 3.5).cos().powf(10.0);
+            let r = base * fen;
+            (r * t.cos(), r * t.sin())
+        }
+        12 => {
+            let r = 1.0 + (0.2 + sm * 0.4) * (8.0 * t).cos();
+            (r * t.cos(), r * t.sin())
+        }
+        13 => {
+            let r = 1.0 - (0.15 + sm * 0.2) * (t * 10.0 / 2.0).sin().abs();
+            (r * t.cos() * 0.7, r * t.sin())
+        }
+        14 => {
+            let r = (1.0 - (0.3 + sm * 0.4) * (t * 5.0 / 2.0).sin().abs()) * (1.0 + 0.04 * (40.0 * t).cos());
+            (r * t.cos(), r * t.sin())
+        }
+        15 => {
+            let lobe = 0.1 + sm * 0.2;
+            let base = 1.0 + lobe * (3.0 * t).cos() - (lobe * 0.5) * (5.0 * t).cos();
+            let r = base * (1.0 + 0.03 * (20.0 * t).cos() + 0.02 * (35.0 * t).cos());
+            (r * t.cos(), r * t.sin())
+        }
+        16 => {
+            let r = (1.0 + (0.3 + sm * 0.5) * (7.0 * t).cos()) * (1.0 + 0.05 * (42.0 * t).cos());
+            (r * t.cos(), r * t.sin())
+        }
+        17 => {
+            let r = (1.0 - 0.9 * t.sin()) * (1.0 + (0.02 + sm * 0.05) * (10.0 * t).sin());
+            (r * t.cos() * 1.2, r * t.sin())
+        }
+        18 => {
+            let t = t0;
+            let r = (1.0 - t.sin()) * (1.0 - (0.1 + sm * 0.4) * t.cos().powf(2.0)) * (1.0 + 0.03 * (15.0 * t).sin());
+            (r * t.cos() * 0.7, r * t.sin())
+        }
+        19 => {
+            let r = 0.8 * (1.1 + ((20.0 + sm * 40.0) * t).cos() * 0.3);
+            (r * t.cos(), r * t.sin())
+        }
+        20 => {
+            let r = 1.0 + t.sin() + (0.2 + sm * 0.6) * (5.0 * t - M_PI_2).sin();
+            (r * t.cos(), r * t.sin())
+        }
+        21 => {
+            let t = t0;
+            let r = (1.0 - 0.9 * t.sin()) * (1.0 + 0.05 * (20.0 * t).cos()) * (1.0 + (0.02 + sm * 0.03) * (40.0 * t).cos());
+            (r * t.cos() * 0.8, r * t.sin())
+        }
+        22 => {
+            let r = t.cos().abs().powf(0.3) + t.sin().abs().powf(2.0 + sm * 2.0);
+            (r * t.sin(), -r * t.cos() * 0.6)
+        }
+        23 => {
+            let r = 1.0 - 0.9 * (t + (sm - 0.5) * 0.2).sin();
+            (r * t.sin() * 1.1, -r * t.cos())
+        }
+        _ => {
+            let t = t0 * (2.0 + sm * 4.0) * M_PI;
+            let r = 0.05 * t;
+            (r * t.cos(), r * t.sin())
+        }
+    }
+}
+
 pub static DEFS: &[VarDef] = &[
     VarDef {
         name: "barycentroid",
@@ -1211,5 +1340,157 @@ v.y += AMOUNT * vy;
 if (PRESERVE_Z) { v.z += AMOUNT * a.z; }
 let col = D(4) + D(5) * p;
 v.color = col - floor(col);",
+    },
+    VarDef {
+        name: "flora",
+        params: &[
+            ParamDef::int("leafType", 0.0, 0.0, 24.0),
+            ParamDef::range("filled", 1.0, 0.0, 1.0),
+            ParamDef::new("scale", 1.0),
+            ParamDef::new("distort", 0.1),
+            ParamDef::new("shapeMod", 0.5),
+        ],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let r = if d[1] > 0.0 && d[1] > ctx.random() { amount * ctx.random() } else { amount };
+            let (mut lx, mut ly) = flora_leaf(d[0] as i32, d[4], a.atan_yx());
+            if d[3] != 0.0 {
+                lx += d[3] * (a.y * 5.0).sin();
+                ly += d[3] * (a.x * 5.0).cos();
+            }
+            v.x += r * lx * d[2];
+            v.y += r * ly * d[2];
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: Some(|p, _| {
+            let mut d = p.to_vec();
+            d[0] = limit_value(ftoi(p[0]), 0, 24) as f64;
+            d[1] = limit_value(p[1], 0.0, 1.0);
+            d
+        }),
+        wgsl: "fn flora_leaf(kind: i32, sm: f32, t0: f32) -> vec2<f32> {
+  let t = t0 + HALF_PI;
+  let st = sin(t);
+  let ct = cos(t);
+  switch (kind) {
+    case 0: {
+      var r = 0.0;
+      if (st > 0.0) { r = (1.0 - (sm * 0.8) * java_pow(ct, 50.0)) * (1.0 + 0.05 * cos(8.0 * t)); }
+      return r * vec2<f32>(ct, st);
+    }
+    case 1: {
+      let r = (1.0 + (0.5 + sm * 0.8) * cos(8.0 * t)) * (1.0 + 0.1 * cos(24.0 * t)) * (0.9 + 0.05 * cos(200.0 * t)) * (1.0 + st);
+      return r * vec2<f32>(st, -ct);
+    }
+    case 2: {
+      let cleft = 0.5 + (-6.0 * sm + 0.5) * 0.5;
+      let u = t0 + PI / 4.0;
+      let s4 = sin(4.0 * u);
+      let r = (1.0 + 0.8 * cos(4.0 * u)) * (1.0 - cleft * s4 * s4);
+      return r * vec2<f32>(cos(u), sin(u));
+    }
+    case 3: {
+      let r = max(st, 0.0) * (1.0 + (sm * 0.1) * cos(40.0 * t));
+      return r * vec2<f32>(ct * 0.7, st);
+    }
+    case 4: {
+      let r = 0.6 * (1.2 + cos((8.0 + sm * 16.0) * t));
+      return r * vec2<f32>(ct, st);
+    }
+    case 5: {
+      let r = (exp(ct) - 2.0 * cos(4.0 * t) + java_pow(sin(t / 12.0), 5.0)) * (0.7 + sm * 0.6);
+      return r * vec2<f32>(st, -ct);
+    }
+    case 6: {
+      let r = (1.0 + 0.8 * st) * (1.0 + (0.1 + sm * 0.2) * cos(14.0 * t));
+      return r * vec2<f32>(st, -ct);
+    }
+    case 7: {
+      let r = (1.0 - 0.9 * st) * (1.0 + 0.02 * cos(60.0 * t));
+      return r * vec2<f32>(ct * (0.6 + sm * 0.4), st);
+    }
+    case 8: {
+      let r = 1.0 + 0.05 * cos(12.0 * t0);
+      return vec2<f32>(r * cos(t0), r * sin(t0) + (0.1 + sm * 0.4) * (1.0 - r));
+    }
+    case 9: {
+      let r = (1.0 - 0.5 * st) * (1.0 + (0.1 + sm * 0.4) * cos(5.0 * t)) * (1.0 + 0.05 * cos(25.0 * t));
+      return r * vec2<f32>(st, -ct);
+    }
+    case 10: {
+      var r = 0.0;
+      if (st > 0.0) { r = st * (1.0 + (0.05 + sm * 0.3) * cos(30.0 * t)); }
+      return r * vec2<f32>(ct * 0.6, st);
+    }
+    case 11: {
+      let base = max(1.0 - 0.9 * st, 0.0);
+      let fen = (1.0 - (sm * 0.8) * java_pow(sin(t * 2.5), 10.0)) * (1.0 - (sm * 0.7) * java_pow(cos(t * 3.5), 10.0));
+      return base * fen * vec2<f32>(ct, st);
+    }
+    case 12: {
+      let r = 1.0 + (0.2 + sm * 0.4) * cos(8.0 * t);
+      return r * vec2<f32>(ct, st);
+    }
+    case 13: {
+      let r = 1.0 - (0.15 + sm * 0.2) * abs(sin(t * 5.0));
+      return r * vec2<f32>(ct * 0.7, st);
+    }
+    case 14: {
+      let r = (1.0 - (0.3 + sm * 0.4) * abs(sin(t * 2.5))) * (1.0 + 0.04 * cos(40.0 * t));
+      return r * vec2<f32>(ct, st);
+    }
+    case 15: {
+      let lobe = 0.1 + sm * 0.2;
+      let r = (1.0 + lobe * cos(3.0 * t) - (lobe * 0.5) * cos(5.0 * t)) * (1.0 + 0.03 * cos(20.0 * t) + 0.02 * cos(35.0 * t));
+      return r * vec2<f32>(ct, st);
+    }
+    case 16: {
+      let r = (1.0 + (0.3 + sm * 0.5) * cos(7.0 * t)) * (1.0 + 0.05 * cos(42.0 * t));
+      return r * vec2<f32>(ct, st);
+    }
+    case 17: {
+      let r = (1.0 - 0.9 * st) * (1.0 + (0.02 + sm * 0.05) * sin(10.0 * t));
+      return r * vec2<f32>(ct * 1.2, st);
+    }
+    case 18: {
+      let c0 = cos(t0);
+      let r = (1.0 - sin(t0)) * (1.0 - (0.1 + sm * 0.4) * c0 * c0) * (1.0 + 0.03 * sin(15.0 * t0));
+      return r * vec2<f32>(c0 * 0.7, sin(t0));
+    }
+    case 19: {
+      let r = 0.8 * (1.1 + cos((20.0 + sm * 40.0) * t) * 0.3);
+      return r * vec2<f32>(ct, st);
+    }
+    case 20: {
+      let r = 1.0 + st + (0.2 + sm * 0.6) * sin(5.0 * t - HALF_PI);
+      return r * vec2<f32>(ct, st);
+    }
+    case 21: {
+      let r = (1.0 - 0.9 * sin(t0)) * (1.0 + 0.05 * cos(20.0 * t0)) * (1.0 + (0.02 + sm * 0.03) * cos(40.0 * t0));
+      return r * vec2<f32>(cos(t0) * 0.8, sin(t0));
+    }
+    case 22: {
+      let r = java_pow(abs(ct), 0.3) + java_pow(abs(st), 2.0 + sm * 2.0);
+      return r * vec2<f32>(st, -ct * 0.6);
+    }
+    case 23: {
+      let r = 1.0 - 0.9 * sin(t + (sm - 0.5) * 0.2);
+      return r * vec2<f32>(st * 1.1, -ct);
+    }
+    default: {
+      let u = t0 * (2.0 + sm * 4.0) * PI;
+      return 0.05 * u * vec2<f32>(cos(u), sin(u));
+    }
+  }
+}
+@body
+var r = AMOUNT;
+if (D(1) > 0.0 && D(1) > rnd()) { r = AMOUNT * rnd(); }
+var l = flora_leaf(i32(D(0)), D(4), atan2(a.y, a.x));
+if (D(3) != 0.0) { l += D(3) * vec2<f32>(sin(a.y * 5.0), cos(a.x * 5.0)); }
+v.x += r * l.x * D(2);
+v.y += r * l.y * D(2);
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
     },
 ];
