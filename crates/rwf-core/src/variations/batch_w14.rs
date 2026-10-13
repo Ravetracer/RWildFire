@@ -5588,6 +5588,162 @@ v.x += AMOUNT * (nu * ca - nv * sa);
 v.y += AMOUNT * (nu * sa + nv * ca);
 if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
     },
+    VarDef {
+        name: "mobiq",
+        params: &[
+            ParamDef::new("qat", 1.0),
+            ParamDef::new("qax", 0.0),
+            ParamDef::new("qay", 0.0),
+            ParamDef::new("qaz", 0.0),
+            ParamDef::new("qbt", 0.0),
+            ParamDef::new("qbx", 0.0),
+            ParamDef::new("qby", 0.0),
+            ParamDef::new("qbz", 0.0),
+            ParamDef::new("qct", 0.0),
+            ParamDef::new("qcx", 0.0),
+            ParamDef::new("qcy", 0.0),
+            ParamDef::new("qcz", 0.0),
+            ParamDef::new("qdt", 1.0),
+            ParamDef::new("qdx", 0.0),
+            ParamDef::new("qdy", 0.0),
+            ParamDef::new("qdz", 0.0),
+        ],
+        kind: VarKind::Normal,
+        is_3d: true,
+        apply: |d, _, a, v, amount| {
+            let [n, dd] = mobiq_parts(d, a.x, a.y, a.z);
+            let ni = amount / (sqr(dd[0]) + sqr(dd[1]) + sqr(dd[2]) + sqr(dd[3]));
+            v.x += (n[0] * dd[0] + n[1] * dd[1] + n[2] * dd[2] + n[3] * dd[3]) * ni;
+            v.y += (n[1] * dd[0] - n[0] * dd[1] - n[2] * dd[3] + n[3] * dd[2]) * ni;
+            v.z += (n[2] * dd[0] - n[0] * dd[2] - n[3] * dd[1] + n[1] * dd[3]) * ni;
+        },
+        prepare: None,
+        wgsl: "fn mobiq_num(k: u32, t2: f32, x2: f32, y2: f32) -> vec4<f32> {
+  return vec4<f32>(prm[k] * t2 - prm[k + 1u] * x2 - prm[k + 2u] * y2 + prm[k + 4u],
+    prm[k] * x2 + prm[k + 1u] * t2 - prm[k + 3u] * y2 + prm[k + 5u],
+    prm[k] * y2 + prm[k + 2u] * t2 + prm[k + 3u] * x2 + prm[k + 6u],
+    prm[k + 3u] * t2 + prm[k + 1u] * y2 - prm[k + 2u] * x2 + prm[k + 7u]);
+}
+@body
+let n = mobiq_num(base, a.x, a.y, a.z);
+let dd = mobiq_num(base + 8u, a.x, a.y, a.z);
+let ni = AMOUNT / dot(dd, dd);
+v.x += (n.x * dd.x + n.y * dd.y + n.z * dd.z + n.w * dd.w) * ni;
+v.y += (n.y * dd.x - n.x * dd.y - n.z * dd.w + n.w * dd.z) * ni;
+v.z += (n.z * dd.x - n.x * dd.z - n.w * dd.y + n.y * dd.w) * ni;",
+    },
+    VarDef {
+        name: "mobiqN",
+        params: &[
+            ParamDef::new("qat", 1.0),
+            ParamDef::new("qax", 0.0),
+            ParamDef::new("qay", 0.0),
+            ParamDef::new("qaz", 0.0),
+            ParamDef::new("qbt", 0.0),
+            ParamDef::new("qbx", 0.0),
+            ParamDef::new("qby", 0.0),
+            ParamDef::new("qbz", 0.0),
+            ParamDef::new("qct", 0.0),
+            ParamDef::new("qcx", 0.0),
+            ParamDef::new("qcy", 0.0),
+            ParamDef::new("qcz", 1.0),
+            ParamDef::new("qdt", 1.0),
+            ParamDef::new("qdx", 0.0),
+            ParamDef::new("qdy", 0.0),
+            ParamDef::new("qdz", 0.0),
+            ParamDef::new("power", 2.0),
+            ParamDef::new("dist", 1.0),
+            ParamDef::int("colorMode", 0.0, 0.0, 6.0),
+            ParamDef::int("iterations", 1.0, 1.0, 10.0),
+            ParamDef::int("spaceType", 0.0, 0.0, 2.0),
+        ],
+        kind: VarKind::Normal,
+        is_3d: true,
+        apply: |d, ctx, a, v, amount| mobiqn_apply(d, ctx, a, v, amount),
+        prepare: Some(|p, _| {
+            let mut d = p.to_vec();
+            if d[16].abs() < 1.0 {
+                d[16] = 1.0;
+            }
+            for k in 18..21 {
+                d[k] = (p[k] as i32) as f64;
+            }
+            d
+        }),
+        wgsl: "fn mobiqN_num(k: u32, t2: f32, x2: f32, y2: f32) -> vec4<f32> {
+  return vec4<f32>(prm[k] * t2 - prm[k + 1u] * x2 - prm[k + 2u] * y2 + prm[k + 4u],
+    prm[k] * x2 + prm[k + 1u] * t2 - prm[k + 3u] * y2 + prm[k + 5u],
+    prm[k] * y2 + prm[k + 2u] * t2 + prm[k + 3u] * x2 + prm[k + 6u],
+    prm[k + 3u] * t2 + prm[k + 1u] * y2 - prm[k + 2u] * x2 + prm[k + 7u]);
+}
+@body
+let power = D(16);
+let space = i32(D(20));
+var z_scale = 0.0;
+if (power != 0.0) { z_scale = 4.0 * D(17) / power; }
+let rho = length(vec3<f32>(a.x, a.y, a.z));
+let theta = glsl_atan2(a.y, a.x);
+var phi = 0.0;
+if (rho != 0.0) { phi = acos(a.z / rho); }
+let new_rho = java_pow(rho, z_scale);
+let sp = sin(phi * power);
+var q = new_rho * vec3<f32>(sp * cos(theta * power), sp * sin(theta * power), cos(phi * power));
+if (space == 1) { q = sinh(q); } else if (space == 2) { q = sin(q); }
+var tq = 0.0;
+var den = 0.0;
+for (var i = 0; i < max(1, i32(D(19))); i++) {
+  let n = mobiqN_num(base, q.x, q.y, q.z);
+  let dd = mobiqN_num(base + 8u, q.x, q.y, q.z);
+  den = dot(dd, dd);
+  if (den != 0.0) {
+    let inv = 1.0 / den;
+    tq = (n.x * dd.x + n.y * dd.y + n.z * dd.z + n.w * dd.w) * inv;
+    q = vec3<f32>((n.y * dd.x - n.x * dd.y - n.z * dd.w + n.w * dd.z) * inv,
+      (n.z * dd.x - n.x * dd.z - n.w * dd.y + n.y * dd.w) * inv,
+      (n.w * dd.x - n.y * dd.z + n.z * dd.y - n.x * dd.w) * inv);
+  } else {
+    tq = 0.0;
+    q = vec3<f32>(0.0);
+  }
+}
+if (space == 1) { q = asinh(q); } else if (space == 2) { q = asin(q); }
+var z_inv = 0.0;
+if (z_scale != 0.0) { z_inv = 1.0 / z_scale; }
+let rho_res = length(q);
+let theta_res = glsl_atan2(q.y, q.x);
+var phi_res = 0.0;
+if (rho_res != 0.0) { phi_res = acos(q.z / rho_res); }
+let final_rho = java_pow(rho_res, z_inv);
+let fp = floor(power);
+let n_theta = floor(power * rnd());
+let n_phi = floor(power * rnd());
+var ft = theta_res;
+var fphi = phi_res;
+if (fp != 0.0) {
+  ft = (theta_res + n_theta * 2.0 * PI) / fp;
+  fphi = (phi_res + n_phi * 2.0 * PI) / fp;
+}
+let fs = sin(fphi);
+let f = final_rho * vec3<f32>(fs * cos(ft), fs * sin(ft), cos(fphi));
+switch (i32(D(18))) {
+  case 1: { v.color = new_rho * z_inv * 0.1; }
+  case 2: { v.color = (tq + 1.0) * 0.5; }
+  case 3: { v.color = atan(sqrt(den)) / (PI * 0.5); }
+  case 4: {
+    let len = length(f);
+    v.color = select(0.5, (f.z / len + 1.0) * 0.5, len > 1.0e-8);
+  }
+  case 5: { v.color = select(0.5, atan(final_rho / rho) / (PI * 0.5), rho > 1.0e-8); }
+  case 6: {
+    let tw = (ft - theta) / (2.0 * PI);
+    v.color = tw - floor(tw);
+  }
+  default: {}
+}
+v.x += AMOUNT * f.x;
+v.y += AMOUNT * f.y;
+v.z += AMOUNT * f.z;",
+    },
 ];
 
 fn mandelbox2d_apply(d: &[f64], ctx: &mut Ctx, a: &Pt, v: &mut Pt, amount: f64) {
@@ -5838,4 +5994,86 @@ fn minkowskope_sine(x: f64, alt: bool) -> f64 {
         mink -= p;
     }
     if (lp < 2.0) ^ (x > 0.0) { mink } else { -mink }
+}
+
+/// Numerator and denominator quaternions of `MobiqFunc` for the parameters `d[0..16]`.
+fn mobiq_parts(d: &[f64], t2: f64, x2: f64, y2: f64) -> [[f64; 4]; 2] {
+    let q = |k: usize| {
+        [
+            d[k] * t2 - d[k + 1] * x2 - d[k + 2] * y2 + d[k + 4],
+            d[k] * x2 + d[k + 1] * t2 - d[k + 3] * y2 + d[k + 5],
+            d[k] * y2 + d[k + 2] * t2 + d[k + 3] * x2 + d[k + 6],
+            d[k + 3] * t2 + d[k + 1] * y2 - d[k + 2] * x2 + d[k + 7],
+        ]
+    };
+    [q(0), q(8)]
+}
+
+fn mobiqn_apply(d: &[f64], ctx: &mut Ctx, a: &Pt, v: &mut Pt, amount: f64) {
+    let (power, space) = (d[16], d[20] as i32);
+    let z_scale = if power != 0.0 { 4.0 * d[17] / power } else { 0.0 };
+    let rho = (sqr(a.x) + sqr(a.y) + sqr(a.z)).sqrt();
+    let theta = a.y.atan2(a.x);
+    let phi = if rho == 0.0 { 0.0 } else { (a.z / rho).acos() };
+    let new_rho = rho.powf(z_scale);
+    let (nt, np) = (theta * power, phi * power);
+    let sp = np.sin();
+    let mut q = [new_rho * sp * nt.cos(), new_rho * sp * nt.sin(), new_rho * np.cos()];
+    match space {
+        1 => q = q.map(|x| (x.exp() - (-x).exp()) * 0.5),
+        2 => q = q.map(f64::sin),
+        _ => {}
+    }
+    let (mut tq, mut den) = (0.0, 0.0);
+    for _ in 0..(d[19] as i32).max(1) {
+        let [n, dd] = mobiq_parts(d, q[0], q[1], q[2]);
+        den = sqr(dd[0]) + sqr(dd[1]) + sqr(dd[2]) + sqr(dd[3]);
+        if den != 0.0 {
+            let inv = 1.0 / den;
+            tq = (n[0] * dd[0] + n[1] * dd[1] + n[2] * dd[2] + n[3] * dd[3]) * inv;
+            q = [
+                (n[1] * dd[0] - n[0] * dd[1] - n[2] * dd[3] + n[3] * dd[2]) * inv,
+                (n[2] * dd[0] - n[0] * dd[2] - n[3] * dd[1] + n[1] * dd[3]) * inv,
+                (n[3] * dd[0] - n[1] * dd[2] + n[2] * dd[1] - n[0] * dd[3]) * inv,
+            ];
+        } else {
+            tq = 0.0;
+            q = [0.0; 3];
+        }
+    }
+    match space {
+        1 => q = q.map(|x| (x + (x * x + 1.0).sqrt()).ln()),
+        2 => q = q.map(f64::asin),
+        _ => {}
+    }
+    let z_inv = if z_scale != 0.0 { 1.0 / z_scale } else { 0.0 };
+    let rho_res = (sqr(q[0]) + sqr(q[1]) + sqr(q[2])).sqrt();
+    let theta_res = q[1].atan2(q[0]);
+    let phi_res = if rho_res == 0.0 { 0.0 } else { (q[2] / rho_res).acos() };
+    let final_rho = rho_res.powf(z_inv);
+    let fp = power.floor();
+    let n_theta = (power * ctx.random()).floor();
+    let n_phi = (power * ctx.random()).floor();
+    let ft = if fp != 0.0 { (theta_res + n_theta * 2.0 * PI) / fp } else { theta_res };
+    let fphi = if fp != 0.0 { (phi_res + n_phi * 2.0 * PI) / fp } else { phi_res };
+    let fs = fphi.sin();
+    let (fx, fy, fz) = (final_rho * fs * ft.cos(), final_rho * fs * ft.sin(), final_rho * fphi.cos());
+    match d[18] as i32 {
+        1 => v.color = new_rho * z_inv * 0.1,
+        2 => v.color = (tq + 1.0) * 0.5,
+        3 => v.color = den.sqrt().atan() / (PI * 0.5),
+        4 => {
+            let len = (sqr(fx) + sqr(fy) + sqr(fz)).sqrt();
+            v.color = if len > EPSILON { (fz / len + 1.0) * 0.5 } else { 0.5 };
+        }
+        5 => v.color = if rho > EPSILON { (final_rho / rho).atan() / (PI * 0.5) } else { 0.5 },
+        6 => {
+            let tw = (ft - theta) / (2.0 * PI);
+            v.color = tw - tw.floor();
+        }
+        _ => {}
+    }
+    v.x += amount * fx;
+    v.y += amount * fy;
+    v.z += amount * fz;
 }
