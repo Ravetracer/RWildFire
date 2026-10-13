@@ -140,6 +140,32 @@ fn htree_prepare(p: &[f64]) -> Vec<f64> {
     d
 }
 
+/// GPU stand-in for `random(Integer.MAX_VALUE) * step`: the number of distinct angles
+/// (`n * step` a multiple of 2 pi), or 0 if there are too many (then a uniform angle is used).
+fn angle_period(step: f64) -> f64 {
+    let turns = step / (2.0 * M_PI);
+    (1..=10000).find(|&n| {
+        let t = n as f64 * turns;
+        (t - t.round()).abs() < 1e-9
+    })
+    .map_or(0.0, |n| n as f64)
+}
+
+/// Shared tail of `hypertile3D2` / `hypertile3D2b`: d[o..] = [pa, period, cx, c2, c2x, s2x, s2y,
+/// s2z, h].
+fn hypertile3d2_apply(d: &[f64], o: usize, ctx: &mut Ctx, a: &Pt, v: &mut Pt, amount: f64) {
+    let (pa, cx, c2, c2x, s2x, s2y, s2z, h) = (d[o], d[o + 2], d[o + 3], d[o + 4], d[o + 5], d[o + 6], d[o + 7], d[o + 8]);
+    let r2 = a.x * a.x + a.y * a.y + a.z * a.z;
+    let x = a.x * s2x - cx * (-r2 - 1.0);
+    let y = a.y * s2y;
+    let vr = amount / (c2 * r2 + c2x * a.x + h);
+    let ang = ctx.random_int(i32::MAX as usize) as f64 * pa;
+    let (sina, cosa) = ang.sin_cos();
+    v.x += vr * (x * cosa + y * sina);
+    v.y += vr * (y * cosa - x * sina);
+    v.z += vr * (a.z * s2z);
+}
+
 pub static DEFS: &[VarDef] = &[
     VarDef {
         name: "harmonograph_js",
@@ -1196,5 +1222,172 @@ let dd = AMOUNT / (D(4) * r2 + x2cx - y2cy + 1.0);
 v.x += dd * (a.x * s2x - cx * (y2cy - r2 - 1.0));
 v.y += dd * (a.y * s2y + cy * (-x2cx - r2 - 1.0));
 v.z += dd * (a.z * D(5));",
+    },
+    VarDef {
+        name: "hypertile3D2",
+        params: &[ParamDef::int("p", 3.0, 3.0, 100.0), ParamDef::int("q", 7.0, 3.0, 100.0)],
+        kind: VarKind::Normal,
+        is_3d: true,
+        apply: |d, ctx, a, v, amount| hypertile3d2_apply(d, 2, ctx, a, v, amount),
+        prepare: Some(|p, _| {
+            let (pp, qq) = (ftoi(p[0]).max(3) as f64, ftoi(p[1]).max(3) as f64);
+            let (pa, qa) = (2.0 * M_PI / pp, 2.0 * M_PI / qq);
+            let mut r = -(pa.cos() - 1.0) / (pa.cos() + qa.cos());
+            r = if r > 0.0 { 1.0 / (1.0 + r).sqrt() } else { 1.0 };
+            vec![pp, qq, pa, angle_period(pa), r, r * r, 2.0 * r, 1.0 + r * r, 1.0 - r * r, 1.0 - r * r, 1.0]
+        }),
+        wgsl: "let r2 = a.x * a.x + a.y * a.y + a.z * a.z;
+let x = a.x * D(7) - D(4) * (-r2 - 1.0);
+let y = a.y * D(8);
+let vr = AMOUNT / (D(5) * r2 + D(6) * a.x + D(10));
+var ang = rnd() * TWO_PI;
+if (D(3) > 0.0) { ang = floor(rnd() * D(3)) * D(2); }
+v.x += vr * (x * cos(ang) + y * sin(ang));
+v.y += vr * (y * cos(ang) - x * sin(ang));
+v.z += vr * (a.z * D(9));",
+    },
+    VarDef {
+        name: "hypertile3D2b",
+        params: &[
+            ParamDef::int("p", 3.0, 3.0, 100.0),
+            ParamDef::int("q", 7.0, 3.0, 100.0),
+            ParamDef::new("b", 2.0),
+            ParamDef::new("c", 2.0),
+            ParamDef::new("d", 1.0),
+            ParamDef::new("e", 1.0),
+            ParamDef::new("f", 1.0),
+            ParamDef::new("g", 2.0),
+            ParamDef::new("h", 1.0),
+            ParamDef::new("i", 1.0),
+            ParamDef::new("j", 1.0),
+            ParamDef::new("k", 1.0),
+        ],
+        kind: VarKind::Normal,
+        is_3d: true,
+        apply: |d, ctx, a, v, amount| hypertile3d2_apply(d, 12, ctx, a, v, amount),
+        prepare: Some(|p, _| {
+            let mut d = p.to_vec();
+            d[0] = ftoi(p[0]).max(3) as f64;
+            d[1] = ftoi(p[1]).max(3) as f64;
+            let (b, c, dd, e, f, g, h, i, j, k) = (p[2], p[3], p[4], p[5], p[6], p[7], p[8], p[9], p[10], p[11]);
+            let (pa, qa) = (b * M_PI / d[0], c * M_PI / d[1]);
+            let mut r = -(pa.cos() - dd) / (pa.cos() + qa.cos());
+            r = if r > 0.0 { e / (f + r).sqrt() } else { 1.0 };
+            d.extend([pa, angle_period(pa), r, r * r, g * r, i + r * r, j - r * r, k - r * r, h]);
+            d
+        }),
+        wgsl: "let r2 = a.x * a.x + a.y * a.y + a.z * a.z;
+let x = a.x * D(17) - D(14) * (-r2 - 1.0);
+let y = a.y * D(18);
+let vr = AMOUNT / (D(15) * r2 + D(16) * a.x + D(20));
+var ang = rnd() * TWO_PI;
+if (D(13) > 0.0) { ang = floor(rnd() * D(13)) * D(12); }
+v.x += vr * (x * cos(ang) + y * sin(ang));
+v.y += vr * (y * cos(ang) - x * sin(ang));
+v.z += vr * (a.z * D(19));",
+    },
+    VarDef {
+        name: "hypertile3Db",
+        params: &[
+            ParamDef::int("p", 3.0, 3.0, 100.0),
+            ParamDef::int("q", 7.0, 3.0, 100.0),
+            ParamDef::int("n", 0.0, 0.0, 100.0),
+            ParamDef::new("b", 2.0),
+            ParamDef::new("c", 2.0),
+            ParamDef::new("d", 1.0),
+            ParamDef::new("e", 1.0),
+            ParamDef::new("f", 1.0),
+            ParamDef::new("g", 2.0),
+            ParamDef::new("h", 2.0),
+            ParamDef::new("i", 1.0),
+            ParamDef::new("j", 1.0),
+            ParamDef::new("k", 1.0),
+        ],
+        kind: VarKind::Normal,
+        is_3d: true,
+        // d = [<params>, c2x, c2y, c2, s2x, s2y, s2z, cx, cy] (13..)
+        apply: |d, _, a, v, amount| {
+            let r2 = a.x * a.x + a.y * a.y + a.z * a.z;
+            let (x2cx, y2cy) = (d[13] * a.x, d[14] * a.y);
+            let dd = amount / (d[15] * r2 + x2cx - y2cy + 1.0);
+            v.x += dd * (a.x * d[16] - d[19] * (y2cy - r2 - 1.0));
+            v.y += dd * (a.y * d[17] + d[20] * (-x2cx - r2 - 1.0));
+            v.z += dd * (a.z * d[18]);
+        },
+        prepare: Some(|p, _| {
+            let mut d = p.to_vec();
+            d[0] = ftoi(p[0]).max(3) as f64;
+            d[1] = ftoi(p[1]).max(3) as f64;
+            d[2] = ftoi(p[2]).max(0) as f64;
+            let (b, c, dd, e, f, g, h, i, j, k) = (p[3], p[4], p[5], p[6], p[7], p[8], p[9], p[10], p[11], p[12]);
+            let (pa, qa) = (b * M_PI / d[0], c * M_PI / d[1]);
+            let mut r = -(pa.cos() - dd) / (pa.cos() + qa.cos());
+            r = if r > 0.0 { e / (f + r).sqrt() } else { 1.0 };
+            let na = d[2] * pa;
+            let (cx, cy) = (r * na.cos(), r * na.sin());
+            d.extend([g * cx, h * cy, cx * cx + cy * cy, i + cx * cx - cy * cy, j + cy * cy - cx * cx, k - cy * cy - cx * cx, cx, cy]);
+            d
+        }),
+        wgsl: "let r2 = a.x * a.x + a.y * a.y + a.z * a.z;
+let x2cx = D(13) * a.x;
+let y2cy = D(14) * a.y;
+let dd = AMOUNT / (D(15) * r2 + x2cx - y2cy + 1.0);
+v.x += dd * (a.x * D(16) - D(19) * (y2cy - r2 - 1.0));
+v.y += dd * (a.y * D(17) + D(20) * (-x2cx - r2 - 1.0));
+v.z += dd * (a.z * D(18));",
+    },
+    VarDef {
+        name: "iconattractor_js",
+        // Defaults: preset 0 (JWildfire picks a random preset for new instances)
+        params: &[
+            ParamDef::int("presetId", 0.0, 0.0, 16.0),
+            ParamDef::int("degree", 5.0, 3.0, 50.0),
+            ParamDef::new("a", 5.0),
+            ParamDef::new("b", -1.9),
+            ParamDef::new("g", 1.0),
+            ParamDef::new("o", 0.188),
+            ParamDef::new("l", -2.5),
+            ParamDef::new("centerx", 0.0),
+            ParamDef::new("centery", 0.0),
+            ParamDef::new("scale", 5.0),
+        ],
+        kind: VarKind::Normal,
+        is_3d: false,
+        // d = [presetId, degree, a, b, g, o, l, centerx, centery, scale, bdcs]
+        apply: |d, _, a, v, amount| {
+            let (pa, pb, pg, po, pl) = (d[2], d[3], d[4], d[5], d[6]);
+            let zzbar = a.x * a.x + a.y * a.y;
+            let mut p = pa * zzbar + pl;
+            let (mut zr, mut zi) = (a.x, a.y);
+            for _ in 1..=(d[1] as i32 - 2) {
+                let za = zr * a.x - zi * a.y;
+                let zb = zi * a.x + zr * a.y;
+                zr = za;
+                zi = zb;
+            }
+            let zn = a.x * zr - a.y * zi;
+            p += pb * zn;
+            v.x = (p * a.x + pg * zr - po * a.y) * amount;
+            v.y = (p * a.y - pg * zi + po * a.x) * amount;
+            v.color = fmod((d[10] * ((v.x + d[7]) * (v.x + d[7]) + (v.y + d[8]) * (v.y + d[8]))).abs(), 1.0);
+        },
+        prepare: Some(|p, _| {
+            let mut d = p.to_vec();
+            d[0] = limit_value(p[0] as i32, 0, 16) as f64;
+            d[1] = limit_value(p[1] as i32, 3, 50) as f64;
+            d.push(1.0 / if p[9] == 0.0 { 10E-6 } else { p[9] });
+            d
+        }),
+        wgsl: "let zzbar = a.x * a.x + a.y * a.y;
+var p = D(2) * zzbar + D(6);
+var z = vec2<f32>(a.x, a.y);
+let n = i32(D(1)) - 2;
+for (var i = 1; i <= n; i++) {
+  z = vec2<f32>(z.x * a.x - z.y * a.y, z.y * a.x + z.x * a.y);
+}
+p += D(3) * (a.x * z.x - a.y * z.y);
+v.x = (p * a.x + D(4) * z.x - D(5) * a.y) * AMOUNT;
+v.y = (p * a.y - D(4) * z.y + D(5) * a.x) * AMOUNT;
+v.color = abs(D(10) * ((v.x + D(7)) * (v.x + D(7)) + (v.y + D(8)) * (v.y + D(8)))) % 1.0;",
     },
 ];
