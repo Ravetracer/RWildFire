@@ -646,7 +646,7 @@ pub static DEFS: &[VarDef] = &[
         },
         prepare: Some(|p, _| {
             let damping = |v: f64| if v.abs() < EPSILON { 1.0 } else { v.exp() };
-            vec![p[0], p[1], p[2], p[3], ftoi(p[4]) as f64, ftoi(p[5]) as f64, damping(p[6]), damping(p[7])]
+            vec![p[0], p[1], p[2], p[3], ftoi(p[4]), ftoi(p[5]), damping(p[6]), damping(p[7])]
         }),
         wgsl: "var wx = sin(a.y * D(2));
 if (i32(D(4)) == 1) { wx = cos(a.y * D(2)); }

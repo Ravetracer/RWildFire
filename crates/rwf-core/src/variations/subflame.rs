@@ -51,8 +51,10 @@ pub struct SubState {
 /// Per-thread states, keyed by sub-flame id (see [`Ctx`]).
 pub type SubStates = HashMap<usize, SubState>;
 
-fn registry() -> &'static RwLock<Vec<(String, Arc<SubFlame>)>> {
-    static REG: OnceLock<RwLock<Vec<(String, Arc<SubFlame>)>>> = OnceLock::new();
+type Registry = RwLock<Vec<(String, Arc<SubFlame>)>>;
+
+fn registry() -> &'static Registry {
+    static REG: OnceLock<Registry> = OnceLock::new();
     REG.get_or_init(Default::default)
 }
 
@@ -92,6 +94,7 @@ const SEQ_CURVE: i32 = 2;
 /// Index of the sub-flame id in the prepared data.
 const ID: usize = 12;
 
+#[allow(clippy::ptr_arg)] // `LoadFn` signature
 fn load(d: &mut Vec<f64>, res: &[Vec<u8>], env: &LoadEnv) {
     // init: frame of the sequence
     let (is_seq, start, end, repeat, digits) = (d[7] as i32, d[8] as i32, d[9] as i32, d[10] as i32, d[11] as i32);
