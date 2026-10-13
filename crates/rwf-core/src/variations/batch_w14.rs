@@ -5932,6 +5932,98 @@ v.x += AMOUNT * r * cos(alpha);
 v.y += AMOUNT * r * sin(alpha);
 if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
     },
+    VarDef {
+        name: "mobius_strip",
+        params: &[
+            ParamDef::new("radius", 1.0),
+            ParamDef::new("width", 1.0),
+            ParamDef::int("twists", 1.0, 0.0, 20.0),
+            ParamDef::new("range x", 1.0),
+            ParamDef::new("range y", 1.0),
+            ParamDef::new("rotate x", 0.0),
+            ParamDef::new("rotate y", 0.0),
+            ParamDef::new("modify z", 1.0),
+            ParamDef::int("width mode", 0.0, 0.0, 3.0),
+            ParamDef::int("radial mode", 0.0, 0.0, 3.0),
+        ],
+        kind: VarKind::Normal,
+        is_3d: true,
+        apply: |d, _, a, v, amount| mobius_strip_apply(d, a, v, amount),
+        prepare: Some(|p, _| {
+            let mut d = p.to_vec();
+            d[2] = (p[2] as i32) as f64;
+            for k in [8, 9] {
+                let m = p[k] as i32;
+                d[k] = if (0..=3).contains(&m) { m as f64 } else { 0.0 };
+            }
+            d
+        }),
+        wgsl: "let rx = D(3);
+let ry = D(4);
+let wmode = i32(D(8));
+let rmode = i32(D(9));
+var x = a.x;
+var y = a.y;
+let out_x = x > rx / 2.0 || x < -rx / 2.0;
+let out_y = y > ry / 2.0 || y < -ry / 2.0;
+if ((rmode == 2 && out_x) || (wmode == 2 && out_y)) {
+  v.hide = 1.0;
+} else if ((rmode == 3 && out_x) || (wmode == 3 && out_y)) {
+  v.x += a.x;
+  v.y += a.y;
+} else {
+  var t = 0.0;
+  if (rx != 0.0) {
+    if (rmode == 0) { x = x % (rx / 2.0); } else if (rmode == 1) { x = clamp(x, -rx / 2.0, rx / 2.0); }
+    t = x * (PI / (rx / 2.0)) + PI;
+  }
+  var s = 0.0;
+  if (ry != 0.0) {
+    if (wmode == 0) { y = y % (ry / 2.0); } else if (wmode == 1) { y = clamp(y, -ry / 2.0, ry / 2.0); }
+    s = y * ((D(1) / 2.0) / (ry / 2.0));
+  }
+  let tw = D(2) * t / 2.0;
+  let mx = (D(0) + s * cos(tw)) * cos(t);
+  let my = (D(0) + s * cos(tw)) * sin(t);
+  let mz = s * sin(tw);
+  let sxr = sin(D(5) * 2.0 * PI);
+  let cxr = cos(D(5) * 2.0 * PI);
+  let syr = sin(D(6) * 2.0 * PI);
+  let cyr = cos(D(6) * 2.0 * PI);
+  let ryy = my * cyr + mz * syr;
+  let rzz = mz * cyr - my * syr;
+  v.x += AMOUNT * (mx * cxr - rzz * sxr);
+  v.y += AMOUNT * ryy;
+  if (D(7) != 0.0) {
+    v.z += AMOUNT * (rzz * cxr + mx * sxr) * D(7);
+  } else {
+    v.z += AMOUNT * v.z;
+  }
+}",
+    },
+    VarDef {
+        name: "moebius_strip",
+        params: &[ParamDef::new("radius", 0.5)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let rad = d[0].abs().max(0.01);
+            let r = (a.x * a.x + a.y * a.y).sqrt();
+            let theta = a.y.atan2(a.x);
+            let nr = rad + (r - rad) * (theta * 0.5).cos();
+            v.x += amount * nr * theta.cos();
+            v.y += amount * nr * theta.sin();
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "let rad = max(abs(D(0)), 0.01);
+let r = sqrt(a.x * a.x + a.y * a.y);
+let theta = glsl_atan2(a.y, a.x);
+let nr = rad + (r - rad) * cos(theta * 0.5);
+v.x += AMOUNT * nr * cos(theta);
+v.y += AMOUNT * nr * sin(theta);
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
 ];
 
 fn mandelbox2d_apply(d: &[f64], ctx: &mut Ctx, a: &Pt, v: &mut Pt, amount: f64) {
@@ -6356,4 +6448,56 @@ fn mobius_dragon_3d_apply(d: &[f64], ctx: &mut Ctx, a: &mut Pt, v: &mut Pt, amou
     v.y = z.im;
     v.color = zc;
     ctx.pass_z(a, v, amount);
+}
+
+/// `MobiusStripFunc.transform` (modes: 0 wrap, 1 edge, 2 hide, 3 leave).
+fn mobius_strip_apply(d: &[f64], a: &Pt, v: &mut Pt, amount: f64) {
+    let (radius, width, twists, rx, ry) = (d[0], d[1], d[2], d[3], d[4]);
+    let (wmode, rmode) = (d[8] as i32, d[9] as i32);
+    let (xmin, xmax, ymin, ymax) = (-rx / 2.0, rx / 2.0, -ry / 2.0, ry / 2.0);
+    let (mut x, mut y) = (a.x, a.y);
+    let out_x = x > xmax || x < xmin;
+    let out_y = y > ymax || y < ymin;
+    if (rmode == 2 && out_x) || (wmode == 2 && out_y) {
+        v.do_hide = true;
+        return;
+    }
+    if (rmode == 3 && out_x) || (wmode == 3 && out_y) {
+        v.x += a.x;
+        v.y += a.y;
+        return;
+    }
+    let t = if rx == 0.0 {
+        0.0
+    } else {
+        if rmode == 0 {
+            x %= rx / 2.0;
+        } else if rmode == 1 {
+            x = if x > xmax { xmax } else if x < xmin { xmin } else { x };
+        }
+        x * (PI / (rx / 2.0)) + PI
+    };
+    let s = if ry == 0.0 {
+        0.0
+    } else {
+        if wmode == 0 {
+            y %= ry / 2.0;
+        } else if wmode == 1 {
+            y = if y > ymax { ymax } else if y < ymin { ymin } else { y };
+        }
+        y * ((width / 2.0) / (ry / 2.0))
+    };
+    let mx = (radius + s * (twists * t / 2.0).cos()) * t.cos();
+    let my = (radius + s * (twists * t / 2.0).cos()) * t.sin();
+    let mz = s * (twists * t / 2.0).sin();
+    let (sxr, cxr) = ((d[5] * 2.0 * PI).sin(), (d[5] * 2.0 * PI).cos());
+    let (syr, cyr) = ((d[6] * 2.0 * PI).sin(), (d[6] * 2.0 * PI).cos());
+    let (rx_, ry_, rz_) = (mx, my * cyr + mz * syr, mz * cyr - my * syr);
+    v.x += amount * (rx_ * cxr - rz_ * sxr);
+    v.y += amount * ry_;
+    if d[7] != 0.0 {
+        v.z += amount * (rz_ * cxr + rx_ * sxr) * d[7];
+    } else {
+        v.z += amount * v.z;
+    }
 }
