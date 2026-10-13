@@ -752,6 +752,44 @@ fn glynn_sim2_prepare(p: &[f64]) -> Vec<f64> {
     d
 }
 
+/// Shared tail of `glynnspiro` / `glynnSShape`: `g` = [radius, radius1, thickness, contrast, x1,
+/// y1, abs_pow], `c` = curve point (already scaled, before `* radius1 + (x1, y1)`).
+fn glynn_curve(g: [f64; 7], ctx: &mut Ctx, a: &Pt, v: &mut Pt, amount: f64, c: (f64, f64)) {
+    let [radius, radius1, thickness, contrast, x1, y1, abs_pow] = g;
+    let r = (a.x * a.x + a.y * a.y).sqrt();
+    if r < radius.abs() {
+        if radius1 >= 0.0 {
+            v.x += amount * (c.0 * radius1 + x1);
+            v.y += amount * (c.1 * radius1 + y1);
+        } else {
+            let cr = radius1 * (thickness + (1.0 - thickness) * ctx.random());
+            let phi = 2.0 * M_PI * ctx.random();
+            v.x += amount * (cr * phi.cos() + x1);
+            v.y += amount * (cr * phi.sin() + y1);
+        }
+    } else {
+        let alpha = radius.abs() / r;
+        let (xi, yi) = if ctx.random() > contrast * alpha.powf(abs_pow) { (a.x, a.y) } else { (alpha * alpha * a.x, alpha * alpha * a.y) };
+        if (xi - x1) * (xi - x1) + (yi - y1) * (yi - y1) < radius1 * radius1 {
+            v.x += amount * (c.0 * radius1 + x1);
+            v.y += amount * (c.1 * radius1 + y1);
+        } else {
+            v.x += amount * xi;
+            v.y += amount * yi;
+        }
+    }
+    ctx.pass_z(a, v, amount);
+}
+
+/// Appends [x1, y1, abs_pow] of the glynn* variations.
+fn glynn_prepare(p: &[f64], radius: f64, phi1: f64, pow: f64, contrast_idx: usize) -> Vec<f64> {
+    let mut d = p.to_vec();
+    d[contrast_idx] = limit_value(p[contrast_idx], 0.0, 1.0);
+    let ph = M_PI * phi1 / 180.0;
+    d.extend([radius * ph.cos(), radius * ph.sin(), pow.abs()]);
+    d
+}
+
 pub static DEFS: &[VarDef] = &[
     VarDef {
         name: "barycentroid",
@@ -3616,6 +3654,181 @@ if (r < D(4)) {
   v.x += AMOUNT * alpha * alpha * a.x;
   v.y += AMOUNT * alpha * alpha * a.y;
 }
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "glynnspiro",
+        params: &[
+            ParamDef::new("radius", 1.0),
+            ParamDef::new("radius1", 0.5),
+            ParamDef::new("thickness", 1.0),
+            ParamDef::new("phi1", 0.0),
+            ParamDef::new("a", 1.0),
+            ParamDef::new("b", -0.3),
+            ParamDef::new("c", 0.4),
+            ParamDef::new("time", 1000.0),
+            ParamDef::int("mode", 0.0, 0.0, 4.0),
+            ParamDef::new("width", 0.0),
+            ParamDef::new("scale", 0.71),
+            ParamDef::new("pow", 1.5),
+            ParamDef::range("contrast", 0.5, 0.0, 1.0),
+        ],
+        kind: VarKind::Normal,
+        is_3d: false,
+        // d = [radius, radius1, thickness, phi1, a, b, c, time, mode, width, scale, pow, contrast, x1, y1, abs_pow]
+        apply: |d, ctx, a, v, amount| {
+            // The width offsets w1..w3 are unused in JWildfire, only their random numbers are drawn.
+            let draws = [1, 1, 3, 12, 1][d[8] as usize] + 3;
+            for _ in 0..3 {
+                ctx.random();
+            }
+            let t = ctx.random() * d[7];
+            for _ in 3..draws {
+                ctx.random();
+            }
+            let (sa, sb, sc) = (d[4], d[5], d[6]);
+            let px = (sa + sb) * t.cos() - sc * ((sa + sb) / sb * t).cos();
+            let py = (sa + sb) * t.sin() - sc * ((sa + sb) / sb * t).sin();
+            let y = ctx.random() - 0.5;
+            let c = (px * d[10] + d[9] * y, py * d[10] + d[9] * y);
+            glynn_curve([d[0], d[1], d[2], d[12], d[13], d[14], d[15]], ctx, a, v, amount, c);
+        },
+        prepare: Some(|p, _| {
+            let mut d = glynn_prepare(p, p[0], p[3], p[11], 12);
+            d[8] = limit_value(p[8], 0.0, 4.0).trunc();
+            d
+        }),
+        wgsl: "let radius = D(0);
+let radius1 = D(1);
+rnd(); rnd(); rnd();
+let t = rnd() * D(7);
+let mode = i32(D(8));
+if (mode == 2) { rnd(); rnd(); rnd(); }
+else if (mode == 3) { for (var i = 0; i < 12; i++) { rnd(); } }
+else { rnd(); }
+let sab = D(4) + D(5);
+let k = sab / D(5) * t;
+let pc = vec2<f32>(sab * cos(t) - D(6) * cos(k), sab * sin(t) - D(6) * sin(k));
+let y = rnd() - 0.5;
+let cv = pc * D(10) + D(9) * y;
+let r = sqrt(a.x * a.x + a.y * a.y);
+let x1 = D(13);
+let y1 = D(14);
+if (r < abs(radius)) {
+  if (radius1 >= 0.0) {
+    v.x += AMOUNT * (cv.x * radius1 + x1);
+    v.y += AMOUNT * (cv.y * radius1 + y1);
+  } else {
+    let cr = radius1 * (D(2) + (1.0 - D(2)) * rnd());
+    let phi = TWO_PI * rnd();
+    v.x += AMOUNT * (cr * cos(phi) + x1);
+    v.y += AMOUNT * (cr * sin(phi) + y1);
+  }
+} else {
+  let alpha = abs(radius) / r;
+  var xi = a.x;
+  var yi = a.y;
+  if (rnd() <= D(12) * java_pow(alpha, D(15))) {
+    xi = alpha * alpha * a.x;
+    yi = alpha * alpha * a.y;
+  }
+  if ((xi - x1) * (xi - x1) + (yi - y1) * (yi - y1) < radius1 * radius1) {
+    v.x += AMOUNT * (cv.x * radius1 + x1);
+    v.y += AMOUNT * (cv.y * radius1 + y1);
+  } else {
+    v.x += AMOUNT * xi;
+    v.y += AMOUNT * yi;
+  }
+}
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "glynnSShape",
+        params: &[
+            ParamDef::new("radius", 1.0),
+            ParamDef::new("radius1", 0.5),
+            ParamDef::new("thickness", 1.0),
+            ParamDef::new("phi1", 0.0),
+            ParamDef::new("m", 5.0),
+            ParamDef::new("n1", 1.7),
+            ParamDef::new("n2", 1.7),
+            ParamDef::new("n3", 1.7),
+            ParamDef::new("scale", 0.71),
+            ParamDef::new("pow", 1.5),
+            ParamDef::range("contrast", 0.5, 0.0, 1.0),
+        ],
+        kind: VarKind::Normal,
+        is_3d: false,
+        // d = [radius, radius1, thickness, phi1, m, n1, n2, n3, scale, pow, contrast, x1, y1, abs_pow]
+        apply: |d, ctx, a, v, amount| {
+            let phi = ctx.random() * (M_PI * 2.0);
+            let t1 = (d[4] * phi / 4.0).cos().abs().powf(d[6]);
+            let t2 = (d[4] * phi / 4.0).sin().abs().powf(d[7]);
+            let r = (t1 + t2).powf(1.0 / d[5]);
+            let (px, py) = if r.abs() == 0.0 { (0.0, 0.0) } else { (phi.cos() / r, phi.sin() / r) };
+            glynn_curve([d[0], d[1], d[2], d[10], d[11], d[12], d[13]], ctx, a, v, amount, (px * d[8], py * d[8]));
+        },
+        prepare: Some(|p, _| glynn_prepare(p, p[0], p[3], p[9], 10)),
+        wgsl: "let radius = D(0);
+let radius1 = D(1);
+let phi = rnd() * TWO_PI;
+let t1 = java_pow(abs(cos(D(4) * phi / 4.0)), D(6));
+let t2 = java_pow(abs(sin(D(4) * phi / 4.0)), D(7));
+let rs = java_pow(t1 + t2, 1.0 / D(5));
+var pc = vec2<f32>(0.0);
+if (abs(rs) != 0.0) { pc = vec2<f32>(cos(phi), sin(phi)) / rs; }
+let cv = pc * D(8);
+let r = sqrt(a.x * a.x + a.y * a.y);
+let x1 = D(11);
+let y1 = D(12);
+if (r < abs(radius)) {
+  if (radius1 >= 0.0) {
+    v.x += AMOUNT * (cv.x * radius1 + x1);
+    v.y += AMOUNT * (cv.y * radius1 + y1);
+  } else {
+    let cr = radius1 * (D(2) + (1.0 - D(2)) * rnd());
+    let phi = TWO_PI * rnd();
+    v.x += AMOUNT * (cr * cos(phi) + x1);
+    v.y += AMOUNT * (cr * sin(phi) + y1);
+  }
+} else {
+  let alpha = abs(radius) / r;
+  var xi = a.x;
+  var yi = a.y;
+  if (rnd() <= D(10) * java_pow(alpha, D(13))) {
+    xi = alpha * alpha * a.x;
+    yi = alpha * alpha * a.y;
+  }
+  if ((xi - x1) * (xi - x1) + (yi - y1) * (yi - y1) < radius1 * radius1) {
+    v.x += AMOUNT * (cv.x * radius1 + x1);
+    v.y += AMOUNT * (cv.y * radius1 + y1);
+  } else {
+    v.x += AMOUNT * xi;
+    v.y += AMOUNT * yi;
+  }
+}
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "gnomonic_proj",
+        params: &[ParamDef::new("scale", 1.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let r = (a.x * a.x + a.y * a.y).sqrt();
+            let theta = a.y.atan2(a.x);
+            let nr = if r > 0.001 { (r * d[0]).tan() / d[0] } else { r };
+            v.x += amount * nr * theta.cos();
+            v.y += amount * nr * theta.sin();
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "let r = sqrt(a.x * a.x + a.y * a.y);
+let theta = atan2(a.y, a.x);
+var nr = r;
+if (r > 0.001) { nr = tan(r * D(0)) / D(0); }
+v.x += AMOUNT * nr * cos(theta);
+v.y += AMOUNT * nr * sin(theta);
 if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
     },
 ];
