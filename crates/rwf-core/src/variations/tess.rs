@@ -134,6 +134,7 @@ fn prepare(p: &[f64]) -> Vec<f64> {
 }
 
 /// `RGBtovec3`: six hex digits, else the default.
+#[allow(clippy::ptr_arg)] // `LoadFn` signature
 fn load(d: &mut Vec<f64>, res: &[Vec<u8>], _: &LoadEnv) {
     for (i, r) in res.iter().enumerate().take(6) {
         let s = text(r);
