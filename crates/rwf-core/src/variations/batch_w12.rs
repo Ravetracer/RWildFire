@@ -3413,6 +3413,386 @@ if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
         wgsl: "v.z = AMOUNT * v.z + D(0);",
     },
     VarDef {
+        name: "pow_block",
+        // Java defaults are random (numerator 2..7, denominator 1..4).
+        params: &[
+            ParamDef::new("numerator", 3.0),
+            ParamDef::new("denominator", 2.0),
+            ParamDef::new("root", 1.0),
+            ParamDef::new("correctn", 1.0),
+            ParamDef::new("correctd", 1.0),
+        ],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            // d = [numerator, denominator, root, correctn, correctd, power, deneps]
+            let theta = a.atan_yx();
+            let r2 = a.sumsq().powf(d[5]) * amount;
+            let ran = (theta * d[6] + (d[2] * M_2PI * (ctx.random() * d[1]).floor() * d[6])) * d[0];
+            v.x += r2 * ran.cos();
+            v.y += r2 * ran.sin();
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: Some(|p, _| {
+            let mut power = p[1] * p[3] * 1.0 / (p[4].abs() + SMALL_EPSILON);
+            if power.abs() <= SMALL_EPSILON {
+                power = SMALL_EPSILON;
+            }
+            power = (p[0] * 0.5) / power;
+            let mut deneps = p[1];
+            if deneps.abs() <= SMALL_EPSILON {
+                deneps = SMALL_EPSILON;
+            }
+            let mut d = p.to_vec();
+            d.extend([power, 1.0 / deneps]);
+            d
+        }),
+        wgsl: "let theta = atan2(a.y, a.x);
+let r2 = pow(a.x * a.x + a.y * a.y, D(5)) * AMOUNT;
+let ran = (theta * D(6) + (D(2) * TWO_PI * floor(rnd() * D(1)) * D(6))) * D(0);
+v.x += r2 * cos(ran);
+v.y += r2 * sin(ran);
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "pre_affine3D",
+        params: AFFINE3D_PARAMS,
+        kind: VarKind::Pre,
+        is_3d: true,
+        apply: |d, _, a, _v, amount| {
+            (a.x, a.y, a.z) = affine3d_xform(d, a.x, a.y, a.z, amount);
+        },
+        prepare: Some(|p, _| affine3d_prepare(p)),
+        wgsl: concat!("let ax = a.x;\nlet ay = a.y;\nlet az = a.z;\n", affine3d_wgsl!(), "a.x = r.x;\na.y = r.y;\na.z = r.z;"),
+    },
+    VarDef {
+        name: "pre_blur3D",
+        params: &[],
+        kind: VarKind::Pre,
+        is_3d: true,
+        apply: |d, ctx, a, _v, amount| {
+            // d = [six initial random numbers, 0, 0]
+            // Java keeps six random numbers (filled in init) and replaces one per call, the index
+            // alternating 0, 1 ((n + 1) & 5); state slots 0..3 hold them, slot 3 the index (CPU,
+            // per render thread).
+            let (sina, cosa) = (ctx.random() * 2.0 * M_PI).sin_cos();
+            let g: Vec<f64> = (0..3).flat_map(|k| *state_slot(ctx, d, k, [d[2 * k], d[2 * k + 1]])).collect();
+            let r = amount * (g[0] + g[1] + g[2] + g[3] + g[4] + g[5] - 3.0);
+            let n = state_slot(ctx, d, 3, [0.0; 2])[0] as usize;
+            let rn = ctx.random();
+            state_slot(ctx, d, n / 2, [0.0; 2])[n % 2] = rn;
+            state_slot(ctx, d, 3, [0.0; 2])[0] = ((n + 1) & 5) as f64;
+            let (sinb, cosb) = (ctx.random() * M_PI).sin_cos();
+            a.x += r * sinb * cosa;
+            a.y += r * sinb * sina;
+            a.z += r * cosb;
+        },
+        // The random numbers of Java's init come from a fixed seed here.
+        prepare: Some(|_, _| {
+            let mut rng = crate::rng::Rng::new(1);
+            let mut d: Vec<f64> = (0..6).map(|_| rng.random()).collect();
+            d.extend([0.0, 0.0]);
+            d
+        }),
+        // GPU: only the first two of the six numbers change in Java; they are fresh random
+        // numbers here.
+        wgsl: "let an = rnd() * TWO_PI;
+let r = AMOUNT * (rnd() + rnd() + D(2) + D(3) + D(4) + D(5) - 3.0);
+let bn = rnd() * PI;
+a.x += r * sin(bn) * cos(an);
+a.y += r * sin(bn) * sin(an);
+a.z += r * cos(bn);",
+    },
+    VarDef {
+        name: "pre_boarders2",
+        params: &[ParamDef::new("c", 0.4), ParamDef::new("left", 0.65), ParamDef::new("right", 0.35)],
+        kind: VarKind::Pre,
+        is_3d: false,
+        apply: |d, ctx, a, _v, amount| {
+            // d = [c, left, right, _c, _cl, _cr]
+            let (c, cl, cr) = (d[3], d[4], d[5]);
+            let (rx, ry) = (rint(a.x), rint(a.y));
+            let (ox, oy) = (a.x - rx, a.y - ry);
+            if ctx.random() >= cr {
+                a.x = amount * (ox * c + rx);
+                a.y = amount * (oy * c + ry);
+            } else if ox.abs() >= oy.abs() {
+                if ox >= 0.0 {
+                    a.x = amount * (ox * c + rx + cl);
+                    a.y = amount * (oy * c + ry + cl * oy / ox);
+                } else {
+                    a.x = amount * (ox * c + rx - cl);
+                    a.y = amount * (oy * c + ry - cl * oy / ox);
+                }
+            } else if oy >= 0.0 {
+                a.y = amount * (oy * c + ry + cl);
+                a.x = amount * (ox * c + rx + ox / oy * cl);
+            } else {
+                a.y = amount * (oy * c + ry - cl);
+                a.x = amount * (ox * c + rx - ox / oy * cl);
+            }
+        },
+        prepare: Some(|p, _| {
+            let nz = |v: f64| if v == 0.0 { EPSILON } else { v };
+            let (c, cl, cr) = (nz(p[0].abs()), nz(p[1].abs()), nz(p[2].abs()));
+            vec![p[0], p[1], p[2], c, c * cl, c + c * cr]
+        }),
+        wgsl: "let c = D(3);
+let cl = D(4);
+let rx = round(a.x);
+let ry = round(a.y);
+let ox = a.x - rx;
+let oy = a.y - ry;
+if (rnd() >= D(5)) {
+  a.x = AMOUNT * (ox * c + rx);
+  a.y = AMOUNT * (oy * c + ry);
+} else if (abs(ox) >= abs(oy)) {
+  let s = select(-1.0, 1.0, ox >= 0.0);
+  a.x = AMOUNT * (ox * c + rx + s * cl);
+  a.y = AMOUNT * (oy * c + ry + s * cl * oy / ox);
+} else {
+  let s = select(-1.0, 1.0, oy >= 0.0);
+  a.y = AMOUNT * (oy * c + ry + s * cl);
+  a.x = AMOUNT * (ox * c + rx + s * ox / oy * cl);
+}",
+    },
+    VarDef {
+        name: "pre_bwraps2",
+        params: &[
+            ParamDef::new("cellsize", 1.0),
+            ParamDef::new("space", 0.0),
+            ParamDef::new("gain", 2.0),
+            ParamDef::new("inner_twist", 0.0),
+            ParamDef::new("outer_twist", 0.0),
+        ],
+        kind: VarKind::Pre,
+        is_3d: false,
+        apply: |d, _, a, _v, amount| {
+            // d = [cellsize, space, gain, inner_twist, outer_twist, g2, r2, rfactor]
+            let (vx, vy) = (a.x, a.y);
+            let cs = d[0];
+            if cs.abs() < SMALL_EPSILON {
+                a.x = amount * vx;
+                a.y = amount * vy;
+                return;
+            }
+            let cx = ((vx / cs).floor() + 0.5) * cs;
+            let cy = ((vy / cs).floor() + 0.5) * cs;
+            let (mut lx, mut ly) = (vx - cx, vy - cy);
+            if lx * lx + ly * ly > d[6] {
+                a.x = amount * vx;
+                a.y = amount * vy;
+                return;
+            }
+            lx *= d[5];
+            ly *= d[5];
+            let r = d[7] / ((lx * lx + ly * ly) / 4.0 + 1.0);
+            lx *= r;
+            ly *= r;
+            let r = (lx * lx + ly * ly) / d[6];
+            let (s, c) = (d[3] * (1.0 - r) + d[4] * r).sin_cos();
+            a.x = amount * (cx + c * lx + s * ly);
+            a.y = amount * (cy - s * lx + c * ly);
+        },
+        prepare: Some(|p, _| {
+            let radius = 0.5 * (p[0] / (1.0 + p[1] * p[1]));
+            let g2 = p[2] * p[2] / p[0] + 1.0e-6;
+            let mut max_bubble = g2 * radius;
+            if max_bubble > 2.0 {
+                max_bubble = 1.0;
+            } else {
+                max_bubble *= 1.0 / ((max_bubble * max_bubble) / 4.0 + 1.0);
+            }
+            let mut d = p.to_vec();
+            d.extend([g2, radius * radius, radius / max_bubble]);
+            d
+        }),
+        wgsl: "let cs = D(0);
+var l = vec2<f32>(0.0);
+var cc = vec2<f32>(a.x, a.y);
+if (abs(cs) >= EPS) {
+  cc = (floor(vec2<f32>(a.x, a.y) / cs) + 0.5) * cs;
+  l = vec2<f32>(a.x, a.y) - cc;
+  if (dot(l, l) > D(6)) {
+    cc = vec2<f32>(a.x, a.y);
+    l = vec2<f32>(0.0);
+  } else {
+    l *= D(5);
+    l *= D(7) / (dot(l, l) / 4.0 + 1.0);
+    let r = dot(l, l) / D(6);
+    let theta = D(3) * (1.0 - r) + D(4) * r;
+    let s = sin(theta);
+    let c = cos(theta);
+    l = vec2<f32>(c * l.x + s * l.y, -s * l.x + c * l.y);
+  }
+}
+a.x = AMOUNT * (cc.x + l.x);
+a.y = AMOUNT * (cc.y + l.y);",
+    },
+    VarDef {
+        name: "pre_circlecrop",
+        params: &[
+            ParamDef::new("radius", 1.0),
+            ParamDef::new("x", 0.0),
+            ParamDef::new("y", 0.0),
+            ParamDef::range("scatter_area", 0.0, -1.0, 1.0),
+            ParamDef::int("zero", 1.0, 0.0, 1.0),
+        ],
+        kind: VarKind::Pre,
+        is_3d: false,
+        apply: |d, ctx, a, _v, amount| {
+            // d = [radius, x, y, scatter_area, zero, cA]
+            let (x0, y0, cr) = (d[1], d[2], d[0]);
+            a.x -= x0;
+            a.y -= y0;
+            let rad = (a.x * a.x + a.y * a.y).sqrt();
+            let ang = a.y.atan2(a.x);
+            let rdc = cr + ctx.random() * 0.5 * d[5];
+            let esc = rad > cr;
+            let cr0 = d[4] as i32 == 1;
+            let (s, c) = ang.sin_cos();
+            a.do_hide = false;
+            if cr0 && esc {
+                a.x = 0.0;
+                a.y = 0.0;
+                a.do_hide = true;
+            } else if !cr0 && esc {
+                a.x = amount * rdc * c + x0;
+                a.y = amount * rdc * s + y0;
+            } else {
+                a.x = amount * a.x + x0;
+                a.y = amount * a.y + y0;
+            }
+        },
+        prepare: Some(|p, _| {
+            let mut d = p.to_vec();
+            d[4] = ftoi(p[4]) as f64;
+            d.push(java_max(-1.0, java_min(p[3], 1.0)));
+            d
+        }),
+        wgsl: "let x0 = D(1);
+let y0 = D(2);
+let cr = D(0);
+let px = a.x - x0;
+let py = a.y - y0;
+let rad = sqrt(px * px + py * py);
+let ang = atan2(py, px);
+let rdc = cr + rnd() * 0.5 * D(5);
+let esc = rad > cr;
+let cr0 = i32(D(4)) == 1;
+a.hide = 0.0;
+if (cr0 && esc) {
+  a.x = 0.0;
+  a.y = 0.0;
+  a.hide = 1.0;
+} else if (!cr0 && esc) {
+  a.x = AMOUNT * rdc * cos(ang) + x0;
+  a.y = AMOUNT * rdc * sin(ang) + y0;
+} else {
+  a.x = AMOUNT * px + x0;
+  a.y = AMOUNT * py + y0;
+}",
+    },
+    VarDef {
+        name: "pre_crop",
+        params: &[
+            ParamDef::new("left", -1.0),
+            ParamDef::new("right", 1.0),
+            ParamDef::new("top", -1.0),
+            ParamDef::new("bottom", 1.0),
+            ParamDef::range("scatter_area", 0.0, -1.0, 1.0),
+            ParamDef::int("zero", 0.0, 0.0, 1.0),
+        ],
+        kind: VarKind::Pre,
+        is_3d: false,
+        apply: |d, ctx, a, _v, amount| {
+            // d = [left, right, top, bottom, scatter_area, zero, xmin 6, xmax 7, ymin 8, ymax 9, w 10, h 11]
+            let (mut x, mut y) = (a.x, a.y);
+            if (x < d[6] || x > d[7] || y < d[8] || y > d[9]) && d[5] != 0.0 {
+                a.x = 0.0;
+                a.y = 0.0;
+                a.do_hide = true;
+                return;
+            }
+            a.do_hide = false;
+            if x < d[6] {
+                x = d[6] + ctx.random() * d[10];
+            } else if x > d[7] {
+                x = d[7] - ctx.random() * d[10];
+            }
+            if y < d[8] {
+                y = d[8] + ctx.random() * d[11];
+            } else if y > d[9] {
+                y = d[9] - ctx.random() * d[11];
+            }
+            a.x = amount * x;
+            a.y = amount * y;
+        },
+        prepare: Some(|p, _| {
+            let scatter = limit_value(p[4], -1.0, 1.0);
+            let zero = limit_value(ftoi(p[5]), 0, 1) as f64;
+            let (xmin, xmax) = (java_min(p[0], p[1]), java_max(p[0], p[1]));
+            let (ymin, ymax) = (java_min(p[2], p[3]), java_max(p[2], p[3]));
+            vec![p[0], p[1], p[2], p[3], scatter, zero, xmin, xmax, ymin, ymax, (xmax - xmin) * 0.5 * scatter, (ymax - ymin) * 0.5 * scatter]
+        }),
+        wgsl: "var x = a.x;
+var y = a.y;
+if ((x < D(6) || x > D(7) || y < D(8) || y > D(9)) && D(5) != 0.0) {
+  a.x = 0.0;
+  a.y = 0.0;
+  a.hide = 1.0;
+  return PtPair(a, v);
+}
+a.hide = 0.0;
+if (x < D(6)) { x = D(6) + rnd() * D(10); } else if (x > D(7)) { x = D(7) - rnd() * D(10); }
+if (y < D(8)) { y = D(8) + rnd() * D(11); } else if (y > D(9)) { y = D(9) - rnd() * D(11); }
+a.x = AMOUNT * x;
+a.y = AMOUNT * y;",
+    },
+    VarDef {
+        name: "pre_c_symmetry",
+        params: &[ParamDef::new("p1", 3.0), ParamDef::new("p2", 3.0)],
+        kind: VarKind::Pre,
+        is_3d: false,
+        apply: |d, ctx, a, _v, amount| {
+            let t = d[0] * a.y.atan2(a.x);
+            let l = (a.x * a.x + a.y * a.y).sqrt().powf(d[1]);
+            a.x = amount * (t.cos() * l);
+            a.y = amount * (t.sin() * l);
+            if ctx.preserve_z {
+                a.z *= amount;
+            }
+        },
+        prepare: None,
+        wgsl: "let t = D(0) * atan2(a.y, a.x);
+let l = pow(length(vec2<f32>(a.x, a.y)), D(1));
+a.x = AMOUNT * (cos(t) * l);
+a.y = AMOUNT * (sin(t) * l);
+if (PRESERVE_Z) { a.z = AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "pre_curl",
+        params: &[ParamDef::new("c1", 0.0), ParamDef::new("c2", 0.0)],
+        kind: VarKind::Pre,
+        is_3d: false,
+        apply: |d, _, a, _v, amount| {
+            let (x, y) = (a.x, a.y);
+            let re = 1.0 + d[0] * x + d[1] * (x * x - y * y);
+            let im = d[0] * y + 2.0 * d[1] * x * y;
+            let r = amount / (re * re + im * im);
+            a.x = (x * re + y * im) * r;
+            a.y = (y * re - x * im) * r;
+        },
+        prepare: None,
+        wgsl: "let x = a.x;
+let y = a.y;
+let re = 1.0 + D(0) * x + D(1) * (x * x - y * y);
+let im = D(0) * y + 2.0 * D(1) * x * y;
+let r = AMOUNT / (re * re + im * im);
+a.x = (x * re + y * im) * r;
+a.y = (y * re - x * im) * r;",
+    },
+    VarDef {
         name: "post_ztranslate_wf",
         params: &[],
         kind: VarKind::Post,
