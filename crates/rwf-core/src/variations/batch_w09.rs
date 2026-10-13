@@ -1322,9 +1322,10 @@ if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
         kind: VarKind::Normal,
         is_3d: false,
         apply: |d, ctx, a, v, amount| {
-            // Java cycles through the segments; here a random segment is drawn.
+            // Java cycles through the segments in order; here per render thread (the GPU draws a
+            // random segment).
             let nseg = d[3] as usize;
-            let k = ((ctx.random() * nseg as f64) as usize).min(nseg - 1);
+            let k = ctx.cycle_index(d.as_ptr() as usize, nseg);
             let (x1, y1, x2, y2) = (d[4 + 2 * k], d[5 + 2 * k], d[6 + 2 * k], d[7 + 2 * k]);
             let ydiff = y2 - y1;
             let xdiff = x2 - x1;

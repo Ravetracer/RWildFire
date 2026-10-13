@@ -237,6 +237,15 @@ impl Ctx {
     }
     /// Uniform random number in [0, 1).
     #[inline]
+    /// Index that cycles through `0..n` with every call, per render thread (keyed by `key`, the
+    /// address of the prepared data): JWildfire's polyline variations step through their
+    /// segments in order.
+    pub(crate) fn cycle_index(&mut self, key: usize, n: usize) -> usize {
+        let st = self.orbits.entry(key).or_insert([0.0, 0.0]);
+        let k = (st[0] as usize).min(n.saturating_sub(1));
+        st[0] = if k + 1 >= n { 0.0 } else { (k + 1) as f64 };
+        k
+    }
     /// JWildfire's per-instance ring of `n` uniform random numbers (`gauss_rnd`, filled in
     /// `init`): returns the sum of the ring, then replaces the entry at the ring index with a
     /// new random number and advances the index with `(i + 1) & mask`. Four-entry rings use

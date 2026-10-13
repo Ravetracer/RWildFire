@@ -768,9 +768,10 @@ fn klein_group_generators(a_re: f64, a_im: f64, b_re: f64, b_im: f64, recipe: i3
 /// show_points, point_thickness, line_threshold, point_threshold, line_thickness / 100,
 /// point_thickness / 100, segments, x0, y0, x1, y1, ...].
 fn turtle_polyline_apply(d: &[f64], ctx: &mut Ctx, a: &Pt, v: &mut Pt, amount: f64) {
-    // Java cycles through the segments; here a random segment is drawn.
+    // Java cycles through the segments in order; here per render thread (the GPU draws a
+    // random segment).
     let nseg = d[9] as usize;
-    let k = ((ctx.random() * nseg as f64) as usize).min(nseg - 1);
+    let k = ctx.cycle_index(d.as_ptr() as usize, nseg);
     let (x1, y1, x2, y2) = (d[10 + 2 * k], d[11 + 2 * k], d[12 + 2 * k], d[13 + 2 * k]);
     let rnd = ctx.random();
     let (mut xo, mut yo) = (0.0, 0.0);
@@ -1898,9 +1899,10 @@ if (D(4) == 0.0 || ch <= h) {
         kind: VarKind::Normal,
         is_3d: false,
         apply: |d, ctx, a, v, amount| {
-            // Java cycles through the segments; here a random segment is drawn.
+            // Java cycles through the segments in order; here per render thread (the GPU draws a
+            // random segment).
             let nseg = d[10] as usize;
-            let k = ((ctx.random() * nseg as f64) as usize).min(nseg - 1);
+            let k = ctx.cycle_index(d.as_ptr() as usize, nseg);
             let o = 11 + 4 * k;
             let (x1, y1, x2, y2) = (d[o], d[o + 1], d[o + 2], d[o + 3]);
             let rnd = ctx.random();
