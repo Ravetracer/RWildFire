@@ -2750,6 +2750,209 @@ if (abs(r1 - 0.5) / rmax < 1.0) {
 }
 if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
     },
+    VarDef {
+        name: "truchetflow",
+        params: &[ParamDef::int("randomize", 0.0, 0.0, 1000.0), ParamDef::range("zoom", 5.0, 0.1, 50.0), ParamDef::int("invert", 0.0, 0.0, 1.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        // d = [seed, zoom, invert]
+        apply: |d, ctx, a, v, amount| {
+            let mut x = ctx.random();
+            let mut y = ctx.random();
+            let (seed, zoom) = (d[0], d[1]);
+            let uvx = seed * (seed * 180.0 / M_PI).sin();
+            let ux = (x - 0.5) * zoom - uvx;
+            let uy = (y - 0.5) * zoom - uvx;
+            let fract = |t: f64| t - t.floor();
+            let mut gx = fract(ux) - 0.5;
+            let gy = fract(uy) - 0.5;
+            // N21(floor(uv))
+            let (mut px, mut py) = (fract(ux.floor() * 234.234), fract(uy.floor() * 823.923));
+            let dp = px * (px + 42.34) + py * (py + 42.34);
+            px += dp;
+            py += dp;
+            let n = fract(px * py);
+            let band = -0.03 + (0.5 * y).powf(1.5);
+            let width = 0.01 + 0.1 * x;
+            if n > 0.5 {
+                gx *= -1.0;
+            }
+            let t = gx + gy + 0.001;
+            let s = 0.5 * if t > 0.0 { 1.0 } else if t < 0.0 { -1.0 } else { t };
+            let mut dd = ((gx - s) * (gx - s) + (gy - s) * (gy - s)).sqrt() - 0.5;
+            dd = dd.abs();
+            dd = (dd - band).abs();
+            dd = (dd - band).abs();
+            dd = (dd - band).abs();
+            dd = dd.abs() - width;
+            let fuzzy = 0.01 + 0.2 * ((x - 0.5).abs() + (y - 0.5).abs()).powf(2.0);
+            let tv = java_min(java_max((dd - fuzzy) / (0.0 - fuzzy), 0.0), 1.0);
+            let col = tv * tv * (3.0 - 2.0 * tv);
+            v.do_hide = false;
+            if (d[2] as i32 == 0 && col > 0.0) || (d[2] as i32 != 0 && col <= 0.0) {
+                x = 0.0;
+                y = 0.0;
+                v.do_hide = true;
+            }
+            v.x = amount * (x - 0.5);
+            v.y = amount * (y - 0.5);
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: Some(|p, _| vec![p[0] as i32 as f64, limit_value(p[1], 0.1, 50.0), limit_value(p[2], 0.0, 1.0) as i32 as f64]),
+        wgsl: "var x = rnd();
+var y = rnd();
+let seed = D(0);
+let zoom = D(1);
+let uvx = seed * sin(seed * 180.0 / PI);
+let uv = vec2<f32>((x - 0.5) * zoom - uvx, (y - 0.5) * zoom - uvx);
+var gv = fract(uv) - 0.5;
+var p = fract(floor(uv) * vec2<f32>(234.234, 823.923));
+p = p + dot(p, p + 42.34);
+let n = fract(p.x * p.y);
+let band = -0.03 + pow(0.5 * y, 1.5);
+let width = 0.01 + 0.1 * x;
+if (n > 0.5) { gv.x = -gv.x; }
+let s = 0.5 * sign(gv.x + gv.y + 0.001);
+var dd = abs(length(gv - s) - 0.5);
+dd = abs(dd - band);
+dd = abs(dd - band);
+dd = abs(dd - band);
+dd = abs(dd) - width;
+let fuzzy = 0.01 + 0.2 * pow(abs(x - 0.5) + abs(y - 0.5), 2.0);
+let col = glsl_smoothstep(fuzzy, 0.0, dd);
+v.hide = 0.0;
+if ((i32(D(2)) == 0 && col > 0.0) || (i32(D(2)) != 0 && col <= 0.0)) {
+  x = 0.0;
+  y = 0.0;
+  v.hide = 1.0;
+}
+v.x = AMOUNT * (x - 0.5);
+v.y = AMOUNT * (y - 0.5);
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "truchet_hex_crop",
+        params: &[ParamDef::range("wd", 0.05, 0.0, 5.0), ParamDef::int("mode", 0.0, 0.0, 2.0), ParamDef::int("inv", 0.0, 0.0, 1.0), ParamDef::int("seed", 13.0, 0.0, 100.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            const SQRT3_2: f64 = 0.866_025_403_784_438_6;
+            const SQRT3: f64 = 1.732_050_807_568_877_2;
+            const PI_3: f64 = std::f64::consts::FRAC_PI_3;
+            const PI_6: f64 = std::f64::consts::FRAC_PI_6;
+            let (wd, mode, inv, seed) = (d[0], d[1] as i32, d[2] as i32, d[3] as i32);
+            let x = 0.577_350_269_189_625_7 * a.x - a.y / 3.0;
+            let z = 2.0 * a.y / 3.0;
+            let y = -x - z;
+            let (mut rx, ry, mut rz) = (java_round(x), java_round(y), java_round(z));
+            let (x_diff, y_diff, z_diff) = ((rx - x).abs(), (ry - y).abs(), (rz - z).abs());
+            // (the ry correction of the y_diff case is not used afterwards)
+            if x_diff > y_diff && x_diff > z_diff {
+                rx = -ry - rz;
+            } else if y_diff <= z_diff || y_diff.is_nan() || z_diff.is_nan() {
+                rz = -rx - ry;
+            }
+            let fx_h = SQRT3 * rx + SQRT3_2 * rz;
+            let fy_h = 1.5 * rz;
+            let mut fx = a.x - fx_h;
+            let mut fy = a.y - fy_h;
+            let mut add = 0.0;
+            if seed == 1 && fmod(rx, 2.0) == 0.0 && fmod(rz, 2.0) == 0.0 {
+                add = PI_3;
+            }
+            if seed >= 2 {
+                let mut hash_f = (fx_h * 12.9898 + fy_h * 78.233 + seed as f64).sin() * 43758.5453;
+                hash_f -= hash_f.floor();
+                if hash_f < 0.5 {
+                    add = PI_3;
+                }
+            }
+            let angle = fy.atan2(fx) + PI_6 - add;
+            let coef = 0.477_464_829_275_686;
+            let angle2 = (angle * coef).floor() / coef + PI_6 + add;
+            let (x0, y0) = (angle2.cos(), angle2.sin());
+            let dist = (sqr(fx - x0) + sqr(fy - y0)).sqrt();
+            let d1 = 0.5 + wd;
+            let d2 = 0.5 - wd;
+            let hit = if inv == 1 { dist > d1 || dist < d2 } else { dist < d1 && dist > d2 };
+            if hit {
+                if mode == 0 {
+                    fx = 0.0;
+                    fy = 0.0;
+                } else if mode == 1 {
+                    fx = x0;
+                    fy = y0;
+                } else {
+                    let rangle = (fy - y0).atan2(fx - x0);
+                    let dd = if ctx.random() < 0.5 { d1 } else { d2 };
+                    fx = x0 + rangle.cos() * dd;
+                    fy = y0 + rangle.sin() * dd;
+                }
+            }
+            v.x += (fx + fx_h) * amount;
+            v.y += (fy + fy_h) * amount;
+        },
+        prepare: Some(|p, _| {
+            vec![limit_value(p[0], 0.0, 5.0), limit_value(p[1], 0.0, 2.0) as i32 as f64, limit_value(p[2], 0.0, 1.0) as i32 as f64, p[3] as i32 as f64]
+        }),
+        wgsl: "let SQRT3_2 = 0.8660254037844386;
+let SQRT3 = 1.7320508075688772;
+let PI_3 = 1.0471975511965976;
+let PI_6 = 0.5235987755982988;
+let wd = D(0);
+let mode = i32(D(1));
+let seed = i32(D(3));
+let x = 0.5773502691896258 * a.x - a.y / 3.0;
+let z = 2.0 * a.y / 3.0;
+let y = -x - z;
+var rx = java_round(x);
+let ry = java_round(y);
+var rz = java_round(z);
+let x_diff = abs(rx - x);
+let y_diff = abs(ry - y);
+let z_diff = abs(rz - z);
+if (x_diff > y_diff && x_diff > z_diff) {
+  rx = -ry - rz;
+} else if (!(y_diff > z_diff)) {
+  rz = -rx - ry;
+}
+let fx_h = SQRT3 * rx + SQRT3_2 * rz;
+let fy_h = 1.5 * rz;
+var fx = a.x - fx_h;
+var fy = a.y - fy_h;
+var add = 0.0;
+if (seed == 1 && fmod(rx, 2.0) == 0.0 && fmod(rz, 2.0) == 0.0) { add = PI_3; }
+if (seed >= 2) {
+  let hash_f = fract(sin(fx_h * 12.9898 + fy_h * 78.233 + f32(seed)) * 43758.5453);
+  if (hash_f < 0.5) { add = PI_3; }
+}
+let angle = atan2(fy, fx) + PI_6 - add;
+let coef = 0.477464829275686;
+let angle2 = floor(angle * coef) / coef + PI_6 + add;
+let x0 = cos(angle2);
+let y0 = sin(angle2);
+let dist = sqrt(sqr(fx - x0) + sqr(fy - y0));
+let d1 = 0.5 + wd;
+let d2 = 0.5 - wd;
+var hit = dist < d1 && dist > d2;
+if (i32(D(2)) == 1) { hit = dist > d1 || dist < d2; }
+if (hit) {
+  if (mode == 0) {
+    fx = 0.0;
+    fy = 0.0;
+  } else if (mode == 1) {
+    fx = x0;
+    fy = y0;
+  } else {
+    let rangle = atan2(fy - y0, fx - x0);
+    let dd = select(d2, d1, rnd() < 0.5);
+    fx = x0 + cos(rangle) * dd;
+    fy = y0 + sin(rangle) * dd;
+  }
+}
+v.x += (fx + fx_h) * AMOUNT;
+v.y += (fy + fy_h) * AMOUNT;",
+    },
     // @@NEXT@@
 ];
 
