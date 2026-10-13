@@ -1390,4 +1390,119 @@ v.x = (p * a.x + D(4) * z.x - D(5) * a.y) * AMOUNT;
 v.y = (p * a.y - D(4) * z.y + D(5) * a.x) * AMOUNT;
 v.color = abs(D(10) * ((v.x + D(7)) * (v.x + D(7)) + (v.y + D(8)) * (v.y + D(8)))) % 1.0;",
     },
+    simple(
+        "idisc",
+        false,
+        |_, ctx, a, v, amount| {
+            let ang = M_PI / ((a.x * a.x + a.y * a.y).sqrt() + 1.0);
+            let r = a.y.atan2(a.x) * (amount * M_1_PI);
+            v.x += r * ang.cos();
+            v.y += r * ang.sin();
+            ctx.pass_z(a, v, amount);
+        },
+        "let ang = PI / (sqrt(a.x * a.x + a.y * a.y) + 1.0);
+let r = atan2(a.y, a.x) * (AMOUNT / PI);
+v.x += r * cos(ang);
+v.y += r * sin(ang);
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    ),
+    VarDef {
+        name: "ikeda",
+        params: &[ParamDef::new("u", 0.9)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let t = 0.4 - 6.0 / (1.0 + a.x * a.x + a.y * a.y);
+            let (st, ct) = (t.sin(), t.cos());
+            v.x += amount * (1.0 + d[0] * (a.x * ct - a.y * st));
+            v.y += amount * (d[0] * (a.x * st + a.y * ct));
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "let t = 0.4 - 6.0 / (1.0 + a.x * a.x + a.y * a.y);
+v.x += AMOUNT * (1.0 + D(0) * (a.x * cos(t) - a.y * sin(t)));
+v.y += AMOUNT * (D(0) * (a.x * sin(t) + a.y * cos(t)));
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "inflate",
+        params: &[ParamDef::new("strength", 0.5)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let r = (a.x * a.x + a.y * a.y).sqrt();
+            let nr = r + d[0] * (-r).exp();
+            let scale = if r > 0.001 { nr / r } else { 1.0 };
+            v.x += amount * a.x * scale;
+            v.y += amount * a.y * scale;
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "let r = sqrt(a.x * a.x + a.y * a.y);
+var scale = 1.0;
+if (r > 0.001) { scale = (r + D(0) * exp(-r)) / r; }
+v.x += AMOUNT * a.x * scale;
+v.y += AMOUNT * a.y * scale;
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    simple(
+        "inflateZ_1",
+        true,
+        |_, _, a, v, amount| {
+            v.z += amount * (a.y.atan2(a.x).sin() - a.y * 2.0);
+        },
+        "v.z += AMOUNT * (sin(atan2(a.y, a.x)) - a.y * 2.0);",
+    ),
+    simple(
+        "inflateZ_2",
+        true,
+        |_, _, a, v, amount| {
+            v.z += amount * (0.25 - (a.y * 2.0 + a.x * 2.0) * 0.333333);
+        },
+        "v.z += AMOUNT * (0.25 - (a.y * 2.0 + a.x * 2.0) * 0.333333);",
+    ),
+    simple(
+        "inflateZ_3",
+        true,
+        |_, _, a, v, amount| {
+            let ang = a.y.atan2(a.x);
+            v.z += amount * (0.2 * (M_PI - ang) * (3.0 * ang + (a.y - a.x)).cos());
+        },
+        "let ang = atan2(a.y, a.x);
+v.z += AMOUNT * (0.2 * (PI - ang) * cos(3.0 * ang + (a.y - a.x)));",
+    ),
+    simple(
+        "inflateZ_4",
+        true,
+        |_, ctx, a, v, amount| {
+            let mut val = M_PI_2 - a.y.atan2(a.x);
+            if ctx.random() < 0.5 {
+                val = -val;
+            }
+            v.z += amount * val * 0.25;
+        },
+        "var val = HALF_PI - atan2(a.y, a.x);
+if (rnd() < 0.5) { val = -val; }
+v.z += AMOUNT * val * 0.25;",
+    ),
+    simple(
+        "inflateZ_5",
+        true,
+        |_, _, a, v, amount| {
+            v.z += amount * ((M_PI_2 - a.y.atan2(a.x)).cos() / 2.0);
+        },
+        "v.z += AMOUNT * (cos(HALF_PI - atan2(a.y, a.x)) / 2.0);",
+    ),
+    simple(
+        "inflateZ_6",
+        true,
+        |_, _, a, v, amount| {
+            let ang = a.y.atan2(a.x);
+            let kik = ang * (a.y - a.x).sin();
+            v.z += amount * (1.5 - (ang.sin() * kik * 0.5).acos());
+        },
+        "let ang = atan2(a.y, a.x);
+let kik = ang * sin(a.y - a.x);
+v.z += AMOUNT * (1.5 - acos(sin(ang) * kik * 0.5));",
+    ),
 ];
