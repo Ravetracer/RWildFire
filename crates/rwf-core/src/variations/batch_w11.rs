@@ -504,9 +504,9 @@ fn glsl_circuits_formula(d: &[f64], mut z: Vec2, t: f64) -> (Vec3, f64) {
     (col * t2 + vec3(1.0, 0.7, 0.3) * (circ * (10.0 - m) * 3.0), ds)
 }
 
-/// `GLSLCircuitsFunc.getRGBColor`; JWildfire keeps `S` as a field across all samples (starting at
-/// (101 + glow) * intensity, then divided by floor(loops) per sample), here it starts at 0.
-fn glsl_circuits_rgb(d: &[f64], (xp, yp): (f64, f64)) -> Vec3 {
+/// `GLSLCircuitsFunc.getRGBColor`; `s` is JWildfire's `S` field, which is carried across
+/// samples.
+fn glsl_circuits_rgb(d: &[f64], (xp, yp): (f64, f64), s: &mut f64) -> Vec3 {
     let (time, rate, focus, loops, zoom) = (d[1], d[2], d[4], d[7], d[8]);
     let pos = vec2((xp + 0.5) / d[0] - 0.5, (yp + 0.5) / GLSL_RES_Y - 0.5);
     let mut r = 0.0;
@@ -535,21 +535,20 @@ fn glsl_circuits_rgb(d: &[f64], (xp, yp): (f64, f64)) -> Vec3 {
     let pix = 0.5 / d[0] * zz / sph;
     let dof = zoom * focus + t * 0.25;
     let mut l = loops.floor();
-    let mut s = 0.0;
     let mut color = Vec3::splat(0.0);
     for aa in 0..24 {
         let aauv = vec2((aa as f64 / 6.0).floor(), glsl_mod(aa as f64, 6.0).floor());
         let (col, ds) = glsl_circuits_formula(d, uv + aauv * pix * dof, t);
         color = col;
-        s += ds;
+        *s += ds;
         if l <= 0.0 {
             break;
         }
         l -= 1.0;
     }
-    s /= loops.floor();
+    *s /= loops.floor();
     color /= loops.floor();
-    mix(Vec3::splat(0.15), color, s) * (1.0 - length(pos)) * vec3(1.2, 1.1, 1.0)
+    mix(Vec3::splat(0.15), color, *s) * (1.0 - length(pos)) * vec3(1.2, 1.1, 1.0)
 }
 
 /// `GLSLGrid3DFunc.field`
@@ -2323,7 +2322,11 @@ v.y += AMOUNT * (gj / 1000000.0 - 0.5);",
         is_3d: false,
         apply: |d, ctx, _, v, amount| {
             let px = glsl_pixel(ctx, d[0]);
-            let color = glsl_circuits_rgb(d, px);
+            // JWildfire's `S` starts at (101 + glow) * intensity of the default parameters
+            let key = d.as_ptr() as usize;
+            let mut sv = ctx.orbits.get(&key).map_or((101.0 + 2.0) * 0.9, |st| st[0]);
+            let color = glsl_circuits_rgb(d, px, &mut sv);
+            ctx.orbits.insert(key, [sv, 0.0]);
             glsl_out(v, amount, px, d[0], color, d[9], |c| c.x * c.y);
         },
         prepare: Some(|p, _| {
@@ -2356,6 +2359,9 @@ v.y += AMOUNT * (gj / 1000000.0 - 0.5);",
   let t2 = vec3<f32>(0.4 + glsl_mod(m / 9.0 - t * pulse + ot2 * 2.0, 1.0));
   return vec4<f32>(col * t2 + vec3<f32>(1.0, 0.7, 0.3) * (circ * (10.0 - m) * 3.0), ds);
 }
+// JWildfire carries `S` across samples; here per shader invocation (starting at 0, close to
+// its steady state)
+var<private> glsl_circuits_s: f32;
 @body
 let gi = floor(rnd() * D(0));
 let gj = floor(rnd() * 1000000.0);
@@ -2385,7 +2391,7 @@ q = q * zz;
 let pix = 0.5 / D(0) * zz / sph;
 let dof = zoom * D(4) + tt * 0.25;
 var ll = floor(loops);
-var s = 0.0;
+var s = glsl_circuits_s;
 var color = vec3<f32>(0.0);
 for (var ai = 0; ai < 24; ai++) {
   let aauv = floor(vec2<f32>(f32(ai) / 6.0, glsl_mod(f32(ai), 6.0)));
@@ -2396,6 +2402,7 @@ for (var ai = 0; ai < 24; ai++) {
   ll -= 1.0;
 }
 s /= floor(loops);
+glsl_circuits_s = s;
 color = color / floor(loops);
 let colo = mix(vec3<f32>(0.15), color, s) * (1.0 - length(pos)) * vec3<f32>(1.2, 1.1, 1.0);
 if (i32(D(9)) == 0) {
