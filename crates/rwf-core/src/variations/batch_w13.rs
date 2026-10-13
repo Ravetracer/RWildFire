@@ -1413,8 +1413,672 @@ v.x += (stcv * ctcv + cc * b * sysz) * ni;
 v.y += (-stcv * b * a.y + cc * a.y * ctcv) * ni;
 v.z += (-stcv * b * a.z + cc * a.z * ctcv) * ni;",
     ),
+    VarDef {
+        name: "taper",
+        params: &[ParamDef::new("strength", 0.5)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let tp_scale = java_max(1.0 - d[0] * a.y.abs(), 0.01);
+            v.x += amount * a.x * tp_scale;
+            v.y += amount * a.y;
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "let tp_scale = max(1.0 - D(0) * abs(a.y), 0.01);
+v.x += AMOUNT * a.x * tp_scale;
+v.y += AMOUNT * a.y;
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "target",
+        // JWildfire initializes the parameters randomly (even, odd: pi + rnd, size: 0.5 + 0.75 rnd).
+        params: &[ParamDef::new("even", M_PI + 0.5), ParamDef::new("odd", M_PI + 0.5), ParamDef::new("size", 0.875)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let mut ang = a.y.atan2(a.x);
+            let r = (sqr(a.x) + sqr(a.y)).sqrt();
+            let t_size_2 = 0.5 * d[2];
+            let mut t = r.ln();
+            if t < 0.0 {
+                t -= t_size_2;
+            }
+            t = fmod(t.abs(), d[2]);
+            if t < t_size_2 {
+                ang += d[0];
+            } else {
+                ang += d[1];
+            }
+            v.x += r * ang.cos();
+            v.y += r * ang.sin();
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "var ang = atan2(a.y, a.x);
+let r = sqrt(sqr(a.x) + sqr(a.y));
+let t_size_2 = 0.5 * D(2);
+var t = log(r);
+if (t < 0.0) { t -= t_size_2; }
+t = fmod(abs(t), D(2));
+if (t < t_size_2) { ang += D(0); } else { ang += D(1); }
+v.x += r * cos(ang);
+v.y += r * sin(ang);
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "target_sp",
+        // JWildfire initializes size (0.5 + 3 rnd) and tightness (0.5 + 0.25 rnd) randomly.
+        params: &[ParamDef::new("twist", 0.0), ParamDef::int("n_of_sp", 1.0, -10.0, 10.0), ParamDef::new("size", 2.0), ParamDef::new("tightness", 0.625)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        // d = [twist, n_of_sp, size, tightness, t_size_2, rota, rotb]
+        apply: |d, ctx, a, v, amount| {
+            let mut ang = a.y.atan2(a.x);
+            let r = (sqr(a.x) + sqr(a.y)).sqrt();
+            let mut t = d[3] * r.ln() + d[1] * M_1_PI * (ang + M_PI);
+            if t < 0.0 {
+                t -= d[4];
+            }
+            t = fmod(t.abs(), d[2]);
+            if t < d[4] {
+                ang += d[5];
+            } else {
+                ang += d[6];
+            }
+            v.x += r * ang.cos();
+            v.y += r * ang.sin();
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: Some(|p, _| {
+            let rota = M_PI * p[0];
+            vec![p[0], p[1] as i32 as f64, p[2], p[3], 0.5 * p[2], rota, -M_PI + rota]
+        }),
+        wgsl: "var ang = atan2(a.y, a.x);
+let r = sqrt(sqr(a.x) + sqr(a.y));
+var t = D(3) * log(r) + D(1) * (1.0 / PI) * (ang + PI);
+if (t < 0.0) { t -= D(4); }
+t = fmod(abs(t), D(2));
+if (t < D(4)) { ang += D(5); } else { ang += D(6); }
+v.x += r * cos(ang);
+v.y += r * sin(ang);
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "taurus",
+        params: &[ParamDef::new("r", 3.0), ParamDef::new("n", 5.0), ParamDef::new("inv", 1.5), ParamDef::new("sor", 1.0)],
+        kind: VarKind::Normal,
+        is_3d: true,
+        apply: |d, _ctx, a, v, amount| {
+            let (r, n, inv, sor) = (d[0], d[1], d[2], d[3]);
+            let (sx, cx) = a.x.sin_cos();
+            let (sy, cy) = a.y.sin_cos();
+            let ir = (inv * r) + ((1.0 - inv) * (r * (n * a.x).cos()));
+            v.x += amount * (cx * (ir + sy));
+            v.y += amount * (sx * (ir + sy));
+            v.z += amount * (sor * cy) + ((1.0 - sor) * a.y);
+        },
+        prepare: None,
+        wgsl: "let sy = sin(a.y);
+let ir = (D(2) * D(0)) + ((1.0 - D(2)) * (D(0) * cos(D(1) * a.x)));
+v.x += AMOUNT * (cos(a.x) * (ir + sy));
+v.y += AMOUNT * (sin(a.x) * (ir + sy));
+v.z += AMOUNT * (D(3) * cos(a.y)) + ((1.0 - D(3)) * a.y);",
+    },
+    VarDef {
+        name: "tentacle",
+        params: &[ParamDef::new("freq", 2.0), ParamDef::new("amp", 0.5)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let r = (a.x * a.x + a.y * a.y).sqrt();
+            let theta = a.y.atan2(a.x) + d[1] * (d[0] * r).sin();
+            v.x += amount * r * theta.cos();
+            v.y += amount * r * theta.sin();
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "let r = sqrt(a.x * a.x + a.y * a.y);
+let theta = atan2(a.y, a.x) + D(1) * sin(D(0) * r);
+v.x += AMOUNT * r * cos(theta);
+v.y += AMOUNT * r * sin(theta);
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "tessellate",
+        params: &[ParamDef::new("scale", 0.5)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let s = java_max(d[0].abs(), 0.01);
+            let mut nx = (a.x + s * 0.5) % s;
+            if nx < 0.0 {
+                nx += s;
+            }
+            nx -= s * 0.5;
+            let mut ny = (a.y + s * 0.5) % s;
+            if ny < 0.0 {
+                ny += s;
+            }
+            ny -= s * 0.5;
+            v.x += amount * nx;
+            v.y += amount * ny;
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "let s = max(abs(D(0)), 0.01);
+var nx = fmod(a.x + s * 0.5, s);
+if (nx < 0.0) { nx += s; }
+nx -= s * 0.5;
+var ny = fmod(a.y + s * 0.5, s);
+if (ny < 0.0) { ny += s; }
+ny -= s * 0.5;
+v.x += AMOUNT * nx;
+v.y += AMOUNT * ny;
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "tess_shape",
+        params: &[
+            ParamDef::new("strength", 1.0),
+            ParamDef::new("shapeSize", 0.8),
+            ParamDef::int("shapeType", 0.0, 0.0, 7.0),
+            ParamDef::new("shapeAspectRatio", 1.0),
+            ParamDef::new("lrRadialAmp", 0.2),
+            ParamDef::new("lrRadialWidthFreq", 0.6),
+            ParamDef::new("tbAmp", 0.2),
+            ParamDef::new("tbWidthFreq", 0.6),
+            ParamDef::new("lrRadialPosPhaseDuty", 0.0),
+            ParamDef::new("tbPosPhaseDuty", 0.0),
+            ParamDef::int("lrRadialProfileType", 0.0, 0.0, 4.0),
+            ParamDef::int("tbProfileType", 0.0, 0.0, 4.0),
+            ParamDef::int("operationMode", 0.0, 0.0, 1.0),
+        ],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: tess_shape_apply,
+        prepare: Some(|p, _| {
+            let mut d = p.to_vec();
+            d[2] = limit_value(ftoi(p[2]), 0, 7) as f64;
+            d[10] = limit_value(ftoi(p[10]), 0, 4) as f64;
+            d[11] = limit_value(ftoi(p[11]), 0, 4) as f64;
+            d[12] = limit_value(ftoi(p[12]), 0, 1) as f64;
+            d
+        }),
+        wgsl: TESS_SHAPE_WGSL,
+    },
+    VarDef {
+        name: "threeply",
+        params: &[ParamDef::new("a", -55.0), ParamDef::new("b", -1.0), ParamDef::new("c", -42.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            // Java follows one orbit from (0, 0) per instance; here one per render thread.
+            let p = ctx.orbits.entry(d.as_ptr() as usize).or_insert([0.0, 0.0]);
+            let (x0, y0) = (p[0], p[1]);
+            let (pa, pb, pc) = (d[0], d[1], d[2]);
+            let sgn = if x0 > 0.0 { 1.0 } else if x0 < 0.0 { -1.0 } else { 0.0 };
+            let xn = y0 - sgn * (x0.sin() * pb.cos() + pc - x0 * (pa + pb + pc).sin()).abs();
+            let yn = pa - x0;
+            *p = [xn, yn];
+            v.x = 0.001 * xn * amount;
+            v.y = 0.001 * yn * amount;
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        // GPU: no state across calls, every call returns a random point (1..1024) of the orbit.
+        wgsl: "var x0 = 0.0;
+var y0 = 0.0;
+let n = 1 + min(i32(rnd() * 1024.0), 1023);
+let cb = cos(D(1));
+let sabc = sin(D(0) + D(1) + D(2));
+for (var i = 0; i < n; i++) {
+  let xn = y0 - sign(x0) * abs(sin(x0) * cb + D(2) - x0 * sabc);
+  y0 = D(0) - x0;
+  x0 = xn;
+}
+v.x = 0.001 * x0 * AMOUNT;
+v.y = 0.001 * y0 * AMOUNT;
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    simple(
+        "threepoint_js",
+        false,
+        |_, ctx, a, v, amount| {
+            let (x, y);
+            if ctx.random() < 0.333 {
+                x = a.x / 2.0 - a.y / 2.0 + 0.5;
+                y = -a.x / 2.0 - a.y / 2.0 + 0.5;
+            } else if ctx.random() < 0.666 {
+                x = a.y;
+                y = a.x;
+            } else {
+                x = -a.y / 2.0 + 0.5;
+                y = -a.x / 2.0 + 0.5;
+            }
+            v.x += x * amount;
+            v.y += y * amount;
+            ctx.pass_z(a, v, amount);
+        },
+        "var x = -a.y / 2.0 + 0.5;
+var y = -a.x / 2.0 + 0.5;
+if (rnd() < 0.333) {
+  x = a.x / 2.0 - a.y / 2.0 + 0.5;
+  y = -a.x / 2.0 - a.y / 2.0 + 0.5;
+} else if (rnd() < 0.666) {
+  x = a.y;
+  y = a.x;
+}
+v.x += x * AMOUNT;
+v.y += y * AMOUNT;
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    ),
     // @@NEXT@@
 ];
+
+/// `TessShapeFunc.calculate_profile_offset`
+fn tess_shape_profile(v: f64, profile_type: i32, amp: f64, wf: f64, ppd: f64) -> f64 {
+    if amp == 0.0 {
+        return 0.0;
+    }
+    if profile_type != 0 && wf.abs() <= 1e-6 {
+        return 0.0;
+    }
+    match profile_type {
+        0 => {
+            if wf <= 1e-6 {
+                return 0.0;
+            }
+            let ev = v - ppd;
+            let half = wf / 2.0;
+            if ev.abs() < half { amp * (1.0 + (ev / half * M_PI).cos()) / 2.0 } else { 0.0 }
+        }
+        1 => amp * (v * wf * M_2PI + ppd * M_2PI).sin(),
+        2 => {
+            let t = v * wf + ppd;
+            let pt = t - t.floor();
+            let y = if pt < 0.5 { 2.0 * pt } else { 2.0 * (1.0 - pt) };
+            amp * (y * 2.0 - 1.0)
+        }
+        3 => {
+            let duty = java_max(0.01, java_min(0.99, ppd.abs()));
+            let t = v * wf;
+            let pt = t - t.floor();
+            if pt < duty { amp } else { -amp }
+        }
+        4 => {
+            let t = v * wf + ppd;
+            amp * (2.0 * (t - t.floor()) - 1.0)
+        }
+        _ => 0.0,
+    }
+}
+
+/// `TessShapeFunc.isPointInTriangle`
+#[allow(clippy::too_many_arguments)]
+fn tess_shape_in_triangle(px: f64, py: f64, v1x: f64, v1y: f64, v2x: f64, v2y: f64, v3x: f64, v3y: f64) -> bool {
+    let d1 = (px - v2x) * (v1y - v2y) - (v1x - v2x) * (py - v2y);
+    let d2 = (px - v3x) * (v2y - v3y) - (v2x - v3x) * (py - v3y);
+    let d3 = (px - v1x) * (v3y - v1y) - (v3x - v1x) * (py - v1y);
+    !((d1 < 0.0 || d2 < 0.0 || d3 < 0.0) && (d1 > 0.0 || d2 > 0.0 || d3 > 0.0))
+}
+
+fn tess_shape_apply(d: &[f64], ctx: &mut Ctx, a: &mut Pt, v: &mut Pt, amount: f64) {
+    let (strength, size, shape_type, aspect) = (d[0], d[1], d[2] as i32, d[3]);
+    let lr = |x: f64| tess_shape_profile(x, d[10] as i32, d[4], d[5], d[8]);
+    let tb = |x: f64| tess_shape_profile(x, d[11] as i32, d[6], d[7], d[9]);
+    let (lr_pt, tb_pt) = (d[10] as i32, d[11] as i32);
+    let (x_aff, y_aff) = (a.x, a.y);
+    let base_h = size;
+    let base_w = size * aspect;
+    let half_h = if base_h == 0.0 { 1e-9 } else { base_h / 2.0 };
+    let half_w = if base_w == 0.0 { 1e-9 } else { base_w / 2.0 };
+    let norm = |p: f64, half: f64| if half == 0.0 { 0.0 } else { java_min(1.0, java_max(-1.0, p / half)) };
+    let sqrt3 = 3f64.sqrt();
+    if d[12] as i32 == 1 {
+        let (px, py) = (x_aff, y_aff);
+        let inside = match shape_type {
+            0 => {
+                let s_ext = size / 2.0;
+                px.abs() <= s_ext && py.abs() <= s_ext
+            }
+            1 => px.abs() <= half_w && py.abs() <= half_h,
+            2 => {
+                let s = size;
+                let h = s * sqrt3 / 2.0;
+                tess_shape_in_triangle(px, py, 0.0, (2.0 / 3.0) * h, -s / 2.0, -(1.0 / 3.0) * h, s / 2.0, -(1.0 / 3.0) * h)
+            }
+            3 => {
+                let s = size;
+                (0..6).any(|i| {
+                    let (a1, a2) = (i as f64 * M_PI / 3.0, (i + 1) as f64 * M_PI / 3.0);
+                    tess_shape_in_triangle(px, py, 0.0, 0.0, s * a1.cos(), s * a1.sin(), s * a2.cos(), s * a2.sin())
+                })
+            }
+            4 => {
+                let (pyn, pxn) = (norm(py, half_h), norm(px, half_w));
+                let lr_off = lr(if lr_pt == 0 { pyn } else { (pyn + 1.0) / 2.0 });
+                let tb_off = tb(if tb_pt == 0 { pxn } else { (pxn + 1.0) / 2.0 });
+                px >= -half_w + lr_off && px <= half_w - lr_off && py >= -half_h + tb_off && py <= half_h - tb_off
+            }
+            5 => {
+                let (pyn, pxn) = (norm(py, half_h), norm(px, half_w));
+                let dx = lr(if lr_pt == 0 { pyn } else { (pyn + 1.0) / 2.0 });
+                let dy = tb(if tb_pt == 0 { pxn } else { (pxn + 1.0) / 2.0 });
+                let eps = 1e-7;
+                (px - dx).abs() <= half_w + eps && (py - dy).abs() <= half_h + eps
+            }
+            6 => {
+                let (pyn, pxn) = (norm(py, half_h), norm(px, half_w));
+                let reo = lr(if lr_pt == 0 { pyn } else { (pyn + 1.0) / 2.0 });
+                let teo = tb(if tb_pt == 0 { pxn } else { (pxn + 1.0) / 2.0 });
+                px >= -half_w && px <= half_w + reo && py >= -half_h && py <= half_h + teo
+            }
+            7 => {
+                let angle = py.atan2(px);
+                let radius = (px * px + py * py).sqrt();
+                let ang01 = (angle / M_2PI + 1.0) % 1.0;
+                let off = lr(if lr_pt == 0 { ang01 * 2.0 - 1.0 } else { ang01 });
+                radius <= java_max(0.0, size + off)
+            }
+            _ => false,
+        };
+        if inside {
+            v.do_hide = false;
+            v.x = x_aff;
+            v.y = y_aff;
+        } else {
+            v.do_hide = true;
+        }
+        ctx.pass_z(a, v, amount);
+        return;
+    }
+    let (mut tx, mut ty) = (0.0, 0.0);
+    match shape_type {
+        0 => {
+            tx = (ctx.random() * 2.0 - 1.0) * (size / 2.0);
+            ty = (ctx.random() * 2.0 - 1.0) * (size / 2.0);
+        }
+        1 => {
+            tx = (ctx.random() * 2.0 - 1.0) * half_w;
+            ty = (ctx.random() * 2.0 - 1.0) * half_h;
+        }
+        2 => {
+            let s = size;
+            let h = s * sqrt3 / 2.0;
+            let (v1x, v1y, v2x, v2y, v3x, v3y) = (0.0, (2.0 / 3.0) * h, -s / 2.0, -(1.0 / 3.0) * h, s / 2.0, -(1.0 / 3.0) * h);
+            let (mut r1, mut r2) = (ctx.random(), ctx.random());
+            if r1 + r2 > 1.0 {
+                r1 = 1.0 - r1;
+                r2 = 1.0 - r2;
+            }
+            let r3 = 1.0 - r1 - r2;
+            tx = r1 * v1x + r2 * v2x + r3 * v3x;
+            ty = r1 * v1y + r2 * v2y + r3 * v3y;
+        }
+        3 => {
+            let s = size;
+            let ti = (ctx.random() * 6.0).floor() as i32;
+            let ao = ti as f64 * M_PI / 3.0;
+            let (v1x, v1y, v2x, v2y) = (s * ao.cos(), s * ao.sin(), s * (ao + M_PI / 3.0).cos(), s * (ao + M_PI / 3.0).sin());
+            let (mut r1, mut r2) = (ctx.random(), ctx.random());
+            if r1 + r2 > 1.0 {
+                r1 = 1.0 - r1;
+                r2 = 1.0 - r2;
+            }
+            tx = (1.0 - r1 - r2) * 0.0 + r1 * v1x + r2 * v2x;
+            ty = (1.0 - r1 - r2) * 0.0 + r1 * v1y + r2 * v2y;
+        }
+        4 => {
+            let (sx, sy) = (half_w + d[4].abs(), half_h + d[6].abs());
+            for _ in 0..100 {
+                let px = (ctx.random() * 2.0 - 1.0) * sx;
+                let py = (ctx.random() * 2.0 - 1.0) * sy;
+                let (pyn, pxn) = (norm(py, half_h), norm(px, half_w));
+                let lro = lr(if lr_pt == 0 { pyn } else { (pyn + 1.0) / 2.0 });
+                let tbo = tb(if tb_pt == 0 { pxn } else { (pxn + 1.0) / 2.0 });
+                if px >= -half_w + lro && px <= half_w - lro && py >= -half_h + tbo && py <= half_h - tbo {
+                    tx = px;
+                    ty = py;
+                    break;
+                }
+            }
+        }
+        5 => {
+            let rxb = (ctx.random() * 2.0 - 1.0) * half_w;
+            let ryb = (ctx.random() * 2.0 - 1.0) * half_h;
+            let rynd = if half_h == 0.0 { 0.0 } else { ryb / half_h };
+            let rxnd = if half_w == 0.0 { 0.0 } else { rxb / half_w };
+            tx = rxb + lr(if lr_pt == 0 { rynd } else { (rynd + 1.0) / 2.0 });
+            ty = ryb + tb(if tb_pt == 0 { rxnd } else { (rxnd + 1.0) / 2.0 });
+        }
+        6 => {
+            let (xmb, xab, ymb, yab) = (-half_w, half_w + d[4].abs(), -half_h, half_h + d[6].abs());
+            for _ in 0..100 {
+                let px = xmb + ctx.random() * (xab - xmb);
+                let py = ymb + ctx.random() * (yab - ymb);
+                if px < -half_w || py < -half_h {
+                    continue;
+                }
+                let (pyn, pxn) = (norm(py, half_h), norm(px, half_w));
+                let reo = lr(if lr_pt == 0 { pyn } else { (pyn + 1.0) / 2.0 });
+                if px > half_w + reo {
+                    continue;
+                }
+                let teo = tb(if tb_pt == 0 { pxn } else { (pxn + 1.0) / 2.0 });
+                if py > half_h + teo {
+                    continue;
+                }
+                tx = px;
+                ty = py;
+                break;
+            }
+        }
+        7 => {
+            let ang = ctx.random() * M_2PI;
+            let ang01 = ang / M_2PI;
+            let off = lr(if lr_pt == 0 { ang01 * 2.0 - 1.0 } else { ang01 });
+            let r = ctx.random().sqrt() * java_max(0.0, size + off);
+            tx = r * ang.cos();
+            ty = r * ang.sin();
+        }
+        _ => {}
+    }
+    let c = java_max(0.0, java_min(1.0, amount * strength));
+    v.x = (1.0 - c) * x_aff + c * tx;
+    v.y = (1.0 - c) * y_aff + c * ty;
+    ctx.pass_z(a, v, amount);
+}
+
+const TESS_SHAPE_WGSL: &str = "fn tess_shape_profile(v: f32, profile_type: i32, amp: f32, wf: f32, ppd: f32) -> f32 {
+  if (amp == 0.0) { return 0.0; }
+  if (profile_type != 0 && abs(wf) <= 1e-6) { return 0.0; }
+  switch (profile_type) {
+    case 0: {
+      if (wf <= 1e-6) { return 0.0; }
+      let ev = v - ppd;
+      let hwid = wf / 2.0;
+      if (abs(ev) < hwid) { return amp * (1.0 + cos(ev / hwid * PI)) / 2.0; }
+      return 0.0;
+    }
+    case 1: { return amp * sin(v * wf * TWO_PI + ppd * TWO_PI); }
+    case 2: {
+      let t = v * wf + ppd;
+      let pt = t - floor(t);
+      let y = select(2.0 * (1.0 - pt), 2.0 * pt, pt < 0.5);
+      return amp * (y * 2.0 - 1.0);
+    }
+    case 3: {
+      let duty = max(0.01, min(0.99, abs(ppd)));
+      let t = v * wf;
+      return select(-amp, amp, t - floor(t) < duty);
+    }
+    case 4: {
+      let t = v * wf + ppd;
+      return amp * (2.0 * (t - floor(t)) - 1.0);
+    }
+    default: { return 0.0; }
+  }
+}
+fn tess_shape_in_triangle(p: vec2<f32>, v1: vec2<f32>, v2: vec2<f32>, v3: vec2<f32>) -> bool {
+  let d1 = (p.x - v2.x) * (v1.y - v2.y) - (v1.x - v2.x) * (p.y - v2.y);
+  let d2 = (p.x - v3.x) * (v2.y - v3.y) - (v2.x - v3.x) * (p.y - v3.y);
+  let d3 = (p.x - v1.x) * (v3.y - v1.y) - (v3.x - v1.x) * (p.y - v1.y);
+  return !((d1 < 0.0 || d2 < 0.0 || d3 < 0.0) && (d1 > 0.0 || d2 > 0.0 || d3 > 0.0));
+}
+fn tess_shape_lr(base: u32, x: f32) -> f32 {
+  return tess_shape_profile(x, i32(prm[base + 10u]), prm[base + 4u], prm[base + 5u], prm[base + 8u]);
+}
+fn tess_shape_tb(base: u32, x: f32) -> f32 {
+  return tess_shape_profile(x, i32(prm[base + 11u]), prm[base + 6u], prm[base + 7u], prm[base + 9u]);
+}
+fn tess_shape_norm(p: f32, hwid: f32) -> f32 {
+  if (hwid == 0.0) { return 0.0; }
+  return min(1.0, max(-1.0, p / hwid));
+}
+fn tess_shape_vin(n: f32, pt: i32) -> f32 {
+  if (pt == 0) { return n; }
+  return (n + 1.0) / 2.0;
+}
+@body
+let size = D(1);
+let shape_type = i32(D(2));
+let lr_pt = i32(D(10));
+let tb_pt = i32(D(11));
+let x_aff = a.x;
+let y_aff = a.y;
+let base_w = size * D(3);
+var half_h = size / 2.0;
+if (size == 0.0) { half_h = 1e-9; }
+var half_w = base_w / 2.0;
+if (base_w == 0.0) { half_w = 1e-9; }
+let sqrt3 = sqrt(3.0);
+if (i32(D(12)) == 1) {
+  let px = x_aff;
+  let py = y_aff;
+  var inside = false;
+  switch (shape_type) {
+    case 0: { inside = abs(px) <= size / 2.0 && abs(py) <= size / 2.0; }
+    case 1: { inside = abs(px) <= half_w && abs(py) <= half_h; }
+    case 2: {
+      let h = size * sqrt3 / 2.0;
+      inside = tess_shape_in_triangle(vec2<f32>(px, py), vec2<f32>(0.0, (2.0 / 3.0) * h), vec2<f32>(-size / 2.0, -(1.0 / 3.0) * h), vec2<f32>(size / 2.0, -(1.0 / 3.0) * h));
+    }
+    case 3: {
+      for (var i = 0; i < 6; i++) {
+        let a1 = f32(i) * PI / 3.0;
+        let a2 = f32(i + 1) * PI / 3.0;
+        if (tess_shape_in_triangle(vec2<f32>(px, py), vec2<f32>(0.0), size * vec2<f32>(cos(a1), sin(a1)), size * vec2<f32>(cos(a2), sin(a2)))) { inside = true; break; }
+      }
+    }
+    case 4: {
+      let lr_off = tess_shape_lr(base, tess_shape_vin(tess_shape_norm(py, half_h), lr_pt));
+      let tb_off = tess_shape_tb(base, tess_shape_vin(tess_shape_norm(px, half_w), tb_pt));
+      inside = px >= -half_w + lr_off && px <= half_w - lr_off && py >= -half_h + tb_off && py <= half_h - tb_off;
+    }
+    case 5: {
+      let dx = tess_shape_lr(base, tess_shape_vin(tess_shape_norm(py, half_h), lr_pt));
+      let dy = tess_shape_tb(base, tess_shape_vin(tess_shape_norm(px, half_w), tb_pt));
+      inside = abs(px - dx) <= half_w + 1e-7 && abs(py - dy) <= half_h + 1e-7;
+    }
+    case 6: {
+      let reo = tess_shape_lr(base, tess_shape_vin(tess_shape_norm(py, half_h), lr_pt));
+      let teo = tess_shape_tb(base, tess_shape_vin(tess_shape_norm(px, half_w), tb_pt));
+      inside = px >= -half_w && px <= half_w + reo && py >= -half_h && py <= half_h + teo;
+    }
+    case 7: {
+      let ang01 = fmod(atan2(py, px) / TWO_PI + 1.0, 1.0);
+      var vin = ang01;
+      if (lr_pt == 0) { vin = ang01 * 2.0 - 1.0; }
+      inside = sqrt(px * px + py * py) <= max(0.0, size + tess_shape_lr(base, vin));
+    }
+    default: {}
+  }
+  if (inside) {
+    v.hide = 0.0;
+    v.x = x_aff;
+    v.y = y_aff;
+  } else {
+    v.hide = 1.0;
+  }
+} else {
+  var tx = 0.0;
+  var ty = 0.0;
+  switch (shape_type) {
+    case 0: {
+      tx = (rnd() * 2.0 - 1.0) * (size / 2.0);
+      ty = (rnd() * 2.0 - 1.0) * (size / 2.0);
+    }
+    case 1: {
+      tx = (rnd() * 2.0 - 1.0) * half_w;
+      ty = (rnd() * 2.0 - 1.0) * half_h;
+    }
+    case 2: {
+      let h = size * sqrt3 / 2.0;
+      var r1 = rnd();
+      var r2 = rnd();
+      if (r1 + r2 > 1.0) { r1 = 1.0 - r1; r2 = 1.0 - r2; }
+      let r3 = 1.0 - r1 - r2;
+      tx = r2 * (-size / 2.0) + r3 * (size / 2.0);
+      ty = r1 * (2.0 / 3.0) * h + r2 * (-(1.0 / 3.0) * h) + r3 * (-(1.0 / 3.0) * h);
+    }
+    case 3: {
+      let ao = floor(rnd() * 6.0) * PI / 3.0;
+      var r1 = rnd();
+      var r2 = rnd();
+      if (r1 + r2 > 1.0) { r1 = 1.0 - r1; r2 = 1.0 - r2; }
+      tx = r1 * size * cos(ao) + r2 * size * cos(ao + PI / 3.0);
+      ty = r1 * size * sin(ao) + r2 * size * sin(ao + PI / 3.0);
+    }
+    case 4: {
+      let sx = half_w + abs(D(4));
+      let sy = half_h + abs(D(6));
+      for (var i = 0; i < 100; i++) {
+        let px = (rnd() * 2.0 - 1.0) * sx;
+        let py = (rnd() * 2.0 - 1.0) * sy;
+        let lro = tess_shape_lr(base, tess_shape_vin(tess_shape_norm(py, half_h), lr_pt));
+        let tbo = tess_shape_tb(base, tess_shape_vin(tess_shape_norm(px, half_w), tb_pt));
+        if (px >= -half_w + lro && px <= half_w - lro && py >= -half_h + tbo && py <= half_h - tbo) { tx = px; ty = py; break; }
+      }
+    }
+    case 5: {
+      let rxb = (rnd() * 2.0 - 1.0) * half_w;
+      let ryb = (rnd() * 2.0 - 1.0) * half_h;
+      tx = rxb + tess_shape_lr(base, tess_shape_vin(ryb / half_h, lr_pt));
+      ty = ryb + tess_shape_tb(base, tess_shape_vin(rxb / half_w, tb_pt));
+    }
+    case 6: {
+      let xab = half_w + abs(D(4));
+      let yab = half_h + abs(D(6));
+      for (var i = 0; i < 100; i++) {
+        let px = -half_w + rnd() * (xab + half_w);
+        let py = -half_h + rnd() * (yab + half_h);
+        if (px < -half_w || py < -half_h) { continue; }
+        let reo = tess_shape_lr(base, tess_shape_vin(tess_shape_norm(py, half_h), lr_pt));
+        if (px > half_w + reo) { continue; }
+        let teo = tess_shape_tb(base, tess_shape_vin(tess_shape_norm(px, half_w), tb_pt));
+        if (py > half_h + teo) { continue; }
+        tx = px;
+        ty = py;
+        break;
+      }
+    }
+    case 7: {
+      let ang = rnd() * TWO_PI;
+      let ang01 = ang / TWO_PI;
+      var vin = ang01;
+      if (lr_pt == 0) { vin = ang01 * 2.0 - 1.0; }
+      let r = sqrt(rnd()) * max(0.0, size + tess_shape_lr(base, vin));
+      tx = r * cos(ang);
+      ty = r * sin(ang);
+    }
+    default: {}
+  }
+  let c = clamp(AMOUNT * D(0), 0.0, 1.0);
+  v.x = (1.0 - c) * x_aff + c * tx;
+  v.y = (1.0 - c) * y_aff + c * ty;
+}
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }";
 
 const SYNTH_EPS: f64 = SMALL_EPSILON;
 
