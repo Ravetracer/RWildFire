@@ -144,20 +144,31 @@ pub static DEFS: &[VarDef] = &[
         params: &[],
         kind: VarKind::Pre,
         is_3d: false,
-        apply: |_, ctx, a, _v, amount| {
+        apply: |d, ctx, a, _v, amount| {
             let ang = ctx.random() * M_2PI;
             let (sina, cosa) = ang.sin_cos();
-            let mut g = -3.0;
-            for _ in 0..6 {
-                g += ctx.random();
-            }
-            let r = amount * g;
+            let r = amount * (ctx.gauss_ring(d.as_ptr() as usize, 6, 5) - 3.0);
             a.x += r * cosa;
             a.y += r * sina;
         },
-        prepare: None,
-        wgsl: "let ang = rnd() * TWO_PI;
-         let r = AMOUNT * (rnd() + rnd() + rnd() + rnd() + rnd() + rnd() - 3.0);
+        // one value, so that every instance has its own state key
+        prepare: Some(|_, _| vec![0.0]),
+        wgsl: "var<private> pre_blur_ring: array<f32, 6>;
+var<private> pre_blur_idx: u32;
+var<private> pre_blur_init: bool;
+fn pre_blur_gauss() -> f32 {
+  if (!pre_blur_init) {
+    pre_blur_init = true;
+    for (var i = 0; i < 6; i++) { pre_blur_ring[i] = rnd(); }
+  }
+  let s = pre_blur_ring[0] + pre_blur_ring[1] + pre_blur_ring[2] + pre_blur_ring[3] + pre_blur_ring[4] + pre_blur_ring[5];
+  pre_blur_ring[pre_blur_idx] = rnd();
+  pre_blur_idx = (pre_blur_idx + 1u) & 5u;
+  return s;
+}
+@body
+let ang = rnd() * TWO_PI;
+         let r = AMOUNT * (pre_blur_gauss() - 3.0);
          a.x += r * cos(ang);
          a.y += r * sin(ang);",
     },

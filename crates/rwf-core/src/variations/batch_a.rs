@@ -600,11 +600,9 @@ pub static DEFS: &[VarDef] = &[
         params: &[ParamDef::range("angle", 0.5, -2.0, 2.0)],
         kind: VarKind::Normal,
         is_3d: false,
-        // JWildfire keeps a ring buffer of 4 random numbers per instance; here the gaussian
-        // value is drawn fresh from 4 uniform randoms (same distribution).
         apply: |d, ctx, a, v, amount| {
             // d = [angle, sin(angle*pi/2), cos(angle*pi/2)]
-            let rnd_g = ctx.random() + ctx.random() + ctx.random() + ctx.random() - 2.0;
+            let rnd_g = ctx.gauss_ring(d.as_ptr() as usize, 4, 3) - 2.0;
             let spin = amount * d[1];
             let zoom = amount * d[2];
             let ra = a.sumsq().sqrt();
@@ -619,7 +617,21 @@ pub static DEFS: &[VarDef] = &[
             let ang = p[0] * M_PI * 0.5;
             vec![p[0], ang.sin(), ang.cos()]
         }),
-        wgsl: "let rnd_g = rnd() + rnd() + rnd() + rnd() - 2.0;
+        wgsl: "var<private> radial_blur_ring: array<f32, 4>;
+var<private> radial_blur_idx: u32;
+var<private> radial_blur_init: bool;
+fn radial_blur_gauss() -> f32 {
+  if (!radial_blur_init) {
+    radial_blur_init = true;
+    for (var i = 0; i < 4; i++) { radial_blur_ring[i] = rnd(); }
+  }
+  let s = radial_blur_ring[0] + radial_blur_ring[1] + radial_blur_ring[2] + radial_blur_ring[3];
+  radial_blur_ring[radial_blur_idx] = rnd();
+  radial_blur_idx = (radial_blur_idx + 1u) & 3u;
+  return s;
+}
+@body
+let rnd_g = radial_blur_gauss() - 2.0;
          let spin = AMOUNT * D(1);
          let zoom = AMOUNT * D(2);
          let ra = sqrt(sumsq(a));

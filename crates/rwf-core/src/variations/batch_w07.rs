@@ -918,13 +918,7 @@ dc_output(&v, AMOUNT, uv, col, i32(D(7)), D(8), D(9), i32(D(10)));",
             if blur > 0.0 {
                 let ang = ctx.random() * 2.0 * M_PI;
                 let (sina, cosa) = ang.sin_cos();
-                // Java sums a per-instance cache of 6 randoms (one replaced per call); stateless
-                // here: 6 fresh randoms.
-                let mut g = 0.0;
-                for _ in 0..6 {
-                    g += ctx.random();
-                }
-                let r = blur * (g - 3.0);
+                let r = blur * (ctx.gauss_ring(d.as_ptr() as usize, 6, 5) - 3.0);
                 x0 += r * cosa;
                 y0 += r * sina;
             } else if blur < 0.0 {
@@ -990,13 +984,27 @@ dc_output(&v, AMOUNT, uv, col, i32(D(7)), D(8), D(9), i32(D(10)));",
             d
         }),
         wgsl: "fn dc_gnarly_asinh(x: f32) -> f32 { return log(x + sqrt(x * x + 1.0)); }
+var<private> dc_gnarly_ring: array<f32, 6>;
+var<private> dc_gnarly_idx: u32;
+var<private> dc_gnarly_init: bool;
+fn dc_gnarly_gauss() -> f32 {
+  if (!dc_gnarly_init) {
+    dc_gnarly_init = true;
+    for (var i = 0; i < 6; i++) { dc_gnarly_ring[i] = rnd(); }
+  }
+  let s = dc_gnarly_ring[0] + dc_gnarly_ring[1] + dc_gnarly_ring[2] + dc_gnarly_ring[3] + dc_gnarly_ring[4] + dc_gnarly_ring[5];
+  dc_gnarly_ring[dc_gnarly_idx] = rnd();
+  dc_gnarly_idx = (dc_gnarly_idx + 1u) & 5u;
+  return s;
+}
+
 @body
 var x0 = a.x;
 var y0 = a.y;
 let blur = D(14);
 if (blur > 0.0) {
   let ang = rnd() * TWO_PI;
-  let r = blur * (rnd() + rnd() + rnd() + rnd() + rnd() + rnd() - 3.0);
+  let r = blur * (dc_gnarly_gauss() - 3.0);
   x0 += r * cos(ang);
   y0 += r * sin(ang);
 } else if (blur < 0.0) {

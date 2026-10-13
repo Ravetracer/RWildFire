@@ -4399,33 +4399,31 @@ if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
         kind: VarKind::Pre,
         is_3d: true,
         apply: |d, ctx, a, _v, amount| {
-            // d = [six initial random numbers, 0, 0]
-            // Java keeps six random numbers (filled in init) and replaces one per call, the index
-            // alternating 0, 1 ((n + 1) & 5); state slots 0..3 hold them, slot 3 the index (CPU,
-            // per render thread).
             let (sina, cosa) = (ctx.random() * 2.0 * M_PI).sin_cos();
-            let g: Vec<f64> = (0..3).flat_map(|k| *state_slot(ctx, d, k, [d[2 * k], d[2 * k + 1]])).collect();
-            let r = amount * (g[0] + g[1] + g[2] + g[3] + g[4] + g[5] - 3.0);
-            let n = state_slot(ctx, d, 3, [0.0; 2])[0] as usize;
-            let rn = ctx.random();
-            state_slot(ctx, d, n / 2, [0.0; 2])[n % 2] = rn;
-            state_slot(ctx, d, 3, [0.0; 2])[0] = ((n + 1) & 5) as f64;
+            let r = amount * (ctx.gauss_ring(d.as_ptr() as usize, 6, 5) - 3.0);
             let (sinb, cosb) = (ctx.random() * M_PI).sin_cos();
             a.x += r * sinb * cosa;
             a.y += r * sinb * sina;
             a.z += r * cosb;
         },
-        // The random numbers of Java's init come from a fixed seed here.
-        prepare: Some(|_, _| {
-            let mut rng = crate::rng::Rng::new(1);
-            let mut d: Vec<f64> = (0..6).map(|_| rng.random()).collect();
-            d.extend([0.0, 0.0]);
-            d
-        }),
-        // GPU: only the first two of the six numbers change in Java; they are fresh random
-        // numbers here.
-        wgsl: "let an = rnd() * TWO_PI;
-let r = AMOUNT * (rnd() + rnd() + D(2) + D(3) + D(4) + D(5) - 3.0);
+        // one value, so that every instance has its own state key
+        prepare: Some(|_, _| vec![0.0]),
+        wgsl: "var<private> pre_blur3D_ring: array<f32, 6>;
+var<private> pre_blur3D_idx: u32;
+var<private> pre_blur3D_init: bool;
+fn pre_blur3D_gauss() -> f32 {
+  if (!pre_blur3D_init) {
+    pre_blur3D_init = true;
+    for (var i = 0; i < 6; i++) { pre_blur3D_ring[i] = rnd(); }
+  }
+  let s = pre_blur3D_ring[0] + pre_blur3D_ring[1] + pre_blur3D_ring[2] + pre_blur3D_ring[3] + pre_blur3D_ring[4] + pre_blur3D_ring[5];
+  pre_blur3D_ring[pre_blur3D_idx] = rnd();
+  pre_blur3D_idx = (pre_blur3D_idx + 1u) & 5u;
+  return s;
+}
+@body
+let an = rnd() * TWO_PI;
+let r = AMOUNT * (pre_blur3D_gauss() - 3.0);
 let bn = rnd() * PI;
 a.x += r * sin(bn) * cos(an);
 a.y += r * sin(bn) * sin(an);

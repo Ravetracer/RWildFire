@@ -237,6 +237,27 @@ impl Ctx {
     }
     /// Uniform random number in [0, 1).
     #[inline]
+    /// JWildfire's per-instance ring of `n` uniform random numbers (`gauss_rnd`, filled in
+    /// `init`): returns the sum of the ring, then replaces the entry at the ring index with a
+    /// new random number and advances the index with `(i + 1) & mask`. Four-entry rings use
+    /// `& 3`; JWildfire's six-entry rings use `& 5`, which only cycles through entries 0 and 1.
+    /// The ring is kept per render thread (keyed by `key`, the address of the prepared data) and
+    /// filled on first use, as each JWildfire render thread fills its own in `init`.
+    pub(crate) fn gauss_ring(&mut self, key: usize, n: usize, mask: usize) -> f64 {
+        if !self.states.contains_key(&key) {
+            let mut ring: Vec<f64> = (0..n).map(|_| self.random()).collect();
+            ring.push(0.0);
+            self.states.insert(key, ring);
+        }
+        let ring = &self.states[&key];
+        let sum = ring[..n].iter().fold(0.0, |s, g| s + g);
+        let i = ring[n] as usize;
+        let r = self.random();
+        let ring = self.states.get_mut(&key).unwrap();
+        ring[i] = r;
+        ring[n] = ((i + 1) & mask) as f64;
+        sum
+    }
     pub fn random(&mut self) -> f64 {
         self.rng.random()
     }

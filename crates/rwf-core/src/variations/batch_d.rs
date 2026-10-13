@@ -773,15 +773,32 @@ if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
          v.y += r * sin(angle);
          v.z += r * a.z / (sqrt(r2d) * D(1));",
     },
-    simple(
-        "zblur",
-        true,
-        // The Java rolling buffer of 4 random numbers is replaced by 4 fresh ones.
-        |_, ctx, _, v, amount| {
-            v.z += amount * (ctx.random() + ctx.random() + ctx.random() + ctx.random() - 2.0);
+    VarDef {
+        name: "zblur",
+        params: &[],
+        kind: VarKind::Normal,
+        is_3d: true,
+        apply: |d, ctx, _, v, amount| {
+            v.z += amount * (ctx.gauss_ring(d.as_ptr() as usize, 4, 3) - 2.0);
         },
-        "v.z += AMOUNT * (rnd() + rnd() + rnd() + rnd() - 2.0);",
-    ),
+        // one value, so that every instance has its own state key
+        prepare: Some(|_, _| vec![0.0]),
+        wgsl: "var<private> zblur_ring: array<f32, 4>;
+var<private> zblur_idx: u32;
+var<private> zblur_init: bool;
+fn zblur_gauss() -> f32 {
+  if (!zblur_init) {
+    zblur_init = true;
+    for (var i = 0; i < 4; i++) { zblur_ring[i] = rnd(); }
+  }
+  let s = zblur_ring[0] + zblur_ring[1] + zblur_ring[2] + zblur_ring[3];
+  zblur_ring[zblur_idx] = rnd();
+  zblur_idx = (zblur_idx + 1u) & 3u;
+  return s;
+}
+@body
+v.z += AMOUNT * (zblur_gauss() - 2.0);",
+    },
     simple(
         "zscale",
         true,
@@ -798,27 +815,45 @@ if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
         },
         "v.z += AMOUNT * sqrt(a.x * a.x + a.y * a.y);",
     ),
-    simple(
-        "blur3D",
-        true,
-        |_, ctx, _, v, amount| {
+    VarDef {
+        name: "blur3D",
+        params: &[],
+        kind: VarKind::Normal,
+        is_3d: true,
+        apply: |d, ctx, _, v, amount| {
             let angle = ctx.random() * 2.0 * M_PI;
             let (sina, cosa) = angle.sin_cos();
-            let r = amount * (ctx.random() + ctx.random() + ctx.random() + ctx.random() - 2.0);
+            let r = amount * (ctx.gauss_ring(d.as_ptr() as usize, 4, 3) - 2.0);
             let angle2 = ctx.random() * M_PI;
             let (sinb, cosb) = angle2.sin_cos();
             v.x += r * sinb * cosa;
             v.y += r * sinb * sina;
             v.z += r * cosb;
         },
-        "let angle = rnd() * TWO_PI;
-         let r = AMOUNT * (rnd() + rnd() + rnd() + rnd() - 2.0);
-         let angle2 = rnd() * PI;
-         let sinb = sin(angle2);
-         v.x += r * sinb * cos(angle);
-         v.y += r * sinb * sin(angle);
-         v.z += r * cos(angle2);",
-    ),
+        // one value, so that every instance has its own state key
+        prepare: Some(|_, _| vec![0.0]),
+        wgsl: "var<private> blur3D_ring: array<f32, 4>;
+var<private> blur3D_idx: u32;
+var<private> blur3D_init: bool;
+fn blur3D_gauss() -> f32 {
+  if (!blur3D_init) {
+    blur3D_init = true;
+    for (var i = 0; i < 4; i++) { blur3D_ring[i] = rnd(); }
+  }
+  let s = blur3D_ring[0] + blur3D_ring[1] + blur3D_ring[2] + blur3D_ring[3];
+  blur3D_ring[blur3D_idx] = rnd();
+  blur3D_idx = (blur3D_idx + 1u) & 3u;
+  return s;
+}
+@body
+let angle = rnd() * TWO_PI;
+let r = AMOUNT * (blur3D_gauss() - 2.0);
+let angle2 = rnd() * PI;
+let sinb = sin(angle2);
+v.x += r * sinb * cos(angle);
+v.y += r * sinb * sin(angle);
+v.z += r * cos(angle2);",
+    },
     VarDef {
         name: "bubble2",
         params: &[ParamDef::new("x", 1.0), ParamDef::new("y", 1.0), ParamDef::new("z", 0.0)],
