@@ -26,29 +26,7 @@ use super::{Ctx, ParamDef, Pt, VarDef, VarKind, simple};
 use crate::math::*;
 #[allow(unused_imports)]
 use crate::model::Affine;
-
-/// `java.util.Random` (48-bit LCG), used to rebuild seeded per-instance tables in `prepare`.
-struct JavaRandom {
-    seed: i64,
-}
-
-const JAVA_RANDOM_MULT: i64 = 0x5_DEEC_E66D;
-const JAVA_RANDOM_MASK: i64 = (1 << 48) - 1;
-
-impl JavaRandom {
-    fn new(seed: i64) -> Self {
-        Self { seed: (seed ^ JAVA_RANDOM_MULT) & JAVA_RANDOM_MASK }
-    }
-
-    fn next(&mut self, bits: u32) -> i64 {
-        self.seed = self.seed.wrapping_mul(JAVA_RANDOM_MULT).wrapping_add(0xB) & JAVA_RANDOM_MASK;
-        self.seed >> (48 - bits)
-    }
-
-    fn next_double(&mut self) -> f64 {
-        ((self.next(26) << 27) + self.next(27)) as f64 * (1.0 / (1u64 << 53) as f64)
-    }
-}
+use crate::rng::JavaRandom;
 
 // ---------------------------------------------------------------------------------------------
 // affine3D (AbstractAffine3DFunc)
@@ -109,6 +87,8 @@ fn arctruchet_prepare(p: &[f64]) -> Vec<f64> {
         }
     }
     d.extend(tilt);
+    // state of the tile picker after the setup (continued by `transform`)
+    d.push(rnd.seed as f64);
     d
 }
 
@@ -825,14 +805,18 @@ pub static DEFS: &[VarDef] = &[
         ],
         kind: VarKind::Normal,
         is_3d: false,
-        // The seeded tile picker (java.util.Random) is replaced by fresh random numbers; the tile
-        // tilts are rebuilt from the seed exactly as in Java.
+        // The tile picker continues the seeded java.util.Random of the setup, per render thread
+        // (JWildfire: per instance). The GPU picks tiles with the shared random generator.
         apply: |d, ctx, a, v, amount| {
             const TILE: f64 = 2.0 * ARCTRUCHET_RADIUS;
             let rows = d[2] as i32;
             let cols = d[3] as i32;
-            let i = (ctx.random() * rows as f64) as i32;
-            let j = (ctx.random() * cols as f64) as i32;
+            let key = d.as_ptr() as usize;
+            let seed = ctx.states.get(&key).map_or(d[4 + (rows * cols) as usize], |st| st[0]);
+            let mut picker = JavaRandom { seed: seed as u64 };
+            let i = (picker.next_double() * rows as f64) as i32;
+            let j = (picker.next_double() * cols as f64) as i32;
+            ctx.states.insert(key, vec![picker.seed as f64]);
             let x = (i as f64 * TILE + TILE / 2.0) as f32 as f64;
             let y = (j as f64 * TILE + TILE / 2.0) as f32 as f64;
             let tilt = d[4 + (j * rows + i) as usize] * 90.0;
@@ -2268,8 +2252,8 @@ mod tests {
     #[test]
     fn arctruchet_tilts_in_range() {
         let d = def("arctruchet").prepare_data(&[], &Affine::IDENTITY);
-        assert_eq!(d.len(), 4 + 100);
-        assert!(d[4..].iter().all(|t| (0.0..4.0).contains(t) && t.fract() == 0.0));
+        assert_eq!(d.len(), 4 + 100 + 1);
+        assert!(d[4..104].iter().all(|t| (0.0..4.0).contains(t) && t.fract() == 0.0));
     }
 
     #[test]
