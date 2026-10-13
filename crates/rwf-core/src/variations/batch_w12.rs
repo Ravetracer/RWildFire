@@ -31,23 +31,18 @@ use crate::model::Affine;
 use super::complex::Complex;
 use super::glsl::{Vec2, abs, clamp, dot, glsl_atan2, glsl_mod, length, max, min, sign, vec2};
 use crate::brush::Marsaglia;
-use std::cell::RefCell;
-use std::collections::HashMap;
 
 /// `MarsagliaRandomGenerator.randomize(seed)` followed by one `random()`.
 fn marsaglia1(seed: i32) -> f64 {
     Marsaglia::new(seed as i64).random()
 }
 
-/// Point buffer of `PointMirrorSymmetryFunc` (one per prepared instance and render thread).
-struct PmsBuffer {
-    pts: Vec<[f64; 4]>,
-    index: usize,
-    valid: bool,
-}
-
-thread_local! {
-    static PMS_BUFFERS: RefCell<HashMap<usize, PmsBuffer>> = RefCell::new(HashMap::new());
+/// Per-thread state slot `k` (two values) of the variation instance with prepared data `d`
+/// (CPU only, for JWildfire variations that keep values across calls). The key is the address
+/// of `d[k]`, so `k < d.len()` keeps the slots of different instances apart.
+fn state_slot<'a>(ctx: &'a mut Ctx, d: &[f64], k: usize, init: [f64; 2]) -> &'a mut [f64; 2] {
+    debug_assert!(k < d.len());
+    ctx.orbits.entry(d.as_ptr().wrapping_add(k) as usize).or_insert(init)
 }
 
 /// `PolylogarithmFunc.RiemannInt.Z` (table literals as in Java)
@@ -461,6 +456,48 @@ fn falloff3_vout(d: &[f64], ctx: &mut Ctx, vin: [f64; 4]) -> [f64; 4] {
     }
 }
 
+const PREPOST_AFFINE_PARAMS: &[ParamDef] = &[
+    ParamDef::new("scale_x", 1.0),
+    ParamDef::new("scale_y", 1.0),
+    ParamDef::new("scale_z", 1.0),
+    ParamDef::range("yaw", 0.0, -180.0, 180.0),
+    ParamDef::range("pitch", 0.0, -180.0, 180.0),
+    ParamDef::range("roll", 0.0, -180.0, 180.0),
+    ParamDef::new("move_x", 0.0),
+    ParamDef::new("move_y", 0.0),
+    ParamDef::new("move_z", 0.0),
+];
+
+// d = [scale_x, scale_y, scale_z, yaw, pitch, roll, move_x, move_y, move_z,
+//      coefxx, coefxy, coefxz, coefyx, coefyy, coefyz, coefzx, coefzy, coefzz,
+//      icoefxx, icoefxy, icoefxz, icoefyx, icoefyy, icoefyz, icoefzx, icoefzy, icoefzz]
+fn prepost_affine_prepare(p: &[f64]) -> Vec<f64> {
+    let mut d = p.to_vec();
+    for s in d.iter_mut().take(3) {
+        if *s == 0.0 {
+            *s = EPSILON;
+        }
+    }
+    let d2r = M_PI / 180.0;
+    let (sinyaw, cosyaw) = (p[3] * d2r).sin_cos();
+    let (sinpitch, cospitch) = (p[4] * d2r).sin_cos();
+    let (sinroll, cosroll) = (p[5] * d2r).sin_cos();
+    let m = [
+        cosyaw * cosroll - sinyaw * sinpitch * sinroll,
+        -sinyaw * cosroll - cosyaw * sinpitch * sinroll,
+        -cospitch * sinroll,
+        sinyaw * cospitch,
+        cosyaw * cospitch,
+        -sinpitch,
+        cosyaw * sinroll + sinyaw * sinpitch * cosroll,
+        cosyaw * sinpitch * cosroll - sinyaw * sinroll,
+        cospitch * cosroll,
+    ];
+    d.extend_from_slice(&m);
+    d.extend_from_slice(&[m[0], m[3], m[6], m[1], m[4], m[7], m[2], m[5], m[8]]);
+    d
+}
+
 /// `cern.jet.math.Arithmetic.longFactorial` as a double (`k` in 0..=20).
 fn long_factorial(k: i32) -> f64 {
     (1..=k.max(0) as i64).product::<i64>() as f64
@@ -746,27 +783,26 @@ if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
                     x = 0.0;
                     y = 0.0;
                 }
-                // The point buffer lives across calls (per render thread here).
+                // The point buffer lives across calls (per render thread here): state slot 0 =
+                // [index, valid], slots 1 + 2i / 2 + 2i = [x, y] / [z, color] of point i.
                 let size = d[8] as usize;
-                PMS_BUFFERS.with(|m| {
-                    let mut m = m.borrow_mut();
-                    let b = m.entry(d.as_ptr() as usize).or_insert_with(|| PmsBuffer { pts: vec![[0.1, 0.1, 0.0, 0.5]; size], index: 0, valid: false });
-                    if x == 0.0 && y == 0.0 {
-                        if b.valid {
-                            let p = b.pts[ctx.random_int(size)];
-                            x = p[0];
-                            y = p[1];
-                            z = p[2];
-                            if d[7] as i32 == 0 {
-                                v.color = p[3];
-                            }
+                let [index, valid] = *state_slot(ctx, d, 0, [0.0, 0.0]);
+                if x == 0.0 && y == 0.0 {
+                    if valid != 0.0 {
+                        let i = ctx.random_int(size);
+                        [x, y] = *state_slot(ctx, d, 1 + 2 * i, [0.1, 0.1]);
+                        let [pz, pc] = *state_slot(ctx, d, 2 + 2 * i, [0.0, 0.5]);
+                        z = pz;
+                        if d[7] as i32 == 0 {
+                            v.color = pc;
                         }
-                    } else {
-                        b.pts[b.index] = [x, y, z, v.color];
-                        b.valid = true;
-                        b.index = (b.index + 1) % size;
                     }
-                });
+                } else {
+                    let i = index as usize;
+                    *state_slot(ctx, d, 1 + 2 * i, [0.0; 2]) = [x, y];
+                    *state_slot(ctx, d, 2 + 2 * i, [0.0; 2]) = [z, v.color];
+                    *state_slot(ctx, d, 0, [0.0; 2]) = [((i + 1) % size) as f64, 1.0];
+                }
             }
             if d[6] as i32 == 1 && ctx.random() < 0.5 {
                 y = -y;
@@ -787,6 +823,8 @@ if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
             for (k, lo, hi) in [(0, 1, 99), (1, 0, 1), (2, 0, 1), (6, 0, 1), (7, 0, 1), (8, 1, 1000)] {
                 d[k] = limit_value(ftoi(p[k]), lo, hi) as f64;
             }
+            // Room for the state slots of the point buffer.
+            d.resize(d.len().max(2 * d[8] as usize + 1), 0.0);
             d
         }),
         // GPU: no point buffer; cropped points stay at the origin (as in Java before the first
@@ -2566,5 +2604,417 @@ let ph = AMOUNT * D(5) * sin(TWO_PI * px * r + D(4) * px) + acos(acosp);
 v.x = r * cos(th) * sin(ph);
 v.y = r * sin(th) * sin(ph);
 v.z = r * cos(ph);",
+    },
+    VarDef {
+        name: "post_julia3Dq",
+        // Java default power is random (+-2..7); 3 is used here.
+        params: &[ParamDef::int("power", 3.0, -12.0, 12.0), ParamDef::int("divisor", 2.0, -12.0, 12.0)],
+        kind: VarKind::Post,
+        is_3d: true,
+        apply: |d, ctx, _a, v, amount| {
+            // d = [power, divisor, inv_power, abs_inv_power, half_inv_power, inv_power_2pi]
+            let a = v.y.atan2(v.x) * d[2] + ctx.random_int(i32::MAX as usize) as f64 * d[5];
+            let (sina, cosa) = a.sin_cos();
+            let z = v.z * d[3];
+            let r2d = sqr(v.x) + sqr(v.y);
+            let r = amount * (r2d + sqr(z)).powf(d[4]);
+            v.z = r * z;
+            let r = r * r2d.sqrt();
+            v.x = r * cosa;
+            v.y = r * sina;
+        },
+        prepare: Some(|p, _| {
+            let (power, divisor) = (ftoi(p[0]) as f64, ftoi(p[1]) as f64);
+            let inv_power = divisor / power;
+            vec![power, divisor, inv_power, inv_power.abs(), 0.5 * inv_power - 0.5, M_2PI / power]
+        }),
+        // GPU: the random multiple of 2pi/power is drawn from 0..|power| (same angles).
+        wgsl: "let k = floor(rnd() * abs(D(0)));
+let an = atan2(v.y, v.x) * D(2) + k * D(5);
+let z = v.z * D(3);
+let r2d = v.x * v.x + v.y * v.y;
+let r = AMOUNT * pow(r2d + z * z, D(4));
+v.z = r * z;
+let r1 = r * sqrt(r2d);
+v.x = r1 * cos(an);
+v.y = r1 * sin(an);",
+    },
+    VarDef {
+        name: "post_juliaq",
+        // Java default power is random (+-2..7); 3 is used here.
+        params: &[ParamDef::int("power", 3.0, -12.0, 12.0), ParamDef::int("divisor", 2.0, -12.0, 12.0)],
+        kind: VarKind::Post,
+        is_3d: false,
+        apply: |d, ctx, _a, v, amount| {
+            // d = [power, divisor, half_inv_power, inv_power, inv_power_2pi]
+            let a = v.y.atan2(v.x) * d[3] + ctx.random_int(i32::MAX as usize) as f64 * d[4];
+            let (sina, cosa) = a.sin_cos();
+            let r = amount * (sqr(v.x) + sqr(v.y)).powf(d[2]);
+            v.x = r * cosa;
+            v.y = r * sina;
+        },
+        prepare: Some(|p, _| {
+            let (power, divisor) = (ftoi(p[0]) as f64, ftoi(p[1]) as f64);
+            vec![power, divisor, 0.5 * divisor / power, divisor / power, M_2PI / power]
+        }),
+        // GPU: the random multiple of 2pi/power is drawn from 0..|power| (same angles).
+        wgsl: "let k = floor(rnd() * abs(D(0)));
+let an = atan2(v.y, v.x) * D(3) + k * D(4);
+let r = AMOUNT * pow(v.x * v.x + v.y * v.y, D(2));
+v.x = r * cos(an);
+v.y = r * sin(an);",
+    },
+    VarDef {
+        name: "post_log_tile2",
+        params: &[ParamDef::new("spreadx", 2.0), ParamDef::new("spready", 2.0), ParamDef::new("spreadz", 0.0)],
+        kind: VarKind::Post,
+        is_3d: true,
+        apply: |d, ctx, _a, v, amount| {
+            let sx = if ctx.random() < 0.5 { d[0] } else { -d[0] };
+            let sy = if ctx.random() < 0.5 { d[1] } else { -d[1] };
+            let sz = if ctx.random() < 0.5 { d[2] } else { -d[2] };
+            v.x = amount * (v.x + sx * java_round(ctx.random().ln()));
+            v.y = amount * (v.y + sy * java_round(ctx.random().ln()));
+            v.z = amount * (v.z + sz * java_round(ctx.random().ln()));
+        },
+        prepare: None,
+        wgsl: "let sx = select(-D(0), D(0), rnd() < 0.5);
+let sy = select(-D(1), D(1), rnd() < 0.5);
+let sz = select(-D(2), D(2), rnd() < 0.5);
+v.x = AMOUNT * (v.x + sx * java_round(log(rnd())));
+v.y = AMOUNT * (v.y + sy * java_round(log(rnd())));
+v.z = AMOUNT * (v.z + sz * java_round(log(rnd())));",
+    },
+    VarDef {
+        name: "post_mandelbox3d_crop",
+        params: &[
+            ParamDef::new("scale", 2.0),
+            ParamDef::new("radius", 0.5),
+            ParamDef::new("f", 1.0),
+            ParamDef::int("iterations", 12.0, 0.0, 250.0),
+            ParamDef::new("bailout", 16.0),
+        ],
+        kind: VarKind::Post,
+        is_3d: true,
+        apply: |d, _, _a, v, amount| {
+            // d = [scale, radius, f, iterations, bailout]
+            let fold = |t: f64| if t > 1.0 { 2.0 - t } else if t < -1.0 { -2.0 - t } else { t };
+            let (x1, y1, z1) = (v.x * 6.0, v.y * 6.0, v.z * 6.0);
+            let (mut x, mut y, mut z) = (x1, y1, z1);
+            let (scale, r, f) = (d[0], d[1], d[2]);
+            for _ in 0..d[3] as i32 {
+                x = fold(x) * f;
+                y = fold(y) * f;
+                z = fold(z) * f;
+                let mag = (x * x + y * y + z * z).sqrt();
+                if mag < r {
+                    (x, y, z) = (x / (r * r), y / (r * r), z / (r * r));
+                } else if mag < 1.0 {
+                    (x, y, z) = (x / (mag * mag), y / (mag * mag), z / (mag * mag));
+                }
+                (x, y, z) = (x * scale + x1, y * scale + y1, z * scale + z1);
+                if mag < d[4] {
+                    v.do_hide = false;
+                    v.x *= amount;
+                    v.y *= amount;
+                    v.z *= amount;
+                } else {
+                    v.do_hide = true;
+                    v.x = 0.0;
+                    v.y = 0.0;
+                    v.z = 0.0;
+                }
+            }
+        },
+        prepare: Some(|p, _| crop_prepare(p, 3, None)),
+        wgsl: "let p1 = vec3<f32>(v.x, v.y, v.z) * 6.0;
+var p = p1;
+let r = D(1);
+let n = i32(D(3));
+for (var i = 0; i < n; i++) {
+  p = select(select(p, -2.0 - p, p < vec3<f32>(-1.0)), 2.0 - p, p > vec3<f32>(1.0));
+  p *= D(2);
+  let mag = length(p);
+  if (mag < r) { p = p / (r * r); } else if (mag < 1.0) { p = p / (mag * mag); }
+  p = p * D(0) + p1;
+  if (mag < D(4)) {
+    v.hide = 0.0;
+    v.x *= AMOUNT;
+    v.y *= AMOUNT;
+    v.z *= AMOUNT;
+  } else {
+    v.hide = 1.0;
+    v.x = 0.0;
+    v.y = 0.0;
+    v.z = 0.0;
+  }
+}",
+    },
+    VarDef {
+        name: "post_mandelbulb3d_crop",
+        params: &[
+            ParamDef::new("power", 9.0),
+            ParamDef::new("xz", 0.0),
+            ParamDef::int("iterations", 12.0, 0.0, 250.0),
+            ParamDef::new("bailout", 2.0),
+            ParamDef::int("filled", 0.0, 0.0, 1.0),
+        ],
+        kind: VarKind::Post,
+        is_3d: true,
+        apply: |d, ctx, _a, v, amount| {
+            // d = [power, xz, iterations, bailout, filled]
+            if d[4] as i32 == 1 {
+                let fill = (amount + 1.0) * 2.0;
+                v.x = ctx.random() * fill - fill / 2.0;
+                v.y = ctx.random() * fill - fill / 2.0;
+                v.z = ctx.random() * fill - fill / 2.0;
+            }
+            let (mut x, mut y, mut z) = (v.x, v.y, v.z);
+            let pw = d[0];
+            for i in 0..d[2] as i32 {
+                let sq_r = (x * x + y * y + z * z).sqrt();
+                let sq_xz = (x * x + z * z).sqrt();
+                let r = sq_r.powf(pw);
+                let theta = (sq_xz + d[1]).atan2(y) * pw;
+                let zangle = x.atan2(z) * pw;
+                let xf = zangle.sin() * theta.sin() * r + x;
+                let yf = theta.cos() * r + y;
+                let zf = theta.sin() * zangle.cos() * r + z;
+                (x, y, z) = (xf, yf, zf);
+                v.color = java_min(1.0, 8.0 / (i + 1) as f64);
+                if (xf * xf + yf * yf + zf * zf).sqrt() < d[3] {
+                    v.do_hide = false;
+                    v.x *= amount;
+                    v.y *= amount;
+                    v.z *= amount;
+                } else {
+                    v.do_hide = true;
+                    v.x = 0.0;
+                    v.y = 0.0;
+                    v.z = 0.0;
+                }
+            }
+        },
+        prepare: Some(|p, _| {
+            let mut d = crop_prepare(p, 2, None);
+            d[4] = limit_value(ftoi(p[4]), 0, 1) as f64;
+            d
+        }),
+        wgsl: "if (i32(D(4)) == 1) {
+  let fill = (AMOUNT + 1.0) * 2.0;
+  v.x = rnd() * fill - fill / 2.0;
+  v.y = rnd() * fill - fill / 2.0;
+  v.z = rnd() * fill - fill / 2.0;
+}
+var p = vec3<f32>(v.x, v.y, v.z);
+let pw = D(0);
+let n = i32(D(2));
+for (var i = 0; i < n; i++) {
+  let r = java_pow(length(p), pw);
+  let theta = atan2(length(p.xz) + D(1), p.y) * pw;
+  let zangle = atan2(p.x, p.z) * pw;
+  p = vec3<f32>(sin(zangle) * sin(theta) * r, cos(theta) * r, sin(theta) * cos(zangle) * r) + p;
+  v.color = min(1.0, 8.0 / f32(i + 1));
+  if (length(p) < D(3)) {
+    v.hide = 0.0;
+    v.x *= AMOUNT;
+    v.y *= AMOUNT;
+    v.z *= AMOUNT;
+  } else {
+    v.hide = 1.0;
+    v.x = 0.0;
+    v.y = 0.0;
+    v.z = 0.0;
+  }
+}",
+    },
+    VarDef {
+        name: "post_point_crop",
+        params: &[
+            ParamDef::new("x_offset", 0.0),
+            ParamDef::new("y_offset", 0.0),
+            ParamDef::new("z_offset", 0.0),
+            ParamDef::int("point_hide_enable", 1.0, 0.0, 1.0),
+            ParamDef::int("point_crop_enable", 1.0, 0.0, 1.0),
+            ParamDef::new("x_width", 0.0),
+            ParamDef::new("y_width", 0.0),
+            ParamDef::new("z_width", 0.0),
+        ],
+        kind: VarKind::Post,
+        is_3d: true,
+        apply: |d, ctx, a, v, amount| {
+            // d = [x_offset, y_offset, z_offset, hide, crop, x_width, y_width, z_width]
+            let (xo, yo, zo, xw, yw, zw) = (d[0], d[1], d[2], d[5], d[6], d[7]);
+            let boundaries = if xw + yw + zw != 0.0 {
+                let bx = v.x - xo <= xw && v.x - xo >= -xw;
+                let by = v.y - yo <= yw && v.y - yo >= -yw;
+                let bz = v.z - zo <= zw && v.z - zo >= -zw && v.z != 0.0;
+                bx || by || bz
+            } else {
+                v.x == xo && v.y == yo && v.z == zo
+            };
+            let (hide, crop) = (d[3] as i32 == 1, d[4] as i32 == 1);
+            // The last uncropped point lives across calls (per render thread here).
+            if boundaries {
+                if crop {
+                    [v.x, v.y] = *state_slot(ctx, d, 0, [0.0; 2]);
+                    [v.z, v.color] = *state_slot(ctx, d, 1, [0.0; 2]);
+                }
+                if hide {
+                    v.do_hide = true;
+                }
+            } else {
+                if hide {
+                    v.do_hide = false;
+                }
+                if crop {
+                    *state_slot(ctx, d, 0, [0.0; 2]) = [v.x, v.y];
+                    *state_slot(ctx, d, 1, [0.0; 2]) = [v.z, v.color];
+                }
+                ctx.pass_z(a, v, amount);
+            }
+        },
+        prepare: Some(|p, _| {
+            let mut d = p.to_vec();
+            d[3] = crop_int_param(p[3], 0.0, 1.0);
+            d[4] = crop_int_param(p[4], 0.0, 1.0);
+            d
+        }),
+        // GPU: no memory of the last uncropped point; cropped points move to the origin.
+        wgsl: "let o = vec3<f32>(D(0), D(1), D(2));
+let w = vec3<f32>(D(5), D(6), D(7));
+let q = vec3<f32>(v.x, v.y, v.z) - o;
+var boundaries = v.x == o.x && v.y == o.y && v.z == o.z;
+if (w.x + w.y + w.z != 0.0) {
+  boundaries = (q.x <= w.x && q.x >= -w.x) || (q.y <= w.y && q.y >= -w.y) || (q.z <= w.z && q.z >= -w.z && v.z != 0.0);
+}
+let hide = i32(D(3)) == 1;
+let crop = i32(D(4)) == 1;
+if (boundaries) {
+  if (crop) {
+    v.x = 0.0;
+    v.y = 0.0;
+    v.z = 0.0;
+    v.color = 0.0;
+  }
+  if (hide) { v.hide = 1.0; }
+} else {
+  if (hide) { v.hide = 0.0; }
+  if (PRESERVE_Z) { v.z += AMOUNT * a.z; }
+}",
+    },
+    VarDef {
+        name: "post_point_symmetry_wf",
+        params: &[
+            ParamDef::new("centre_x", 0.25),
+            ParamDef::new("centre_y", 0.5),
+            ParamDef::int("order", 3.0, 1.0, 36.0),
+            ParamDef::new("colorshift", 0.0),
+        ],
+        kind: VarKind::Post,
+        is_3d: false,
+        apply: |d, ctx, _a, v, amount| {
+            // d = [centre_x, centre_y, order, colorshift]
+            let dx = (v.x - d[0]) * amount;
+            let dy = (v.y - d[1]) * amount;
+            let idx = ctx.random_int(d[2] as usize);
+            // Java sums the angle step idx times.
+            let da = M_2PI / d[2];
+            let mut angle = 0.0;
+            for _ in 0..idx {
+                angle += da;
+            }
+            let (sina, cosa) = (angle.sin(), angle.cos());
+            v.x = d[0] + dx * cosa + dy * sina;
+            v.y = d[1] + dy * cosa - dx * sina;
+            v.color = fmod(v.color + idx as f64 * d[3], 1.0);
+        },
+        prepare: Some(|p, _| vec![p[0], p[1], limit_value(ftoi(p[2]), 1, i32::MAX) as f64, p[3]]),
+        wgsl: "let dx = (v.x - D(0)) * AMOUNT;
+let dy = (v.y - D(1)) * AMOUNT;
+let idx = floor(rnd() * D(2));
+let angle = idx * (TWO_PI / D(2));
+v.x = D(0) + dx * cos(angle) + dy * sin(angle);
+v.y = D(1) + dy * cos(angle) - dx * sin(angle);
+v.color = fmod(v.color + idx * D(3), 1.0);",
+    },
+    VarDef {
+        name: "post_prepost_affine",
+        params: PREPOST_AFFINE_PARAMS,
+        kind: VarKind::Post,
+        is_3d: true,
+        apply: |d, _, _a, v, amount| {
+            // The forward transform of prepost_affine (the GPU code of
+            // InternalPrePostAffinePostWFFunc; its Java CPU transform is empty).
+            if amount == 0.0 {
+                return;
+            }
+            let x = amount * d[0] * v.x;
+            let y = amount * d[1] * v.y;
+            let z = amount * d[2] * v.z;
+            v.x = d[9] * x + d[10] * y + d[11] * z + d[6];
+            v.y = d[12] * x + d[13] * y + d[14] * z + d[7];
+            v.z = d[15] * x + d[16] * y + d[17] * z + d[8];
+        },
+        prepare: Some(|p, _| prepost_affine_prepare(p)),
+        wgsl: "if (AMOUNT != 0.0) {
+  let x = AMOUNT * D(0) * v.x;
+  let y = AMOUNT * D(1) * v.y;
+  let z = AMOUNT * D(2) * v.z;
+  v.x = D(9) * x + D(10) * y + D(11) * z + D(6);
+  v.y = D(12) * x + D(13) * y + D(14) * z + D(7);
+  v.z = D(15) * x + D(16) * y + D(17) * z + D(8);
+}",
+    },
+    VarDef {
+        name: "post_rblur",
+        params: &[ParamDef::new("strength", 1.0), ParamDef::new("offset", 1.0), ParamDef::new("center_x", 0.0), ParamDef::new("center_y", 1.0)],
+        kind: VarKind::Post,
+        is_3d: false,
+        apply: |d, ctx, _a, v, amount| {
+            let r = java_max((sqr(v.x - d[2]) + sqr(v.y - d[3])).sqrt() - d[1], 0.0) * (2.0 * d[0]);
+            v.x = amount * (v.x + (ctx.random() - 0.5) * r);
+            v.y = amount * (v.y + (ctx.random() - 0.5) * r);
+        },
+        prepare: None,
+        wgsl: "let r = max(length(vec2<f32>(v.x - D(2), v.y - D(3))) - D(1), 0.0) * (2.0 * D(0));
+v.x = AMOUNT * (v.x + (rnd() - 0.5) * r);
+v.y = AMOUNT * (v.y + (rnd() - 0.5) * r);",
+    },
+    VarDef {
+        name: "post_rotate_y",
+        params: &[],
+        kind: VarKind::Post,
+        is_3d: true,
+        apply: |_, _, _a, v, amount| {
+            let (sina, cosa) = (amount * M_PI * 0.5).sin_cos();
+            let x = cosa * v.x - sina * v.z;
+            v.z = sina * v.x + cosa * v.z;
+            v.x = x;
+        },
+        prepare: None,
+        wgsl: "let sina = sin(AMOUNT * PI * 0.5);
+let cosa = cos(AMOUNT * PI * 0.5);
+let x = cosa * v.x - sina * v.z;
+v.z = sina * v.x + cosa * v.z;
+v.x = x;",
+    },
+    VarDef {
+        name: "post_rotate_z",
+        params: &[],
+        kind: VarKind::Post,
+        is_3d: false,
+        apply: |_, _, _a, v, amount| {
+            let (sina, cosa) = (amount * M_PI * 0.5).sin_cos();
+            let y = cosa * v.y - sina * v.x;
+            v.x = sina * v.y + cosa * v.x;
+            v.y = y;
+        },
+        prepare: None,
+        wgsl: "let sina = sin(AMOUNT * PI * 0.5);
+let cosa = cos(AMOUNT * PI * 0.5);
+let y = cosa * v.y - sina * v.x;
+v.x = sina * v.y + cosa * v.x;
+v.y = y;",
     },
 ];
