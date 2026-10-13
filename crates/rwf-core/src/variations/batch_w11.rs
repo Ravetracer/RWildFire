@@ -555,8 +555,7 @@ fn glsl_grid3d_field(p: Vec3) -> Vec3 {
     let mut f = 0.1;
     for _ in 0..3 {
         p = vec3(p.y, p.z, p.x);
-        p = super::glsl::abs(fract(p) - 0.5);
-        p = p * 2.0;
+        p = super::glsl::abs(fract(p) - 0.5) * 2.0;
         f *= 2.0;
     }
     p = p * p;
@@ -675,7 +674,7 @@ fn glsl_randomoctree_rgb(d: &[f64], (xp, yp): (f64, f64)) -> Vec3 {
         let voxelstate = getvoxel(fro, size);
         if exitoct {
             let newfro = floor(fro / (size / 0.5) + 0.25) * (size * 2.0);
-            lro = lro + (fro - newfro);
+            lro += fro - newfro;
             fro = newfro;
             recursions -= 1;
             size *= 2.0;
@@ -686,8 +685,8 @@ fn glsl_randomoctree_rgb(d: &[f64], (xp, yp): (f64, f64)) -> Vec3 {
             recursions += 1;
             size *= 0.5;
             let mask2 = step(Vec3::splat(size), lro);
-            fro = fro + mask2 * size;
-            lro = lro - mask2 * size;
+            fro += mask2 * size;
+            lro -= mask2 * size;
         } else if voxelstate == 0 || voxelstate == 2 || recursions > DETAIL {
             // voxel(lro, rd, ird, size)
             let hs = size * 0.5;
@@ -704,8 +703,8 @@ fn glsl_randomoctree_rgb(d: &[f64], (xp, yp): (f64, f64)) -> Vec3 {
                 break;
             }
             dist += len;
-            lro = lro + (rd * len - mask * sign(rd) * size);
-            fro = fro + mask * sign(rd) * size;
+            lro += rd * len - mask * sign(rd) * size;
+            fro += mask * sign(rd) * size;
             // JWildfire compares two new vec3 objects by reference here (always unequal)
             exitoct = recursions > 0;
             lastmask = mask;
@@ -720,13 +719,13 @@ fn glsl_randomoctree_rgb(d: &[f64], (xp, yp): (f64, f64)) -> Vec3 {
         let val = fract(dot(fro, vec3(15.23, 754.345, 3.454)));
         let normal = lastmask * sign(rd) * -1.0;
         color = super::glsl::sin(vec3(39.896, 57.3225, 48.25) * val) * 0.5 + 0.5;
-        color = color * (normal * 0.25 + 0.75);
+        color *= normal * 0.25 + 0.75;
         if d[7] as i32 == 1 {
             let q = abs(lro / size - 0.5) * (Vec3::splat(1.0) - lastmask);
             edge = super::glsl::clamp(-(java_max(java_max(q.x, q.y), q.z) - 0.5) * 20.0 * size, 0.0, edge);
         }
         if d[8] as i32 == 1 {
-            color = color * edge;
+            color *= edge;
         } else {
             color = Vec3::splat(1.0) - (Vec3::splat(1.0) - color) * edge;
         }
@@ -2112,7 +2111,7 @@ v.y += AMOUNT * (gj / 1000000.0 - 0.5);",
             let mut i = 0;
             while (i as f64) < d[3] {
                 uv = super::glsl::abs(uv) - s;
-                uv = uv - d[4];
+                uv -= d[4];
                 uv = rot(uv, d[8]);
                 s /= d[5];
                 if (d[1] as i32) < i {
@@ -2179,8 +2178,8 @@ v.y += AMOUNT * (gj / 1000000.0 - 0.5);",
             for i in 0..MAXITER {
                 let f2 = glsl_grid3d_field(pos);
                 let f = java_min(java_min(f2.x, f2.y), f2.z);
-                pos = pos + dir * f;
-                color = color + Vec3::splat((MAXITER - i) as f64) / (f2 + 0.1);
+                pos += dir * f;
+                color += Vec3::splat((MAXITER - i) as f64) / (f2 + 0.1);
             }
             let c3 = Vec3::splat(1.0) - Vec3::splat(1.0) / (Vec3::splat(1.0) + color * (0.09 / (MAXITER * MAXITER) as f64));
             glsl_out(v, amount, px, d[0], Vec3::splat(c3.x + c3.y + c3.z), 0.0, |_| 0.0);
@@ -2506,7 +2505,7 @@ v.y += AMOUNT * (gj / 1000000.0 - 0.5);",
             let (time, zoom, p1) = (d[2], d[4], d[5]);
             let ka = M_PI / d[3];
             let mut uv = vec2(2.0 * (px.0 + 0.5) / d[0] - 1.0, 2.0 * (px.1 + 0.5) / GLSL_RES_Y - 1.0) * 12.0;
-            uv = uv * (0.1 + zoom);
+            uv *= (0.1 + zoom);
             if d[6] as i32 == 1 {
                 let angle = (glsl_mod(glsl_atan2(uv.y, uv.x), 2.0 * ka) - ka).abs() + 0.1 * time;
                 uv = vec2(angle.cos(), angle.sin()) * length(uv);
@@ -2958,7 +2957,7 @@ v.y += AMOUNT * (gj / 1000000.0 - 0.5);"
             let mut uv = vec2((px.0 + 0.5) / d[0] - 0.5, (px.1 + 0.5) / GLSL_RES_Y - 0.5);
             let mut col = Vec3::splat(0.0);
             uv = uv * rotate(time);
-            uv = uv + vec2(time.cos(), time.sin()) * 2.0;
+            uv += vec2(time.cos(), time.sin()) * 2.0;
             let mut i = 0.0;
             while i < 1.0 {
                 uv = uv * rotate(glsl_stars_hash11(i) * 6.28);
@@ -2967,10 +2966,10 @@ v.y += AMOUNT * (gj / 1000000.0 - 0.5);"
                 let f = smoothstep(0.0, 1.0, t) * smoothstep(1.0, 0.0, t);
                 let k = glsl_stars_hash22(vec2(i, i * 5.0)) * 0.1;
                 let l = glsl_stars_layer((uv - k) * s, d[3]);
-                col = col + mix(Vec3::splat(0.0), Vec3::splat(1.0), l) * f;
+                col += mix(Vec3::splat(0.0), Vec3::splat(1.0), l) * f;
                 i += 0.1;
             }
-            col = col + Vec3::splat(d[4] * glsl_stars_hash21(uv + time));
+            col += Vec3::splat(d[4] * glsl_stars_hash21(uv + time));
             glsl_out(v, amount, px, d[0], col, d[5], glsl_red_ratio);
         },
         prepare: Some(|p, _| {
@@ -3158,5 +3157,156 @@ if (i32(D(9)) == 0) {
 }
 v.x += AMOUNT * (gi / D(0) - 0.5);
 v.y += AMOUNT * (gj / 1000000.0 - 0.5);",
+    },
+    VarDef {
+        name: "glynnia3",
+        params: &[ParamDef::new("rscale", 1.0), ParamDef::new("dscale", 1.0), ParamDef::new("rthresh", 0.0), ParamDef::new("ythresh", 0.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let vvar2 = amount * 2f64.sqrt() / 2.0;
+            let r = d[0] * (a.x * a.x + a.y * a.y).sqrt();
+            // sign of the x offset
+            let sx = if r > d[2] && a.y > d[3] { 1.0 } else { -1.0 };
+            if ctx.random() > 0.5 {
+                let dd = d[1] * (r + a.x).sqrt();
+                if dd == 0.0 {
+                    return;
+                }
+                v.x += sx * vvar2 * dd;
+                v.y -= vvar2 / dd * a.y;
+            } else {
+                let dd = d[1] * (r + a.x);
+                let dx = (r * (a.y * a.y + dd * dd)).sqrt();
+                if dx == 0.0 {
+                    return;
+                }
+                let r = amount / dx;
+                v.x += sx * r * dd;
+                v.y += r * a.y;
+            }
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "let vvar2 = AMOUNT * sqrt(2.0) / 2.0;
+let r = D(0) * sqrt(a.x * a.x + a.y * a.y);
+var sx = -1.0;
+if (r > D(2) && a.y > D(3)) { sx = 1.0; }
+var ok = true;
+if (rnd() > 0.5) {
+  let dd = D(1) * sqrt(r + a.x);
+  if (dd == 0.0) {
+    ok = false;
+  } else {
+    v.x += sx * vvar2 * dd;
+    v.y -= vvar2 / dd * a.y;
+  }
+} else {
+  let dd = D(1) * (r + a.x);
+  let dx = sqrt(r * (a.y * a.y + dd * dd));
+  if (dx == 0.0) {
+    ok = false;
+  } else {
+    let rr = AMOUNT / dx;
+    v.x += sx * rr * dd;
+    v.y += rr * a.y;
+  }
+}
+if (ok && PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "glynnlissa",
+        params: &[
+            ParamDef::new("radius", 1.0),
+            ParamDef::new("radius1", 0.5),
+            ParamDef::new("thickness", 1.0),
+            ParamDef::new("phi1", 0.0),
+            ParamDef::new("a", 3.0),
+            ParamDef::new("b", 2.0),
+            ParamDef::new("width", 0.0),
+            ParamDef::new("phase", 0.0),
+            ParamDef::new("scale", 0.71),
+            ParamDef::new("pow", 1.5),
+            ParamDef::range("contrast", 0.5, 0.0, 1.0),
+        ],
+        kind: VarKind::Normal,
+        is_3d: false,
+        // d = [radius, radius1, thickness, phi1, a, b, width, phase, scale, pow, contrast, x1, y1, abs_pow]
+        apply: |d, ctx, a, v, amount| {
+            let (radius, radius1, scale, width) = (d[0], d[1], d[8], d[6]);
+            let (x1, y1) = (d[11], d[12]);
+            let t = ctx.random() * (M_PI * 2.0);
+            let (px, py) = ((d[4] * t + d[7]).sin(), (d[5] * t).sin());
+            let r = (a.x * a.x + a.y * a.y).sqrt();
+            let y = ctx.random() - 0.5;
+            if r < radius.abs() {
+                if radius1 >= 0.0 {
+                    v.x += amount * ((px * scale + width * y) * radius1 + x1);
+                    v.y += amount * ((py * scale + width * y) * radius1 + y1);
+                } else {
+                    // circle
+                    let cr = radius1 * (d[2] + (1.0 - d[2]) * ctx.random());
+                    let phi = 2.0 * M_PI * ctx.random();
+                    v.x += amount * (cr * phi.cos() + x1);
+                    v.y += amount * (cr * phi.sin() + y1);
+                }
+            } else {
+                let alpha = radius.abs() / r;
+                let (xi, yi) = if ctx.random() > d[10] * alpha.powf(d[13]) { (a.x, a.y) } else { (alpha * alpha * a.x, alpha * alpha * a.y) };
+                let z = (xi - x1) * (xi - x1) + (yi - y1) * (yi - y1);
+                if z < radius1 * radius1 {
+                    v.x += amount * ((px * scale + width * y) * radius1 + x1);
+                    v.y += amount * ((py * scale + width * y) * radius1 + y1);
+                } else {
+                    v.x += amount * xi;
+                    v.y += amount * yi;
+                }
+            }
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: Some(|p, _| {
+            let mut d = p.to_vec();
+            d[10] = limit_value(p[10], 0.0, 1.0);
+            let ph = M_PI * p[3] / 180.0;
+            d.extend([p[0] * ph.cos(), p[0] * ph.sin(), p[9].abs()]);
+            d
+        }),
+        wgsl: "let radius = D(0);
+let radius1 = D(1);
+let x1 = D(11);
+let y1 = D(12);
+let t = rnd() * TWO_PI;
+let lp = vec2<f32>(sin(D(4) * t + D(7)), sin(D(5) * t));
+let r = sqrt(a.x * a.x + a.y * a.y);
+let y = rnd() - 0.5;
+let liss = (lp * D(8) + D(6) * y) * radius1 + vec2<f32>(x1, y1);
+if (r < abs(radius)) {
+  if (radius1 >= 0.0) {
+    v.x += AMOUNT * liss.x;
+    v.y += AMOUNT * liss.y;
+  } else {
+    let cr = radius1 * (D(2) + (1.0 - D(2)) * rnd());
+    let phi = TWO_PI * rnd();
+    v.x += AMOUNT * (cr * cos(phi) + x1);
+    v.y += AMOUNT * (cr * sin(phi) + y1);
+  }
+} else {
+  let alpha = abs(radius) / r;
+  var xi = a.x;
+  var yi = a.y;
+  if (rnd() <= D(10) * java_pow(alpha, D(13))) {
+    xi = alpha * alpha * a.x;
+    yi = alpha * alpha * a.y;
+  }
+  let z = (xi - x1) * (xi - x1) + (yi - y1) * (yi - y1);
+  if (z < radius1 * radius1) {
+    v.x += AMOUNT * liss.x;
+    v.y += AMOUNT * liss.y;
+  } else {
+    v.x += AMOUNT * xi;
+    v.y += AMOUNT * yi;
+  }
+}
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
     },
 ];

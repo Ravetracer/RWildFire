@@ -91,13 +91,15 @@ fn sequence_filename(name: &str, frame: i32, digits: i32) -> String {
 
 const SEQ_FILES: i32 = 1;
 const SEQ_CURVE: i32 = 2;
-/// Index of the sub-flame id in the prepared data.
+/// Index of the sub-flame id in the prepared data (relative to the sub-flame parameters).
 const ID: usize = 12;
+/// Index of the sub-flame parameters in the prepared data of `glynns3subfl`.
+const GLYNN: usize = 9;
 
-#[allow(clippy::ptr_arg)] // `LoadFn` signature
-fn load(d: &mut Vec<f64>, res: &[Vec<u8>], env: &LoadEnv) {
+/// Loads the sub-flame; `o` = index of the sub-flame parameters (`scale`).
+fn load(d: &mut [f64], res: &[Vec<u8>], env: &LoadEnv, o: usize) {
     // init: frame of the sequence
-    let (is_seq, start, end, repeat, digits) = (d[7] as i32, d[8] as i32, d[9] as i32, d[10] as i32, d[11] as i32);
+    let (is_seq, start, end, repeat, digits) = (d[o + 7] as i32, d[o + 8] as i32, d[o + 9] as i32, d[o + 10] as i32, d[o + 11] as i32);
     let seq_start = start.max(1);
     let seq_end = if end <= 0 { 0 } else { end.max(seq_start) };
     let seq_repeat = if repeat < 1 || repeat > seq_end { seq_end } else { repeat };
@@ -114,7 +116,7 @@ fn load(d: &mut Vec<f64>, res: &[Vec<u8>], env: &LoadEnv) {
         text(&res[0])
     };
     let key_time = if is_seq == SEQ_CURVE { frame } else { -1 };
-    d[ID] = register(format!("{key_time}#{source}"), || {
+    d[o + ID] = register(format!("{key_time}#{source}"), || {
         let mut flame = crate::io::read_flames(&source).ok()?.into_iter().next()?;
         let time = if is_seq == SEQ_CURVE { frame } else { flame.frame as i32 };
         if flame.animation.is_animated() {
@@ -219,57 +221,167 @@ fn set_color(q: &Pt, mode: i32, v: &mut Pt) {
     }
 }
 
-fn apply(d: &[f64], ctx: &mut Ctx, v: &mut Pt) {
+/// Next point of the sub-flame; `d` starts at the sub-flame parameters.
+fn next_point(d: &[f64], ctx: &mut Ctx) -> Option<Pt> {
     let id = d[ID] as usize;
     let mut st = match ctx.subflames.remove(&id) {
         Some(st) => st,
-        None => {
-            let Some(sub) = sub_flame(id) else { return };
-            SubState { sub, p: Pt::default(), q: Pt::default(), xf: None, fused: false }
-        }
+        None => SubState { sub: sub_flame(id)?, p: Pt::default(), q: Pt::default(), xf: None, fused: false },
     };
     // the sub-flame's variations see its preserve_z flag (`sfContext`)
     let preserve_z = std::mem::replace(&mut ctx.preserve_z, st.sub.preserve_z);
     iterate(&mut st, ctx, d);
     ctx.preserve_z = preserve_z;
-    v.x += st.q.x;
-    v.y += st.q.y;
-    v.z += st.q.z;
-    set_color(&st.q, d[6] as i32, v);
+    let q = st.q;
     ctx.subflames.insert(id, st);
+    Some(q)
 }
 
-pub static DEFS: &[VarDef] = &[VarDef {
-    name: "subflame_wf",
-    params: &[
+fn apply(d: &[f64], ctx: &mut Ctx, v: &mut Pt) {
+    let Some(q) = next_point(d, ctx) else { return };
+    v.x += q.x;
+    v.y += q.y;
+    v.z += q.z;
+    set_color(&q, d[6] as i32, v);
+}
+
+/// `GlynnS3SubflWFFunc.transform`; d = [weight, show, radius, thickness, contrast, pow, type,
+/// phi1, phi2, <sub-flame parameters>, id, radius1, radius2, gamma, abs_pow, phi10, delta].
+fn glynns3subfl_apply(d: &[f64], ctx: &mut Ctx, a: &Pt, v: &mut Pt, amount: f64) {
+    let g = GLYNN + ID + 1;
+    let (radius1, radius2, gamma, abs_pow, phi10, delta) = (d[g], d[g + 1], d[g + 2], d[g + 3], d[g + 4], d[g + 5]);
+    let (show, radius, thickness, contrast, kind) = (d[1] as i32, d[2], d[3], d[4], d[6] as i32);
+    let r = (a.x * a.x + a.y * a.y).sqrt();
+    let alpha = radius / r;
+    let inside = if kind != 0 { r < radius } else { r < radius1 };
+    let (nx, ny) = if inside {
+        if show == 1 {
+            let (cr, phi) = if kind != 0 {
+                // circle
+                let cr = radius + thickness - gamma * ctx.random();
+                (cr, phi10 + delta * ctx.random())
+            } else {
+                // circle2
+                let phi = 2.0 * M_PI * ctx.random();
+                (if ctx.random() < gamma { radius1 } else { radius2 }, phi)
+            };
+            (amount * cr * phi.cos(), amount * cr * phi.sin())
+        } else {
+            (amount * a.x, amount * a.y)
+        }
+    } else if ctx.random() > contrast * alpha.powf(abs_pow) {
+        (amount * a.x, amount * a.y)
+    } else {
+        (amount * alpha * alpha * a.x, amount * alpha * alpha * a.y)
+    };
+    if ctx.random() < d[0] {
+        v.x = nx;
+        v.y = ny;
+        ctx.pass_z(a, v, amount);
+    } else if let Some(q) = next_point(&d[GLYNN..], ctx) {
+        v.x += q.x * amount;
+        v.y += q.y * amount;
+        v.z += q.z * amount;
+        set_color(&q, d[GLYNN + 6] as i32, v);
+    }
+}
+
+/// `SubFlameWFFunc` parameters with the default `color_mode`.
+const fn sub_params(color_mode: f64) -> [ParamDef; 12] {
+    [
         ParamDef::new("scale", 1.0),
         ParamDef::range("angle", 0.0, -180.0, 180.0),
         ParamDef::new("offset_x", 0.0),
         ParamDef::new("offset_y", 0.0),
         ParamDef::new("offset_z", 0.0),
         ParamDef::new("colorscale_z", 0.0),
-        ParamDef::int("color_mode", -1.0, -2.0, 4.0),
+        ParamDef::int("color_mode", color_mode, -2.0, 4.0),
         ParamDef::int("flame_is_sequence", 0.0, 0.0, 2.0),
         ParamDef::int("flame_sequence_start", 1.0, 0.0, 9999.0),
         ParamDef::int("flame_sequence_end", 0.0, 0.0, 9999.0),
         ParamDef::int("flame_sequence_repeat", 1.0, 0.0, 9999.0),
         ParamDef::int("flame_sequence_digits", 4.0, 1.0, 8.0),
-    ],
-    kind: VarKind::Normal,
-    is_3d: true,
-    apply: |d, ctx, _, v, _| apply(d, ctx, v),
-    prepare: Some(|p, _| {
-        let mut d = p.to_vec();
-        d[6] = ftoi(p[6]).clamp(-2, 4) as f64;
-        d[7] = ftoi(p[7]).clamp(0, 2) as f64;
-        for i in 8..12 {
-            d[i] = ftoi(p[i]) as f64;
-        }
-        d.push(0.0);
-        d
-    }),
-    wgsl: "",
-}];
+    ]
+}
+
+static SUBFLAME_PARAMS: [ParamDef; 12] = sub_params(-1.0);
+
+static GLYNNS3SUBFL_PARAMS: [ParamDef; GLYNN + 12] = {
+    let glynn = [
+        ParamDef::range("weight", 0.5, 0.0, 1.0),
+        ParamDef::int("show/hide(1/0)", 1.0, 0.0, 1.0),
+        ParamDef::new("radius", 1.0),
+        ParamDef::range("thickness", 0.42, 0.0, 1.0),
+        ParamDef::range("contrast", 1.0, 0.0, 1.0),
+        ParamDef::new("pow", 1.5),
+        ParamDef::int("type", 0.0, 0.0, 1.0),
+        ParamDef::new("phi1", 0.0),
+        ParamDef::new("phi2", 360.0),
+    ];
+    // CM_DIRECT
+    let sub = sub_params(0.0);
+    let mut p = [glynn[0]; GLYNN + 12];
+    let mut i = 0;
+    while i < GLYNN + 12 {
+        p[i] = if i < GLYNN { glynn[i] } else { sub[i - GLYNN] };
+        i += 1;
+    }
+    p
+};
+
+/// Limits the sub-flame parameters at `d[o..]` and reserves the sub-flame id.
+fn prepare_sub(d: &mut Vec<f64>, o: usize) {
+    d[o + 6] = ftoi(d[o + 6]).clamp(-2, 4) as f64;
+    d[o + 7] = ftoi(d[o + 7]).clamp(0, 2) as f64;
+    for x in &mut d[o + 8..o + 12] {
+        *x = ftoi(*x) as f64;
+    }
+    d.push(0.0);
+}
+
+pub static DEFS: &[VarDef] = &[
+    VarDef {
+        name: "subflame_wf",
+        params: &SUBFLAME_PARAMS,
+        kind: VarKind::Normal,
+        is_3d: true,
+        apply: |d, ctx, _, v, _| apply(d, ctx, v),
+        prepare: Some(|p, _| {
+            let mut d = p.to_vec();
+            prepare_sub(&mut d, 0);
+            d
+        }),
+        wgsl: "",
+    },
+    VarDef {
+        name: "glynns3subfl",
+        params: &GLYNNS3SUBFL_PARAMS,
+        kind: VarKind::Normal,
+        is_3d: true,
+        apply: |d, ctx, a, v, amount| glynns3subfl_apply(d, ctx, a, v, amount),
+        prepare: Some(|p, _| {
+            let mut d = p.to_vec();
+            d[0] = p[0].clamp(0.0, 1.0);
+            d[1] = p[1].clamp(0.0, 1.0).trunc();
+            d[3] = p[3].clamp(0.0, 1.0);
+            d[4] = p[4].clamp(0.0, 1.0);
+            d[6] = p[6].trunc();
+            prepare_sub(&mut d, GLYNN);
+            let (radius, thickness) = (d[2], d[3]);
+            if d[6] as i32 == 0 {
+                let radius1 = radius + thickness;
+                let radius2 = radius * radius / radius1;
+                d.extend([radius1, radius2, radius1 / (radius1 + radius2), d[5].abs(), 0.0, 0.0]);
+            } else {
+                let (phi10, phi20) = (M_PI * d[7] / 180.0, M_PI * d[8] / 180.0);
+                let gamma = thickness * (2.0 * radius + thickness) / (radius + thickness);
+                d.extend([0.0, 0.0, gamma, d[5].abs(), phi10, phi20 - phi10]);
+            }
+            d
+        }),
+        wgsl: "",
+    },
+];
 
 pub static RESOURCES: &[ResourceVar] = &[ResourceVar {
     name: "subflame_wf",
@@ -277,7 +389,14 @@ pub static RESOURCES: &[ResourceVar] = &[ResourceVar {
         ResDef { name: "flame", kind: ResKind::FlameXml, default: include_str!("../../assets/subflame_wf_default.flame") },
         ResDef { name: "flame_filename", kind: ResKind::FlameFile, default: "" },
     ],
-    load,
+    load: |d, res, env| load(d, res, env, 0),
+}, ResourceVar {
+    name: "glynns3subfl",
+    resources: &[
+        ResDef { name: "flame", kind: ResKind::FlameXml, default: include_str!("../../assets/subflame_wf_default.flame") },
+        ResDef { name: "flame_filename", kind: ResKind::FlameFile, default: "" },
+    ],
+    load: |d, res, env| load(d, res, env, GLYNN),
 }];
 
 #[cfg(test)]
@@ -304,6 +423,24 @@ mod tests {
             }
         }
         assert!(n_finite > 1900 && spread > 0.1, "{n_finite} {spread}");
+    }
+
+    #[test]
+    fn glynns3subfl_draws_from_the_subflame() {
+        let mut inst = VariationInstance::new("glynns3subfl", 1.0);
+        assert!(inst.set_param("weight", 0.0));
+        let def = find("glynns3subfl").unwrap();
+        let d = prepare_instance(def, &inst, &Affine::IDENTITY, 1);
+        assert!(d[GLYNN + ID] > 0.0, "default sub-flame did not load");
+        let mut ctx = Ctx::new(5, false);
+        let mut spread = 0.0f64;
+        for _ in 0..500 {
+            let mut v = Pt::default();
+            (def.apply)(&d, &mut ctx, &mut Pt { x: 0.3, y: 0.2, ..Pt::default() }, &mut v, 1.0);
+            assert!(!v.is_bad());
+            spread = spread.max(v.x.abs()).max(v.y.abs());
+        }
+        assert!(spread > 0.1, "{spread}");
     }
 
     #[test]
