@@ -628,6 +628,116 @@ fn glsl_squares_hit(d: &[f64], p: Vec2) -> bool {
     true
 }
 
+/// `GLSLRandomOctreeFunc.getRGBColor`; d = [res_x, seed, time, steps, mouse_x, mouse_y, grid,
+/// borders, black_borders, gradient].
+fn glsl_randomoctree_rgb(d: &[f64], (xp, yp): (f64, f64)) -> Vec3 {
+    use super::glsl::{abs, dot, floor, sign, step};
+    let (time, steps, mouse_x, mouse_y) = (d[2], d[3] as i32, d[4], d[5]);
+    const DETAIL: i32 = 5;
+    let getvoxel = |p: Vec3, size: f64| -> i32 {
+        if p.x == 0.0 && p.y == 0.0 {
+            return 0;
+        }
+        let val = fract(4e4 * (p.x * 13.46 + p.y * 41.74 + p.z * -73.36 + size * 14.24 + 17.34).sin());
+        if val < 0.5 {
+            0
+        } else if val < 0.95 {
+            1
+        } else {
+            2
+        }
+    };
+    let rot = |a: f64| mat2(a.cos(), a.sin(), -a.sin(), a.cos());
+    let uv = vec2(2.0 * (xp + 0.5) / d[0] - 1.0, 2.0 * (yp + 0.5) / GLSL_RES_Y - 1.0);
+    let mut size = 1.0;
+    let maxdistance = 6.0;
+    let ro = vec3(0.5 + time.sin() * 0.4, 0.5 + time.cos() * 0.4, time);
+    let mut rd = normalize(Vec3::from_vec2(uv, 1.0));
+    if length(vec2(mouse_x * d[0], mouse_y * GLSL_RES_Y)) > 40.0 {
+        let t1 = vec2(rd.y, rd.z) * rot(mouse_y * M_PI - M_PI / 2.0);
+        rd = vec3(rd.x, t1.x, t1.y);
+        let t2 = vec2(rd.x, rd.z) * rot(2.0 * mouse_x * M_PI - M_PI);
+        rd = vec3(t2.x, rd.y, t2.y);
+    }
+    let mut lro = glsl_mod(ro, size);
+    let mut fro = ro - lro;
+    let ird = Vec3::splat(1.0) / super::glsl::max(abs(rd), Vec3::splat(0.001));
+    let mut mask = Vec3::splat(0.0);
+    let mut exitoct = false;
+    let mut recursions = 0;
+    let mut dist = 0.0;
+    let mut edge = 1.0;
+    let mut lastmask = Vec3::splat(0.0);
+    for _ in 0..steps {
+        if dist > maxdistance {
+            break;
+        }
+        let voxelstate = getvoxel(fro, size);
+        if exitoct {
+            let newfro = floor(fro / (size / 0.5) + 0.25) * (size * 2.0);
+            lro = lro + (fro - newfro);
+            fro = newfro;
+            recursions -= 1;
+            size *= 2.0;
+            let v0 = glsl_mod(fro / size + 0.5, 2.0);
+            let v1 = v0 - Vec3::splat(1.0) + mask * sign(rd) * 0.5;
+            exitoct = recursions > 0 && dot(v1, mask).abs() < 0.1;
+        } else if voxelstate == 1 && recursions <= DETAIL {
+            recursions += 1;
+            size *= 0.5;
+            let mask2 = step(Vec3::splat(size), lro);
+            fro = fro + mask2 * size;
+            lro = lro - mask2 * size;
+        } else if voxelstate == 0 || voxelstate == 2 || recursions > DETAIL {
+            // voxel(lro, rd, ird, size)
+            let hs = size * 0.5;
+            let hit = (sign(rd) * (lro - hs) - hs) * ird * -1.0;
+            mask = if hit.x < java_min(hit.y, hit.z) {
+                vec3(1.0, 0.0, 0.0)
+            } else if hit.y < hit.z {
+                vec3(0.0, 1.0, 0.0)
+            } else {
+                vec3(0.0, 0.0, 1.0)
+            };
+            let len = dot(hit, mask);
+            if voxelstate == 2 {
+                break;
+            }
+            dist += len;
+            lro = lro + (rd * len - mask * sign(rd) * size);
+            fro = fro + mask * sign(rd) * size;
+            // JWildfire compares two new vec3 objects by reference here (always unequal)
+            exitoct = recursions > 0;
+            lastmask = mask;
+        }
+        if d[6] as i32 == 1 {
+            let q = abs(lro / size - 0.5) * (Vec3::splat(1.0) - lastmask);
+            edge = java_min(edge, -(java_max(java_max(q.x, q.y), q.z) - 0.5) * 80.0 * size);
+        }
+    }
+    let mut color;
+    if dist < maxdistance {
+        let val = fract(dot(fro, vec3(15.23, 754.345, 3.454)));
+        let normal = lastmask * sign(rd) * -1.0;
+        color = super::glsl::sin(vec3(39.896, 57.3225, 48.25) * val) * 0.5 + 0.5;
+        color = color * (normal * 0.25 + 0.75);
+        if d[7] as i32 == 1 {
+            let q = abs(lro / size - 0.5) * (Vec3::splat(1.0) - lastmask);
+            edge = super::glsl::clamp(-(java_max(java_max(q.x, q.y), q.z) - 0.5) * 20.0 * size, 0.0, edge);
+        }
+        if d[8] as i32 == 1 {
+            color = color * edge;
+        } else {
+            color = Vec3::splat(1.0) - (Vec3::splat(1.0) - color) * edge;
+        }
+    } else if d[8] as i32 == 1 {
+        color = Vec3::splat(edge);
+    } else {
+        color = Vec3::splat(1.0 - edge);
+    }
+    super::glsl::sqrt(color)
+}
+
 pub static DEFS: &[VarDef] = &[
     VarDef {
         name: "barycentroid",
@@ -2919,5 +3029,134 @@ if (i32(D(5)) == 0) {
 }
 v.x += AMOUNT * (gi / D(0) - 0.5);
 v.y += AMOUNT * (gj / 1000000.0 - 0.5);"
+    },
+    VarDef {
+        name: "glsl_randomoctree",
+        params: &[
+            ParamDef::int("Density Pixels", 1000000.0, 100.0, 10000000.0),
+            ParamDef::int("Seed", 10000.0, 0.0, 100000.0),
+            ParamDef::new("time", 0.0),
+            ParamDef::int("Steps", 10.0, 3.0, 100.0),
+            ParamDef::range("Rot. L-R", 0.0, 0.0, 1.0),
+            ParamDef::range("Rot. U-D", 0.0, 0.0, 1.0),
+            ParamDef::int("Grid", 0.0, 0.0, 1.0),
+            ParamDef::int("Borders", 1.0, 0.0, 1.0),
+            ParamDef::int("Black Borders", 1.0, 0.0, 1.0),
+            ParamDef::int("Gradient", 0.0, 0.0, 1.0),
+        ],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, _, v, amount| {
+            let px = glsl_pixel(ctx, d[0]);
+            let color = glsl_randomoctree_rgb(d, px);
+            glsl_out(v, amount, px, d[0], color, d[9], glsl_red_ratio);
+        },
+        prepare: Some(|p, _| {
+            let mut d = p.to_vec();
+            d[0] = glsl_density(p[0]);
+            d[3] = limit_value(p[3], 3.0, 100.0).trunc();
+            d[4] = limit_value(p[4], 0.0, 1.0);
+            d[5] = limit_value(p[5], 0.0, 1.0);
+            for i in 6..10 {
+                d[i] = limit_value(p[i], 0.0, 1.0).trunc();
+            }
+            d
+        }),
+        wgsl: "fn glsl_randomoctree_voxel(p: vec3<f32>, size: f32) -> i32 {
+  if (p.x == 0.0 && p.y == 0.0) { return 0; }
+  let val = fract(4e4 * sin(dot(vec4<f32>(p, size), vec4<f32>(13.46, 41.74, -73.36, 14.24)) + 17.34));
+  if (val < 0.5) { return 0; }
+  if (val < 0.95) { return 1; }
+  return 2;
+}
+fn glsl_randomoctree_rot(a: f32) -> mat2x2<f32> {
+  return mat2x2<f32>(cos(a), sin(a), -sin(a), cos(a));
+}
+@body
+let gi = floor(rnd() * D(0));
+let gj = floor(rnd() * 1000000.0);
+let tm = D(2);
+let steps = i32(D(3));
+let uv = vec2<f32>(2.0 * (gi + 0.5) / D(0) - 1.0, 2.0 * (gj + 0.5) / 1000000.0 - 1.0);
+var size = 1.0;
+let ro = vec3<f32>(0.5 + sin(tm) * 0.4, 0.5 + cos(tm) * 0.4, tm);
+var rd = normalize(vec3<f32>(uv, 1.0));
+if (length(vec2<f32>(D(4) * D(0), D(5) * 1000000.0)) > 40.0) {
+  let t1 = rd.yz * glsl_randomoctree_rot(D(5) * PI - PI / 2.0);
+  rd = vec3<f32>(rd.x, t1.x, t1.y);
+  let t2 = rd.xz * glsl_randomoctree_rot(2.0 * D(4) * PI - PI);
+  rd = vec3<f32>(t2.x, rd.y, t2.y);
+}
+var lro = ro - floor(ro);
+var fro = ro - lro;
+let ird = vec3<f32>(1.0) / max(abs(rd), vec3<f32>(0.001));
+let srd = sign(rd);
+var mask = vec3<f32>(0.0);
+var exitoct = false;
+var recursions = 0;
+var dist = 0.0;
+var edge = 1.0;
+var lastmask = vec3<f32>(0.0);
+for (var k = 0; k < steps; k++) {
+  if (dist > 6.0) { break; }
+  let vs = glsl_randomoctree_voxel(fro, size);
+  if (exitoct) {
+    let newfro = floor(fro / (size / 0.5) + 0.25) * (size * 2.0);
+    lro += fro - newfro;
+    fro = newfro;
+    recursions -= 1;
+    size *= 2.0;
+    let v0 = glsl_mod3(fro / size + 0.5, vec3<f32>(2.0));
+    let v1 = v0 - 1.0 + mask * srd * 0.5;
+    exitoct = recursions > 0 && abs(dot(v1, mask)) < 0.1;
+  } else if (vs == 1 && recursions <= 5) {
+    recursions += 1;
+    size *= 0.5;
+    let mask2 = step(vec3<f32>(size), lro);
+    fro += mask2 * size;
+    lro -= mask2 * size;
+  } else {
+    let hs = size * 0.5;
+    let hit = -((srd * (lro - hs) - hs) * ird);
+    if (hit.x < min(hit.y, hit.z)) { mask = vec3<f32>(1.0, 0.0, 0.0); }
+    else if (hit.y < hit.z) { mask = vec3<f32>(0.0, 1.0, 0.0); }
+    else { mask = vec3<f32>(0.0, 0.0, 1.0); }
+    let len = dot(hit, mask);
+    if (vs == 2) { break; }
+    dist += len;
+    lro += rd * len - mask * srd * size;
+    fro += mask * srd * size;
+    exitoct = recursions > 0;
+    lastmask = mask;
+  }
+  if (i32(D(6)) == 1) {
+    let q = abs(lro / size - 0.5) * (vec3<f32>(1.0) - lastmask);
+    edge = min(edge, -(max(max(q.x, q.y), q.z) - 0.5) * 80.0 * size);
+  }
+}
+var color = vec3<f32>(0.0);
+if (dist < 6.0) {
+  let val = fract(dot(fro, vec3<f32>(15.23, 754.345, 3.454)));
+  let normal = -(lastmask * srd);
+  color = (sin(vec3<f32>(39.896, 57.3225, 48.25) * val) * 0.5 + 0.5) * (normal * 0.25 + 0.75);
+  if (i32(D(7)) == 1) {
+    let q = abs(lro / size - 0.5) * (vec3<f32>(1.0) - lastmask);
+    edge = clamp(-(max(max(q.x, q.y), q.z) - 0.5) * 20.0 * size, 0.0, edge);
+  }
+  if (i32(D(8)) == 1) { color *= edge; } else { color = vec3<f32>(1.0) - (vec3<f32>(1.0) - color) * edge; }
+} else if (i32(D(8)) == 1) {
+  color = vec3<f32>(edge);
+} else {
+  color = vec3<f32>(1.0 - edge);
+}
+color = sqrt(color);
+if (i32(D(9)) == 0) {
+  let t = glsl_dbl2int(color);
+  v.rgbc = 1.0; v.r = t.x; v.g = t.y; v.b = t.z;
+} else {
+  v.color = sin(color.x / (color.x + color.y + color.z));
+}
+v.x += AMOUNT * (gi / D(0) - 0.5);
+v.y += AMOUNT * (gj / 1000000.0 - 0.5);",
     },
 ];
