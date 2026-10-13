@@ -48,6 +48,49 @@ if (PRESERVE_Z) { v.z += AMOUNT * a.z; }"
     };
 }
 
+/// WGSL for [`wx_total`] as a helper function with the given name (`prm[base]` = hypergon).
+macro_rules! wx_total_wgsl {
+    ($name:literal) => {
+        concat!(
+            "fn ",
+            $name,
+            "(base: u32, ang: f32) -> f32 {
+  var total = 0.0;
+  let hypergon = prm[base];
+  let star = prm[base + 3u];
+  let lituus = prm[base + 6u];
+  let sup = prm[base + 8u];
+  let hd = prm[base + 13u];
+  let hn = prm[base + 14u];
+  let sn = prm[base + 16u];
+  let ss = prm[base + 17u];
+  if (hypergon != 0.0) {
+    let t1 = fmod(abs(ang), TWO_PI / hn) - PI / hn;
+    let t2 = sqr(tan(t1)) + 1.0;
+    if (t2 >= sqr(hd)) {
+      total += hypergon;
+    } else {
+      total += hypergon * (hd - sqrt(sqr(hd) - t2)) / sqrt(t2);
+    }
+  }
+  if (star != 0.0) {
+    let t1 = tan(abs(fmod(abs(ang), TWO_PI / sn) - PI / sn));
+    total += star * sqrt(sqr(ss) * (1.0 + sqr(t1)) / sqr(t1 + ss));
+  }
+  if (lituus != 0.0) {
+    total += lituus * java_pow(ang / PI + 1.0, prm[base + 15u]);
+  }
+  if (sup != 0.0) {
+    let sa = ang * prm[base + 18u];
+    total += sup * pow(pow(abs(cos(sa)), prm[base + 11u]) + pow(abs(sin(sa)), prm[base + 12u]), prm[base + 19u]);
+  }
+  return total;
+}
+"
+        )
+    };
+}
+
 pub static DEFS: &[VarDef] = &[
     VarDef {
         name: "spirograph3D",
@@ -3600,9 +3643,9 @@ if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
             if a2 > M_PI {
                 a2 -= M_2PI;
             }
-            let total = w_total(d, ang);
+            let total = wx_total(&d[1..], ang);
             if r <= total {
-                let total2 = w_total(d, a2);
+                let total2 = wx_total(&d[1..], a2);
                 let r = amount * total2 * r / total;
                 v.x += r * a2.cos();
                 v.y += r * a2.sin();
@@ -3619,54 +3662,22 @@ if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
             d.extend([(1.0 + sqr(p[3])).sqrt(), d[2], -p[8], d[5], p[6].tan(), p[10] / 4.0, -1.0 / (p[11] + SMALL_EPSILON)]);
             d
         }),
-        wgsl: "fn w_total(base: u32, ang: f32) -> f32 {
-  var total = 0.0;
-  let hypergon = prm[base + 1u];
-  let star = prm[base + 4u];
-  let lituus = prm[base + 7u];
-  let sup = prm[base + 9u];
-  let hd = prm[base + 14u];
-  let hn = prm[base + 15u];
-  let sn = prm[base + 17u];
-  let ss = prm[base + 18u];
-  if (hypergon != 0.0) {
-    let t1 = fmod(abs(ang), TWO_PI / hn) - PI / hn;
-    let t2 = sqr(tan(t1)) + 1.0;
-    if (t2 >= sqr(hd)) {
-      total += hypergon;
-    } else {
-      total += hypergon * (hd - sqrt(sqr(hd) - t2)) / sqrt(t2);
-    }
-  }
-  if (star != 0.0) {
-    let t1 = tan(abs(fmod(abs(ang), TWO_PI / sn) - PI / sn));
-    total += star * sqrt(sqr(ss) * (1.0 + sqr(t1)) / sqr(t1 + ss));
-  }
-  if (lituus != 0.0) {
-    total += lituus * java_pow(ang / PI + 1.0, prm[base + 16u]);
-  }
-  if (sup != 0.0) {
-    let sa = ang * prm[base + 19u];
-    total += sup * pow(pow(abs(cos(sa)), prm[base + 12u]) + pow(abs(sin(sa)), prm[base + 13u]), prm[base + 20u]);
-  }
-  return total;
-}
-@body
+        wgsl: concat!(wx_total_wgsl!("w_total"), "@body
 let ang = atan2(a.y, a.x);
 let r = sqrt(sqr(a.x) + sqr(a.y));
 var a2 = ang + D(0);
 if (a2 < -PI) { a2 += TWO_PI; }
 if (a2 > PI) { a2 -= TWO_PI; }
-let total = w_total(base, ang);
+let total = w_total(base + 1u, ang);
 if (r <= total) {
-  let rr = AMOUNT * w_total(base, a2) * r / total;
+  let rr = AMOUNT * w_total(base + 1u, a2) * r / total;
   v.x += rr * cos(a2);
   v.y += rr * sin(a2);
 } else {
   v.x += AMOUNT * a.x;
   v.y += AMOUNT * a.y;
 }
-if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }"),
     },
     VarDef {
         name: "waffle",
@@ -4462,7 +4473,7 @@ v.z += AMOUNT * a.y * a.y;",
             let r = 1.25f64.sqrt() * (m as f64).sqrt();
             let c = (m as f64 * ctx.random()) as usize;
             let ra = 1.0 / (3f64.sqrt() * (a.x * a.x + a.y * a.y).sqrt());
-            let (x, y) = if c % 2 == 0 {
+            let (x, y) = if c.is_multiple_of(2) {
                 (-a.x / r + ra * a.y / r + d[1 + c], -ra * a.x / r - a.y / r + d[13 + c])
             } else {
                 (a.x / r + ra * a.y / r + d[1 + c], -ra * a.x / r + a.y / r + d[13 + c])
@@ -4579,8 +4590,142 @@ v.x += AMOUNT * ((a.x - nx) / (s + 1e-6));
 v.y += AMOUNT * ((a.y - ny) / (s + 1e-6));
 if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
     },
+    VarDef {
+        name: "x",
+        // JWildfire initializes hypergon and star randomly.
+        params: &[
+            ParamDef::new("hypergon", 0.5),
+            ParamDef::int("hypergon_n", 4.0, 3.0, 20.0),
+            ParamDef::new("hypergon_r", 1.0),
+            ParamDef::new("star", 0.5),
+            ParamDef::int("star_n", 5.0, 3.0, 20.0),
+            ParamDef::new("star_slope", 2.0),
+            ParamDef::new("lituus", 0.0),
+            ParamDef::new("lituus_a", 1.0),
+            ParamDef::new("super", 0.0),
+            ParamDef::new("super_m", 1.0),
+            ParamDef::new("super_n1", 1.0),
+            ParamDef::new("super_n2", 1.0),
+            ParamDef::new("super_n3", 0.0),
+        ],
+        kind: VarKind::Normal,
+        is_3d: false,
+        // d = [13 params, hypergon_d(13), hypergon_n, lituus_a, star_n, star_slope, super_m, super_n1]
+        apply: |d, ctx, a, v, amount| {
+            let ang = a.y.atan2(a.x);
+            let total = wx_total(d, ang);
+            let r = amount * (sqr(a.x) + sqr(a.y) + sqr(total)).sqrt();
+            v.x += r * ang.cos();
+            v.y += r * ang.sin();
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: Some(|p, _| {
+            let mut d = p.to_vec();
+            d[1] = limit_value(ftoi(p[1]), 3, i32::MAX) as f64;
+            d[4] = limit_value(ftoi(p[4]), 3, i32::MAX) as f64;
+            d.extend([(1.0 + sqr(p[2])).sqrt(), d[1], -p[7], d[4], p[5].tan(), p[9] / 4.0, -1.0 / (p[10] + SMALL_EPSILON)]);
+            d
+        }),
+        wgsl: concat!(
+            wx_total_wgsl!("x_total"),
+            "@body
+let ang = atan2(a.y, a.x);
+let total = x_total(base, ang);
+let r = AMOUNT * sqrt(sqr(a.x) + sqr(a.y) + sqr(total));
+v.x += r * cos(ang);
+v.y += r * sin(ang);
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }"
+        ),
+    },
+    simple(
+        "xerf",
+        true,
+        |_, _ctx, a, v, amount| {
+            let mut r2 = sqr(a.x) + sqr(a.y) + sqr(a.z);
+            if r2 <= SMALL_EPSILON {
+                r2 = SMALL_EPSILON;
+            }
+            let f = |t: f64| if t.abs() >= 2.0 { t / r2 } else { erf(t) };
+            v.x += f(a.x) * amount;
+            v.y += f(a.y) * amount;
+            v.z += f(a.z) * amount;
+        },
+        "var r2 = sqr(a.x) + sqr(a.y) + sqr(a.z);
+if (r2 <= EPS) { r2 = EPS; }
+v.x += select(erf(a.x), a.x / r2, abs(a.x) >= 2.0) * AMOUNT;
+v.y += select(erf(a.y), a.y / r2, abs(a.y) >= 2.0) * AMOUNT;
+v.z += select(erf(a.z), a.z / r2, abs(a.z) >= 2.0) * AMOUNT;",
+    ),
+    VarDef {
+        name: "xheart",
+        params: &[ParamDef::new("angle", 0.0), ParamDef::new("ratio", 0.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        // d = [angle, ratio, rat, cosa, sina]
+        apply: |d, ctx, a, v, amount| {
+            xheart_apply(d, a.x, a.y, v, amount);
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: Some(|p, _| xheart_prepare(p)),
+        wgsl: "var r2_4 = a.x * a.x + a.y * a.y + 4.0;
+if (r2_4 == 0.0) { r2_4 = 1.0; }
+let bx = 4.0 / r2_4;
+let by = D(2) / r2_4;
+let x = D(3) * (bx * a.x) - D(4) * (by * a.y);
+let y = D(4) * (bx * a.x) + D(3) * (by * a.y);
+v.x += AMOUNT * x;
+v.y += select(-AMOUNT * y, AMOUNT * y, x > 0.0);
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "xheart_blur_wf",
+        params: &[ParamDef::new("angle", 0.0), ParamDef::new("ratio", 0.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        // d = [angle, ratio, rat, cosa, sina]
+        apply: |d, ctx, a, v, amount| {
+            let dx = 2.0 - ctx.random() * 4.0;
+            let dy = 2.0 - ctx.random() * 4.0;
+            xheart_apply(d, dx, dy, v, amount);
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: Some(|p, _| xheart_prepare(p)),
+        wgsl: "let dx = 2.0 - rnd() * 4.0;
+let dy = 2.0 - rnd() * 4.0;
+var r2_4 = dx * dx + dy * dy + 4.0;
+if (r2_4 == 0.0) { r2_4 = 1.0; }
+let bx = 4.0 / r2_4;
+let by = D(2) / r2_4;
+let x = D(3) * (bx * dx) - D(4) * (by * dy);
+let y = D(4) * (bx * dx) + D(3) * (by * dy);
+v.x += AMOUNT * x;
+v.y += select(-AMOUNT * y, AMOUNT * y, x > 0.0);
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
     // @@NEXT@@
 ];
+
+fn xheart_prepare(p: &[f64]) -> Vec<f64> {
+    let ang = M_PI_4 + (0.5 * M_PI_4 * p[0]);
+    vec![p[0], p[1], 6.0 + 2.0 * p[1], ang.cos(), ang.sin()]
+}
+
+/// `XHeartFunc.transform` for the point (px, py).
+fn xheart_apply(d: &[f64], px: f64, py: f64, v: &mut Pt, amount: f64) {
+    let mut r2_4 = px * px + py * py + 4.0;
+    if r2_4 == 0.0 {
+        r2_4 = 1.0;
+    }
+    let (bx, by) = (4.0 / r2_4, d[2] / r2_4);
+    let x = d[3] * (bx * px) - d[4] * (by * py);
+    let y = d[4] * (bx * px) + d[3] * (by * py);
+    v.x += amount * x;
+    if x > 0.0 {
+        v.y += amount * y;
+    } else {
+        v.y += -amount * y;
+    }
+}
 
 /// Shared tail of `Waves4Func` / `Waves42Func`; `ax0` is the floored row index.
 fn waves4_apply(d: &[f64], ctx: &mut Ctx, a: &Pt, v: &mut Pt, amount: f64, ax0: f64) {
@@ -4669,10 +4814,12 @@ fn waves2b_jacobi_sn(uu: f64, emmc: f64) -> f64 {
     sn
 }
 
-/// `WFunc`: the boundary radius at angle `ang`.
-fn w_total(d: &[f64], ang: f64) -> f64 {
-    let (hypergon, star, lituus, sup) = (d[1], d[4], d[7], d[9]);
-    let (hd, hn, la, sn, ss, sm, sn1) = (d[14], d[15], d[16], d[17], d[18], d[19], d[20]);
+/// `WFunc` / `XFunc`: the shape radius at angle `ang`; `d` starts at the `hypergon` parameter
+/// (`[hypergon, hypergon_n, hypergon_r, star, star_n, star_slope, lituus, lituus_a, super, super_m,
+/// super_n1, super_n2, super_n3, hypergon_d, hypergon_n, lituus_a, star_n, star_slope, super_m, super_n1]`).
+fn wx_total(d: &[f64], ang: f64) -> f64 {
+    let (hypergon, star, lituus, sup) = (d[0], d[3], d[6], d[8]);
+    let (hd, hn, la, sn, ss, sm, sn1) = (d[13], d[14], d[15], d[16], d[17], d[18], d[19]);
     let mut total = 0.0;
     if hypergon != 0.0 {
         let t1 = fmod(ang.abs(), M_2PI / hn) - M_PI / hn;
@@ -4692,7 +4839,7 @@ fn w_total(d: &[f64], ang: f64) -> f64 {
     }
     if sup != 0.0 {
         let sa = ang * sm;
-        total += sup * (sa.cos().abs().powf(d[12]) + sa.sin().abs().powf(d[13])).powf(sn1);
+        total += sup * (sa.cos().abs().powf(d[11]) + sa.sin().abs().powf(d[12])).powf(sn1);
     }
     total
 }
