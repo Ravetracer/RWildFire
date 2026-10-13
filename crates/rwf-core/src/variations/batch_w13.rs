@@ -4592,22 +4592,7 @@ if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
     },
     VarDef {
         name: "x",
-        // JWildfire initializes hypergon and star randomly.
-        params: &[
-            ParamDef::new("hypergon", 0.5),
-            ParamDef::int("hypergon_n", 4.0, 3.0, 20.0),
-            ParamDef::new("hypergon_r", 1.0),
-            ParamDef::new("star", 0.5),
-            ParamDef::int("star_n", 5.0, 3.0, 20.0),
-            ParamDef::new("star_slope", 2.0),
-            ParamDef::new("lituus", 0.0),
-            ParamDef::new("lituus_a", 1.0),
-            ParamDef::new("super", 0.0),
-            ParamDef::new("super_m", 1.0),
-            ParamDef::new("super_n1", 1.0),
-            ParamDef::new("super_n2", 1.0),
-            ParamDef::new("super_n3", 0.0),
-        ],
+        params: XYZ_PARAMS,
         kind: VarKind::Normal,
         is_3d: false,
         // d = [13 params, hypergon_d(13), hypergon_n, lituus_a, star_n, star_slope, super_m, super_n1]
@@ -4619,13 +4604,7 @@ if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
             v.y += r * ang.sin();
             ctx.pass_z(a, v, amount);
         },
-        prepare: Some(|p, _| {
-            let mut d = p.to_vec();
-            d[1] = limit_value(ftoi(p[1]), 3, i32::MAX) as f64;
-            d[4] = limit_value(ftoi(p[4]), 3, i32::MAX) as f64;
-            d.extend([(1.0 + sqr(p[2])).sqrt(), d[1], -p[7], d[4], p[5].tan(), p[9] / 4.0, -1.0 / (p[10] + SMALL_EPSILON)]);
-            d
-        }),
+        prepare: Some(xyz_prepare),
         wgsl: concat!(
             wx_total_wgsl!("x_total"),
             "@body
@@ -4702,8 +4681,358 @@ v.x += AMOUNT * x;
 v.y += select(-AMOUNT * y, AMOUNT * y, x > 0.0);
 if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
     },
+    VarDef {
+        name: "xtrb",
+        params: &[
+            ParamDef::int("power", 2.0, -10.0, 10.0),
+            ParamDef::new("radius", 1.0),
+            ParamDef::new("width", 0.5),
+            ParamDef::new("dist", 1.0),
+            ParamDef::new("a", 1.0),
+            ParamDef::new("b", 1.0),
+        ],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: xtrb_apply,
+        prepare: Some(xtrb_prepare),
+        wgsl: XTRB_WGSL,
+    },
+    VarDef {
+        name: "y",
+        params: XYZ_PARAMS,
+        kind: VarKind::Normal,
+        is_3d: false,
+        // d = [13 params, hypergon_d(13), hypergon_n, lituus_a, star_n, star_slope, super_m, super_n1]
+        apply: |d, ctx, a, v, amount| {
+            let ang = a.y.atan2(a.x);
+            let total = wx_total(d, ang);
+            let r = amount * sqr(total) / (sqr(a.x) + sqr(a.y)).sqrt();
+            v.x += r * ang.cos();
+            v.y += r * ang.sin();
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: Some(xyz_prepare),
+        wgsl: concat!(
+            wx_total_wgsl!("y_total"),
+            "@body
+let ang = atan2(a.y, a.x);
+let total = y_total(base, ang);
+let r = AMOUNT * sqr(total) / sqrt(sqr(a.x) + sqr(a.y));
+v.x += r * cos(ang);
+v.y += r * sin(ang);
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }"
+        ),
+    },
+    VarDef {
+        name: "z",
+        params: XYZ_PARAMS,
+        kind: VarKind::Normal,
+        is_3d: false,
+        // d = [13 params, hypergon_d(13), hypergon_n, lituus_a, star_n, star_slope, super_m, super_n1]
+        apply: |d, ctx, a, v, amount| {
+            let ang = a.y.atan2(a.x);
+            let total = wx_total(d, ang);
+            let r = amount * ((sqr(a.x) + sqr(a.y)).sqrt() + total);
+            v.x += r * ang.cos();
+            v.y += r * ang.sin();
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: Some(xyz_prepare),
+        wgsl: concat!(
+            wx_total_wgsl!("z_total"),
+            "@body
+let ang = atan2(a.y, a.x);
+let total = z_total(base, ang);
+let r = AMOUNT * (sqrt(sqr(a.x) + sqr(a.y)) + total);
+v.x += r * cos(ang);
+v.y += r * sin(ang);
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }"
+        ),
+    },
+    VarDef {
+        name: "zhukowski",
+        params: &[ParamDef::new("c", 0.5)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let r2 = a.x * a.x + a.y * a.y + 1e-6;
+            v.x += amount * (a.x + d[0] * a.x / r2);
+            v.y += amount * (a.y - d[0] * a.y / r2);
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "let r2 = a.x * a.x + a.y * a.y + 1e-6;
+v.x += AMOUNT * (a.x + D(0) * a.x / r2);
+v.y += AMOUNT * (a.y - D(0) * a.y / r2);
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "zigzag",
+        params: &[ParamDef::new("period", 0.5)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let period = java_max(d[0].abs(), 0.01);
+            let row = (a.y / period).floor();
+            let mut m = row % 2.0;
+            if m < 0.0 {
+                m += 2.0;
+            }
+            let lx = if m > 0.5 { -a.x } else { a.x };
+            v.x += amount * lx;
+            v.y += amount * a.y;
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "let period = max(abs(D(0)), 0.01);
+var m = fmod(floor(a.y / period), 2.0);
+if (m < 0.0) { m += 2.0; }
+v.x += AMOUNT * select(a.x, -a.x, m > 0.5);
+v.y += AMOUNT * a.y;
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "ztwister",
+        params: &[ParamDef::new("twist", 4.2), ParamDef::new("base", M_E)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let mut ez = d[0] * v.z;
+            if d[1] != 1.0 {
+                ez = d[1].powf(ez) - 1.0;
+            }
+            let (sinz, cosz) = ez.sin_cos();
+            let nx = a.x * cosz - a.y * sinz;
+            let ny = a.x * sinz + a.y * cosz;
+            v.x += amount * nx;
+            v.y += amount * ny;
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "var ez = D(0) * v.z;
+if (D(1) != 1.0) { ez = java_pow(D(1), ez) - 1.0; }
+let sinz = sin(ez);
+let cosz = cos(ez);
+v.x += AMOUNT * (a.x * cosz - a.y * sinz);
+v.y += AMOUNT * (a.x * sinz + a.y * cosz);
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
     // @@NEXT@@
 ];
+
+// xtrb data layout: [power, radius, width, dist, a, b, width1(6), width2, width3, sinC, cosC,
+//   ab(11), ac, ba, bc, ca, cb, Ha(17), Hb, Hc, S2a(20), S2b, S2c, S2bc(23), S2ab, S2ac, absN(26), cN]
+fn xtrb_prepare(p: &[f64], _: &Affine) -> Vec<f64> {
+    let (power, radius, width, dist) = (ftoi(p[0]), p[1], p[2], p[3]);
+    let angle_br = 0.047 + p[4];
+    let angle_cr = 0.047 + p[5];
+    let angle_ar = M_PI - angle_br - angle_cr;
+    let (sin_a2, cos_a2) = ((0.5 * angle_ar).sin(), (0.5 * angle_ar).cos());
+    let (sin_b2, cos_b2) = ((0.5 * angle_br).sin(), (0.5 * angle_br).cos());
+    let (sin_c2, cos_c2) = ((0.5 * angle_cr).sin(), (0.5 * angle_cr).cos());
+    let a = radius * (sin_c2 / cos_c2 + sin_b2 / cos_b2);
+    let b = radius * (sin_c2 / cos_c2 + sin_a2 / cos_a2);
+    let c = radius * (sin_b2 / cos_b2 + sin_a2 / cos_a2);
+    let s2 = radius * (a + b + c);
+    let (ha, hb, hc) = (s2 / a / 6.0, s2 / b / 6.0, s2 / c / 6.0);
+    vec![
+        power as f64,
+        radius,
+        width,
+        dist,
+        p[4],
+        p[5],
+        1.0 - width,
+        2.0 * width,
+        1.0 - width * width,
+        angle_cr.sin(),
+        angle_cr.cos(),
+        a / b,
+        a / c,
+        b / a,
+        b / c,
+        c / a,
+        c / b,
+        ha,
+        hb,
+        hc,
+        6.0 * ha,
+        6.0 * hb,
+        6.0 * hc,
+        s2 / (b + c) / 6.0,
+        s2 / (a + b) / 6.0,
+        s2 / (a + c) / 6.0,
+        (power as f64).abs() as i32 as f64,
+        dist / power as f64 / 2.0,
+    ]
+}
+
+/// `XTrbFunc.Hex` -> (Al1, Be1)
+fn xtrb_hex(d: &[f64], r: f64, al: f64, be: f64, ga: f64) -> (f64, f64) {
+    let (width, width1, width2, width3) = (d[2], d[6], d[7], d[8]);
+    let (ab, ba, ca, cb) = (d[11], d[13], d[15], d[16]);
+    let (ha, hb, hc, s2a, s2b, s2bc, s2ab, s2ac) = (d[17], d[18], d[19], d[20], d[21], d[23], d[24], d[25]);
+    if be < al {
+        if ga < be {
+            let (de1, ga1) = if r >= width3 {
+                (width * be, width * ga)
+            } else {
+                (width1 * be + width2 * s2ab * (3.0 - ga / be), width1 * ga + width2 * hc * ga / be)
+            };
+            (s2a - ba * de1 - ca * ga1, de1)
+        } else if ga < al {
+            let (de1, ga1) = if r >= width3 {
+                (width * be, width * ga)
+            } else {
+                (width1 * be + width2 * hb * be / ga, width1 * ga + width2 * s2ac * (3.0 - be / ga))
+            };
+            (s2a - ba * de1 - ca * ga1, de1)
+        } else if r >= width3 {
+            (width * al, width * be)
+        } else {
+            (width1 * al + width2 * s2ac * (3.0 - be / al), width1 * be + width2 * hb * be / al)
+        }
+    } else if ga < al {
+        let (de1, ga1) = if r >= width3 {
+            (width * al, width * ga)
+        } else {
+            (width1 * al + width2 * s2ab * (3.0 - ga / al), width1 * ga + width2 * hc * ga / al)
+        };
+        (de1, s2b - ab * de1 - cb * ga1)
+    } else if ga < be {
+        let (de1, ga1) = if r >= width3 {
+            (width * al, width * ga)
+        } else {
+            (width1 * al + width2 * ha * al / ga, width1 * ga + width2 * s2bc * (3.0 - al / ga))
+        };
+        (de1, s2b - ab * de1 - cb * ga1)
+    } else if r >= width3 {
+        (width * al, width * be)
+    } else {
+        (width1 * al + width2 * ha * al / be, width1 * be + width2 * s2bc * (3.0 - al / be))
+    }
+}
+
+fn xtrb_apply(d: &[f64], ctx: &mut Ctx, a: &mut Pt, v: &mut Pt, amount: f64) {
+    let (power, radius, sin_c, cos_c) = (d[0], d[1], d[9], d[10]);
+    let (ac, bc, s2a, s2b, s2c) = (d[12], d[14], d[20], d[21], d[22]);
+    let mut alpha = a.y + radius;
+    let mut beta = a.x * sin_c - a.y * cos_c + radius;
+    let m = (alpha / s2a).floor() as i32;
+    let mut off_al = alpha - m as f64 * s2a;
+    let n = (beta / s2b).floor() as i32;
+    let mut off_be = beta - n as f64 * s2b;
+    let mut off_ga = s2c - ac * off_al - bc * off_be;
+    if off_ga > 0.0 {
+        let r = ctx.random();
+        (alpha, beta) = xtrb_hex(d, r, off_al, off_be, off_ga);
+    } else {
+        off_al = s2a - off_al;
+        off_be = s2b - off_be;
+        off_ga = -off_ga;
+        let r = ctx.random();
+        let (al1, be1) = xtrb_hex(d, r, off_al, off_be, off_ga);
+        alpha = s2a - al1;
+        beta = s2b - be1;
+    }
+    alpha += m as f64 * s2a;
+    beta += n as f64 * s2b;
+    let inx = (beta - radius + (alpha - radius) * cos_c) / sin_c;
+    let iny = alpha - radius;
+    let abs_n = d[26] as i32;
+    let k = if abs_n > 0 { ctx.random_int(i32::MAX as usize) as i32 % abs_n } else { 0 };
+    let angle = (iny.atan2(inx) + M_2PI * k as f64) / power;
+    let r = amount * (inx * inx + iny * iny).powf(d[27]);
+    v.x += amount * (r * angle.cos());
+    v.y += amount * (r * angle.sin());
+    ctx.pass_z(a, v, amount);
+}
+
+const XTRB_WGSL: &str = "fn xtrb_hex(base: u32, r: f32, al: f32, be: f32, ga: f32) -> vec2<f32> {
+  let width = prm[base + 2u];
+  let width1 = prm[base + 6u];
+  let width2 = prm[base + 7u];
+  let width3 = prm[base + 8u];
+  let ab = prm[base + 11u];
+  let ba = prm[base + 13u];
+  let ca = prm[base + 15u];
+  let cb = prm[base + 16u];
+  let ha = prm[base + 17u];
+  let hb = prm[base + 18u];
+  let hc = prm[base + 19u];
+  let s2a = prm[base + 20u];
+  let s2b = prm[base + 21u];
+  let s2bc = prm[base + 23u];
+  let s2ab = prm[base + 24u];
+  let s2ac = prm[base + 25u];
+  var de1 = 0.0;
+  var ga1 = 0.0;
+  if (be < al) {
+    if (ga < be) {
+      if (r >= width3) { de1 = width * be; ga1 = width * ga; }
+      else { ga1 = width1 * ga + width2 * hc * ga / be; de1 = width1 * be + width2 * s2ab * (3.0 - ga / be); }
+      return vec2<f32>(s2a - ba * de1 - ca * ga1, de1);
+    } else if (ga < al) {
+      if (r >= width3) { ga1 = width * ga; de1 = width * be; }
+      else { de1 = width1 * be + width2 * hb * be / ga; ga1 = width1 * ga + width2 * s2ac * (3.0 - be / ga); }
+      return vec2<f32>(s2a - ba * de1 - ca * ga1, de1);
+    } else {
+      if (r >= width3) { return vec2<f32>(width * al, width * be); }
+      return vec2<f32>(width1 * al + width2 * s2ac * (3.0 - be / al), width1 * be + width2 * hb * be / al);
+    }
+  } else {
+    if (ga < al) {
+      if (r >= width3) { de1 = width * al; ga1 = width * ga; }
+      else { ga1 = width1 * ga + width2 * hc * ga / al; de1 = width1 * al + width2 * s2ab * (3.0 - ga / al); }
+      return vec2<f32>(de1, s2b - ab * de1 - cb * ga1);
+    } else if (ga < be) {
+      if (r >= width3) { ga1 = width * ga; de1 = width * al; }
+      else { de1 = width1 * al + width2 * ha * al / ga; ga1 = width1 * ga + width2 * s2bc * (3.0 - al / ga); }
+      return vec2<f32>(de1, s2b - ab * de1 - cb * ga1);
+    } else {
+      if (r >= width3) { return vec2<f32>(width * al, width * be); }
+      return vec2<f32>(width1 * al + width2 * ha * al / be, width1 * be + width2 * s2bc * (3.0 - al / be));
+    }
+  }
+}
+@body
+let power = D(0);
+let radius = D(1);
+let sin_c = D(9);
+let cos_c = D(10);
+let s2a = D(20);
+let s2b = D(21);
+var alpha = a.y + radius;
+var beta = a.x * sin_c - a.y * cos_c + radius;
+let m = floor(alpha / s2a);
+var off_al = alpha - m * s2a;
+let n = floor(beta / s2b);
+var off_be = beta - n * s2b;
+var off_ga = D(22) - D(12) * off_al - D(14) * off_be;
+if (off_ga > 0.0) {
+  let h = xtrb_hex(base, rnd(), off_al, off_be, off_ga);
+  alpha = h.x;
+  beta = h.y;
+} else {
+  off_al = s2a - off_al;
+  off_be = s2b - off_be;
+  off_ga = -off_ga;
+  let h = xtrb_hex(base, rnd(), off_al, off_be, off_ga);
+  alpha = s2a - h.x;
+  beta = s2b - h.y;
+}
+alpha += m * s2a;
+beta += n * s2b;
+let inx = (beta - radius + (alpha - radius) * cos_c) / sin_c;
+let iny = alpha - radius;
+let abs_n = D(26);
+var k = 0.0;
+if (abs_n > 0.0) { k = min(floor(rnd() * abs_n), abs_n - 1.0); }
+let angle = (atan2(iny, inx) + TWO_PI * k) / power;
+let r = AMOUNT * pow(inx * inx + iny * iny, D(27));
+v.x += AMOUNT * (r * cos(angle));
+v.y += AMOUNT * (r * sin(angle));
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }";
 
 fn xheart_prepare(p: &[f64]) -> Vec<f64> {
     let ang = M_PI_4 + (0.5 * M_PI_4 * p[0]);
@@ -4812,6 +5141,32 @@ fn waves2b_jacobi_sn(uu: f64, emmc: f64) -> f64 {
         sn /= d;
     }
     sn
+}
+
+/// Parameters of `XFunc`, `YFunc` and `ZFunc` (JWildfire initializes hypergon and star randomly).
+static XYZ_PARAMS: &[ParamDef] = &[
+    ParamDef::new("hypergon", 0.5),
+    ParamDef::int("hypergon_n", 4.0, 3.0, 20.0),
+    ParamDef::new("hypergon_r", 1.0),
+    ParamDef::new("star", 0.5),
+    ParamDef::int("star_n", 5.0, 3.0, 20.0),
+    ParamDef::new("star_slope", 2.0),
+    ParamDef::new("lituus", 0.0),
+    ParamDef::new("lituus_a", 1.0),
+    ParamDef::new("super", 0.0),
+    ParamDef::new("super_m", 1.0),
+    ParamDef::new("super_n1", 1.0),
+    ParamDef::new("super_n2", 1.0),
+    ParamDef::new("super_n3", 0.0),
+];
+
+/// `XFunc` / `YFunc` / `ZFunc.init`: appends the derived values of [`wx_total`].
+fn xyz_prepare(p: &[f64], _: &Affine) -> Vec<f64> {
+    let mut d = p.to_vec();
+    d[1] = limit_value(ftoi(p[1]), 3, i32::MAX) as f64;
+    d[4] = limit_value(ftoi(p[4]), 3, i32::MAX) as f64;
+    d.extend([(1.0 + sqr(p[2])).sqrt(), d[1], -p[7], d[4], p[5].tan(), p[9] / 4.0, -1.0 / (p[10] + SMALL_EPSILON)]);
+    d
 }
 
 /// `WFunc` / `XFunc`: the shape radius at angle `ang`; `d` starts at the `hypergon` parameter
