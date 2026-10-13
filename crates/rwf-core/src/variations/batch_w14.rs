@@ -1057,4 +1057,144 @@ v.x += f.x * AMOUNT;
 v.y += f.y * AMOUNT;
 v.z += f.z * AMOUNT;",
     },
+    VarDef {
+        name: "hypershift",
+        params: &[ParamDef::new("shift", 2.0), ParamDef::new("stretch", 1.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let (shift, stretch) = (d[0], d[1]);
+            let scale = 1.0 - shift * shift;
+            let rad = 1.0 / (a.x * a.x + a.y * a.y);
+            let (x, y) = (rad * a.x + shift, rad * a.y);
+            let rad = amount * scale / (x * x + y * y);
+            v.x += rad * x + shift;
+            v.y += rad * y * stretch;
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "let shift = D(0);
+let scale = 1.0 - shift * shift;
+let rad0 = 1.0 / (a.x * a.x + a.y * a.y);
+let x = rad0 * a.x + shift;
+let y = rad0 * a.y;
+let rad = AMOUNT * scale / (x * x + y * y);
+v.x += rad * x + shift;
+v.y += rad * y * D(1);
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "hypershift2",
+        params: &[ParamDef::int("p", 3.0, 1.0, 100.0), ParamDef::int("q", 7.0, 1.0, 100.0)],
+        kind: VarKind::Normal,
+        is_3d: true,
+        // d = [p, q, shift, scale2]
+        apply: |d, ctx, a, v, amount| {
+            let (p, shift, scale2) = (d[0], d[2], d[3]);
+            let scale = 1.0 - shift * shift;
+            let (fx, fy) = (a.x * scale2, a.y * scale2);
+            let rad = 1.0 / (fx * fx + fy * fy);
+            let (x, y) = (rad * fx + shift, rad * fy);
+            let rad = amount * scale / (x * x + y * y);
+            let angle = ((ctx.random_int(i32::MAX as usize) as i64 % p as i64) as f64 * 2.0 + 1.0) * M_PI / p;
+            let (xx, yy) = (rad * x + shift, rad * y);
+            let (sina, cosa) = angle.sin_cos();
+            v.x = cosa * xx - sina * yy;
+            v.y = sina * xx + cosa * yy;
+            v.z = a.z * rad;
+        },
+        prepare: Some(|p, _| {
+            let (pp, qq) = (ftoi(p[0]) as f64, ftoi(p[1]) as f64);
+            let (pq, ppa) = (M_PI / qq, M_PI / pp);
+            let (spq, spp) = (pq.sin(), ppa.sin());
+            let shift = (M_PI * 0.5 - pq - ppa).sin() / (1.0 - spq * spq - spp * spp).sqrt();
+            let s = (M_PI / 2.0 + ppa).sin();
+            let scale2 = (1.0 / ((s * s) / (spq * spq) - 1.0).sqrt()) * (s / spq - 1.0);
+            vec![pp, qq, shift, scale2]
+        }),
+        wgsl: "let p = D(0);
+let shift = D(2);
+let scale = 1.0 - shift * shift;
+let f = vec2<f32>(a.x, a.y) * D(3);
+let rad0 = 1.0 / dot(f, f);
+let x = rad0 * f.x + shift;
+let y = rad0 * f.y;
+let rad = AMOUNT * scale / (x * x + y * y);
+let k = floor(rnd() * p);
+let angle = (k * 2.0 + 1.0) * PI / p;
+let xx = rad * x + shift;
+let yy = rad * y;
+v.x = cos(angle) * xx - sin(angle) * yy;
+v.y = sin(angle) * xx + cos(angle) * yy;
+v.z = a.z * rad;",
+    },
+    VarDef {
+        name: "hypertile3D",
+        params: &[ParamDef::int("p", 3.0, 3.0, 100.0), ParamDef::int("q", 7.0, 3.0, 100.0), ParamDef::int("n", 0.0, 0.0, 100.0)],
+        kind: VarKind::Normal,
+        is_3d: true,
+        // d = [p, q, n, c2x, c2y, c2, s2x, s2y, s2z, cx, cy]
+        apply: |d, _, a, v, amount| {
+            let r2 = a.x * a.x + a.y * a.y + a.z * a.z;
+            let (x2cx, y2cy) = (d[3] * a.x, d[4] * a.y);
+            let dd = amount / (d[5] * r2 + x2cx - y2cy + 1.0);
+            v.x += dd * (a.x * d[6] - d[9] * (y2cy - r2 - 1.0));
+            v.y += dd * (a.y * d[7] + d[10] * (-x2cx - r2 - 1.0));
+            v.z += dd * (a.z * d[8]);
+        },
+        prepare: Some(|p, _| {
+            let (pp, qq, n) = (ftoi(p[0]).max(3) as f64, ftoi(p[1]).max(3) as f64, ftoi(p[2]).max(0) as f64);
+            let (pa, qa) = (2.0 * M_PI / pp, 2.0 * M_PI / qq);
+            let mut r = -(pa.cos() - 1.0) / (pa.cos() + qa.cos());
+            r = if r > 0.0 { 1.0 / (1.0 + r).sqrt() } else { 1.0 };
+            let na = n * pa;
+            let (cx, cy) = (r * na.cos(), r * na.sin());
+            vec![pp, qq, n, 2.0 * cx, 2.0 * cy, cx * cx + cy * cy, 1.0 + cx * cx - cy * cy, 1.0 + cy * cy - cx * cx, 1.0 - cy * cy - cx * cx, cx, cy]
+        }),
+        wgsl: "let r2 = a.x * a.x + a.y * a.y + a.z * a.z;
+let x2cx = D(3) * a.x;
+let y2cy = D(4) * a.y;
+let dd = AMOUNT / (D(5) * r2 + x2cx - y2cy + 1.0);
+v.x += dd * (a.x * D(6) - D(9) * (y2cy - r2 - 1.0));
+v.y += dd * (a.y * D(7) + D(10) * (-x2cx - r2 - 1.0));
+v.z += dd * (a.z * D(8));",
+    },
+    VarDef {
+        name: "hypertile3D1",
+        params: &[ParamDef::int("p", 3.0, 3.0, 100.0), ParamDef::int("q", 7.0, 3.0, 100.0)],
+        kind: VarKind::Normal,
+        is_3d: true,
+        // d = [p, q, pa, r, c2, s2z]
+        apply: |d, ctx, a, v, amount| {
+            let ang = ctx.random_int(i32::MAX as usize) as f64 * d[2];
+            let (cx, cy) = (d[3] * ang.cos(), d[3] * ang.sin());
+            let (s2x, s2y) = (1.0 + cx * cx - cy * cy, 1.0 + cy * cy - cx * cx);
+            let r2 = a.x * a.x + a.y * a.y + a.z * a.z;
+            let (x2cx, y2cy) = (2.0 * cx * a.x, 2.0 * cy * a.y);
+            let dd = amount / (d[4] * r2 + x2cx - y2cy + 1.0);
+            v.x += dd * (a.x * s2x - cx * (y2cy - r2 - 1.0));
+            v.y += dd * (a.y * s2y + cy * (-x2cx - r2 - 1.0));
+            v.z += dd * (a.z * d[5]);
+        },
+        prepare: Some(|p, _| {
+            let (pp, qq) = (ftoi(p[0]).max(3) as f64, ftoi(p[1]).max(3) as f64);
+            let (pa, qa) = (2.0 * M_PI / pp, 2.0 * M_PI / qq);
+            let mut r = -(pa.cos() - 1.0) / (pa.cos() + qa.cos());
+            r = if r > 0.0 { 1.0 / (1.0 + r).sqrt() } else { 1.0 };
+            vec![pp, qq, pa, r, r * r, 1.0 - r * r]
+        }),
+        // GPU: random multiple of pa reduced modulo p (same angles as Java's random(Integer.MAX_VALUE) * pa)
+        wgsl: "let ang = floor(rnd() * D(0)) * D(2);
+let cx = D(3) * cos(ang);
+let cy = D(3) * sin(ang);
+let s2x = 1.0 + cx * cx - cy * cy;
+let s2y = 1.0 + cy * cy - cx * cx;
+let r2 = a.x * a.x + a.y * a.y + a.z * a.z;
+let x2cx = 2.0 * cx * a.x;
+let y2cy = 2.0 * cy * a.y;
+let dd = AMOUNT / (D(4) * r2 + x2cx - y2cy + 1.0);
+v.x += dd * (a.x * s2x - cx * (y2cy - r2 - 1.0));
+v.y += dd * (a.y * s2y + cy * (-x2cx - r2 - 1.0));
+v.z += dd * (a.z * D(5));",
+    },
 ];
