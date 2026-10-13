@@ -28,6 +28,7 @@ use super::complex::Complex;
 use super::{Ctx, ParamDef, Pt, VarDef, VarKind, simple};
 #[allow(unused_imports)]
 use crate::math::*;
+use crate::rng::JavaRandom;
 #[allow(unused_imports)]
 use crate::model::Affine;
 
@@ -36,28 +37,6 @@ fn ftoi_limit(x: f64, lo: i32, hi: i32) -> f64 {
     limit_value(ftoi(x), lo, hi) as f64
 }
 
-/// `java.util.Random` (48-bit LCG), used to rebuild seeded per-instance tables in `prepare`.
-struct JavaRandom {
-    seed: i64,
-}
-
-const JAVA_RANDOM_MULT: i64 = 0x5_DEEC_E66D;
-const JAVA_RANDOM_MASK: i64 = (1 << 48) - 1;
-
-impl JavaRandom {
-    fn new(seed: i64) -> Self {
-        Self { seed: (seed ^ JAVA_RANDOM_MULT) & JAVA_RANDOM_MASK }
-    }
-
-    fn next(&mut self, bits: u32) -> i64 {
-        self.seed = self.seed.wrapping_mul(JAVA_RANDOM_MULT).wrapping_add(0xB) & JAVA_RANDOM_MASK;
-        self.seed >> (48 - bits)
-    }
-
-    fn next_double(&mut self) -> f64 {
-        ((self.next(26) << 27) + self.next(27)) as f64 * (1.0 / (1u64 << 53) as f64)
-    }
-}
 
 // ---------------------------------------------------------------------------------------------
 // pre_falloff3 (AbstractFalloff3Func with v_in = affine point, result written to the affine point)

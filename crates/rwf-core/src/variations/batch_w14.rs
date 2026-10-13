@@ -7342,7 +7342,7 @@ fn mandelbox2d_apply(d: &[f64], ctx: &mut Ctx, a: &Pt, v: &mut Pt, amount: f64) 
 /// `MandelbrotFunc`: JWildfire keeps the start point, its seeded random generator and the
 /// `max_points` start point cache per instance; here they are kept per render thread.
 fn mandelbrot_apply(d: &[f64], ctx: &mut Ctx, v: &mut Pt, amount: f64) {
-    use crate::brush::Marsaglia;
+    use crate::rng::Marsaglia;
     let key = d.as_ptr() as usize;
     // [x0, y0, z0, random u, random v, cache index, cached start points (x, y, z)...]
     let mut st = ctx.states.remove(&key).unwrap_or_else(|| {

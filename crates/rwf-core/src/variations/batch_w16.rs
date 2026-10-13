@@ -25,47 +25,10 @@
 use super::{Ctx, ParamDef, Pt, VarDef, VarKind, simple};
 #[allow(unused_imports)]
 use crate::math::*;
+use crate::rng::JavaRandom;
 #[allow(unused_imports)]
 use crate::model::Affine;
 
-/// `java.util.Random` (48-bit LCG), used to rebuild seeded tables and per-cell hashes.
-struct JavaRandom {
-    seed: i64,
-}
-
-const JAVA_RANDOM_MULT: i64 = 0x5_DEEC_E66D;
-const JAVA_RANDOM_MASK: i64 = (1 << 48) - 1;
-
-impl JavaRandom {
-    fn new(seed: i64) -> Self {
-        Self { seed: (seed ^ JAVA_RANDOM_MULT) & JAVA_RANDOM_MASK }
-    }
-
-    fn next(&mut self, bits: u32) -> i32 {
-        self.seed = self.seed.wrapping_mul(JAVA_RANDOM_MULT).wrapping_add(0xB) & JAVA_RANDOM_MASK;
-        (self.seed >> (48 - bits)) as i32
-    }
-
-    fn next_double(&mut self) -> f64 {
-        (((self.next(26) as i64) << 27) + self.next(27) as i64) as f64 * (1.0 / (1u64 << 53) as f64)
-    }
-
-    fn next_int(&mut self, bound: i32) -> i32 {
-        let mut r = self.next(31);
-        let m = bound - 1;
-        if bound & m == 0 {
-            return ((bound as i64 * r as i64) >> 31) as i32;
-        }
-        let mut u = r;
-        loop {
-            r = u % bound;
-            if u.wrapping_sub(r).wrapping_add(m) >= 0 {
-                return r;
-            }
-            u = self.next(31);
-        }
-    }
-}
 
 /// `js.glsl.G.max/min/clamp` (comparison based, NaN handling like the Java code).
 fn g_max(x: f64, y: f64) -> f64 {

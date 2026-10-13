@@ -26,6 +26,7 @@
 use super::{Ctx, ParamDef, Pt, VarDef, VarKind, simple};
 #[allow(unused_imports)]
 use crate::math::*;
+use crate::rng::JavaRandom;
 #[allow(unused_imports)]
 use crate::model::Affine;
 use super::complex::Complex;
@@ -559,9 +560,10 @@ if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
             // per instance; here one per render thread.
             let m = d[0] as i32;
             let key = d.as_ptr() as usize;
-            let mut seed = ctx.orbits.get(&(key + 1)).map_or(java_random_seed(1000), |s| s[0] as u64);
-            let c = (java_random_next_int(&mut seed).unsigned_abs() % (2 * m) as u32) as usize;
-            ctx.orbits.insert(key + 1, [seed as f64, 0.0]);
+            let seed = ctx.orbits.get(&(key + 1)).map_or(JavaRandom::new(1000).seed, |s| s[0] as u64);
+            let mut rnd = JavaRandom { seed };
+            let c = (rnd.next(32).unsigned_abs() % (2 * m) as u32) as usize;
+            ctx.orbits.insert(key + 1, [rnd.seed as f64, 0.0]);
             let p = ctx.orbits.entry(key).or_insert([1.0, 1.0]);
             let (x, y) = (p[0], p[1]);
             let x1 = (x / (x * x + y * y)) / 3.0 + d[1 + c];
@@ -4927,7 +4929,7 @@ fn sunvoroni_prepare(p: &[f64], _: &Affine) -> Vec<f64> {
         for (i, region) in regions.iter().enumerate() {
             let a: Vec<(f64, f64)> = region.iter().map(|c| (c[0] as f64, c[1] as f64)).collect();
             let area = sunvoroni_area(&a);
-            let mut rnd = crate::rng::JavaRandom::new(area as i64);
+            let mut rnd = JavaRandom::new(area as i64);
             if colormode == 0 {
                 color = fmod(1.0 + area, 1.0);
             } else if colormode == 1 {
@@ -7506,17 +7508,6 @@ switch (i32(D(1))) {
   default: {}
 }
 if (PRESERVE_Z) { v.z += AMOUNT * a.z; }";
-
-/// Initial state of `new java.util.Random(seed)`.
-fn java_random_seed(seed: i64) -> u64 {
-    (seed as u64 ^ 0x5DEECE66D) & ((1 << 48) - 1)
-}
-
-/// `java.util.Random.nextInt()` on a raw 48-bit state.
-fn java_random_next_int(seed: &mut u64) -> i32 {
-    *seed = seed.wrapping_mul(0x5DEECE66D).wrapping_add(0xB) & ((1 << 48) - 1);
-    (*seed >> 16) as i64 as i32
-}
 
 /// Shared body of the `Sqrt_*Func` variations: `z.Sqrt(); z.<f>(); z.Scale(amount * 2/pi)`
 /// with a random sign.

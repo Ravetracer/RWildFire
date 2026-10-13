@@ -25,6 +25,7 @@ use super::glsl::*;
 use super::{Ctx, ParamDef, Pt, VarDef, VarKind, simple};
 #[allow(unused_imports)]
 use crate::math::*;
+use crate::rng::{JavaRandom, Marsaglia};
 #[allow(unused_imports)]
 use crate::model::Affine;
 
@@ -67,48 +68,6 @@ fn dc_uv(ctx: &mut Ctx, a: &Pt, color_only: f64) -> Vec2 {
 /// `DC_BaseFunc.transform` tail for the base parameters `d[n..n + 5]`.
 fn dc_finish(ctx: &Ctx, v: &mut Pt, amount: f64, uv: Vec2, color: Vec3, d: &[f64], n: usize) {
     dc_output(ctx, v, amount, uv, color, d[n + 1] as i32, d[n + 2], d[n + 3], d[n + 4] as i32);
-}
-
-/// `org.jwildfire.create.tina.random.MarsagliaRandomGenerator`.
-struct Marsaglia {
-    u: i32,
-    v: i32,
-}
-
-impl Marsaglia {
-    fn new(seed: i64) -> Self {
-        let mut r = Marsaglia { u: 12244355, v: 34384 };
-        r.randomize(seed);
-        r
-    }
-    fn randomize(&mut self, seed: i64) {
-        self.u = (seed << 16) as i32;
-        self.v = ((seed << 16) as i32) >> 16;
-    }
-    fn random(&mut self) -> f64 {
-        self.v = 36969i32.wrapping_mul(self.v & 65535).wrapping_add(self.v >> 16);
-        self.u = 18000i32.wrapping_mul(self.u & 65535).wrapping_add(self.u >> 16);
-        let rnd = (self.v << 16).wrapping_add(self.u);
-        let res = rnd as f64 * (1.0 / 0x7fff_ffff as f64);
-        if res < 0.0 { -res } else { res }
-    }
-}
-
-/// `java.util.Random` (48-bit LCG): `new Random(seed)` / `setSeed`.
-fn drunken_tiles_set_seed(seed: i64) -> i64 {
-    (seed ^ 0x5_DEEC_E66D) & ((1i64 << 48) - 1)
-}
-
-fn drunken_tiles_next(seed: &mut i64, bits: u32) -> i64 {
-    *seed = seed.wrapping_mul(0x5_DEEC_E66D).wrapping_add(0xB) & ((1i64 << 48) - 1);
-    (*seed >> (48 - bits)) as i32 as i64
-}
-
-/// `java.util.Random.nextDouble()`.
-fn drunken_tiles_next_double(seed: &mut i64) -> f64 {
-    let hi = drunken_tiles_next(seed, 26);
-    let lo = drunken_tiles_next(seed, 27);
-    ((hi << 27) + lo) as f64 * (1.0 / (1i64 << 53) as f64)
 }
 
 /// eSeries `sqrt_safe`.
@@ -1444,9 +1403,9 @@ if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
             let cx = (ix as f64 + 0.5) * cellsize;
             let cy = (iy as f64 + 0.5) * cellsize;
             let cell_seed = (d[0] as i32) ^ ix.wrapping_mul(31) ^ iy;
-            let mut s = drunken_tiles_set_seed(cell_seed as i64);
-            let ox = (drunken_tiles_next_double(&mut s) * 2.0 - 1.0) * d[3] * cellsize;
-            let oy = (drunken_tiles_next_double(&mut s) * 2.0 - 1.0) * d[3] * cellsize;
+            let mut s = JavaRandom::new(cell_seed as i64);
+            let ox = (s.next_double() * 2.0 - 1.0) * d[3] * cellsize;
+            let oy = (s.next_double() * 2.0 - 1.0) * d[3] * cellsize;
             let (cpx, cpy) = (cx + ox, cy + oy);
             let lx = a.x - cpx;
             let ly = a.y - cpy;
@@ -2432,11 +2391,11 @@ mod tests {
     #[test]
     fn java_random_matches_reference() {
         // new java.util.Random(42).nextDouble() == 0.7275636800328681
-        let mut s = drunken_tiles_set_seed(42);
-        assert!((drunken_tiles_next_double(&mut s) - 0.7275636800328681).abs() < 1e-15);
+        let mut s = JavaRandom::new(42);
+        assert!((s.next_double() - 0.7275636800328681).abs() < 1e-15);
         // new java.util.Random(0).nextDouble() == 0.730967787376657
-        let mut s = drunken_tiles_set_seed(0);
-        assert!((drunken_tiles_next_double(&mut s) - 0.730967787376657).abs() < 1e-15);
+        let mut s = JavaRandom::new(0);
+        assert!((s.next_double() - 0.730967787376657).abs() < 1e-15);
     }
 
     #[test]

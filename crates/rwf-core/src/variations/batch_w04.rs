@@ -29,6 +29,7 @@ use super::glsl::*;
 use super::{Ctx, ParamDef, Pt, VarDef, VarKind, simple};
 #[allow(unused_imports)]
 use crate::math::*;
+use crate::rng::JavaRandom;
 #[allow(unused_imports)]
 use crate::model::Affine;
 
@@ -36,26 +37,6 @@ use crate::model::Affine;
 // Shared helpers
 // ---------------------------------------------------------------------------------------------
 
-/// `java.util.Random` (48-bit LCG), used by the `init()` methods seeded with a parameter.
-struct JavaRandom(u64);
-
-impl JavaRandom {
-    const MULT: u64 = 0x5_DEEC_E66D;
-    const MASK: u64 = (1 << 48) - 1;
-
-    fn new(seed: i64) -> Self {
-        Self((seed as u64 ^ Self::MULT) & Self::MASK)
-    }
-
-    fn next(&mut self, bits: u32) -> i64 {
-        self.0 = self.0.wrapping_mul(Self::MULT).wrapping_add(0xB) & Self::MASK;
-        (self.0 >> (48 - bits)) as i64
-    }
-
-    fn next_double(&mut self) -> f64 {
-        ((self.next(26) << 27) + self.next(27)) as f64 * (1.0 / (1u64 << 53) as f64)
-    }
-}
 
 /// `x0 = seed * r.nextDouble(); y0 = seed * r.nextDouble()` with `r = new Random(seed)`.
 fn cut_seed_offset(seed: f64) -> [f64; 2] {

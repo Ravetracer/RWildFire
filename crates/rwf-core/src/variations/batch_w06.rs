@@ -40,20 +40,8 @@ use crate::model::Affine;
 
 /// `java.util.Random(seed)`: the first `N` values of `nextDouble()`.
 fn w06_java_random_doubles<const N: usize>(seed: i32) -> [f64; N] {
-    const MULT: u64 = 0x5_DEEC_E66D;
-    const MASK: u64 = (1 << 48) - 1;
-    let mut s = ((seed as i64) as u64 ^ MULT) & MASK;
-    let mut next = |bits: u32| -> u64 {
-        s = s.wrapping_mul(MULT).wrapping_add(0xB) & MASK;
-        s >> (48 - bits)
-    };
-    let mut out = [0.0; N];
-    for o in out.iter_mut() {
-        let hi = next(26);
-        let lo = next(27);
-        *o = ((hi << 27) + lo) as f64 * (1.0 / (1u64 << 53) as f64);
-    }
-    out
+    let mut r = crate::rng::JavaRandom::new(seed as i64);
+    std::array::from_fn(|_| r.next_double())
 }
 
 /// `Tools.limitValue` of the Java `setParameter` methods: `(index, min, max, integer)`;

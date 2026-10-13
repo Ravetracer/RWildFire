@@ -30,7 +30,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use super::resource_vars::{FREC, M_FSTART, M_HEADER, M_NF, M_TOTAL, M_VSTART, VREC, apply_image_color, load_image, pack_mesh, text};
 use super::{Ctx, LoadEnv, ParamDef, Pt, ResDef, ResKind, ResourceVar, VarDef, VarKind};
-use crate::brush::Marsaglia;
+use crate::rng::Marsaglia;
 use crate::math::*;
 use crate::mesh::{self, MeshSource, Refinement};
 

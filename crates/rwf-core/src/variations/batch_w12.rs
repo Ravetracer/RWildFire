@@ -30,7 +30,7 @@ use crate::math::*;
 use crate::model::Affine;
 use super::complex::Complex;
 use super::glsl::{Vec2, abs, clamp, dot, glsl_atan2, glsl_mod, length, max, min, sign, vec2};
-use crate::brush::Marsaglia;
+use crate::rng::Marsaglia;
 
 /// `MarsagliaRandomGenerator.randomize(seed)` followed by one `random()`.
 fn marsaglia1(seed: i32) -> f64 {

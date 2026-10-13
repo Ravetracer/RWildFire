@@ -32,6 +32,7 @@ use super::glsl::*;
 use super::{Ctx, ParamDef, Pt, VarDef, VarKind, simple};
 #[allow(unused_imports)]
 use crate::math::*;
+use crate::rng::JavaRandom;
 #[allow(unused_imports)]
 use crate::model::Affine;
 
@@ -99,22 +100,6 @@ fn to_i(v: f64) -> f64 {
     v as i32 as f64
 }
 
-/// `java.util.Random` (for the deterministic `init()` offsets).
-struct JavaRandom(i64);
-
-impl JavaRandom {
-    const MASK: i64 = (1 << 48) - 1;
-    fn new(seed: i64) -> Self {
-        Self((seed ^ 0x5_DEEC_E66D) & Self::MASK)
-    }
-    fn next(&mut self, bits: u32) -> i64 {
-        self.0 = (self.0.wrapping_mul(0x5_DEEC_E66D).wrapping_add(0xB)) & Self::MASK;
-        (self.0 >> (48 - bits)) as i32 as i64
-    }
-    fn next_double(&mut self) -> f64 {
-        ((self.next(26) << 27) + self.next(27)) as f64 * (1.0 / (1i64 << 53) as f64)
-    }
-}
 
 /// Splits an offset into integer and fractional part (for f32 precision on the GPU).
 #[inline]

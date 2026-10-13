@@ -733,7 +733,7 @@ fn metaballs_prepare(p: &[f64]) -> Vec<f64> {
     let (by0, bdy) = (y0 + border, (y1 - border) - (y0 + border));
     let (bz0, bdz) = (z0 + border, (z1 - border) - (z0 + border));
     let falloff = |x: f64| 1.0 / (x + 0.63) - 0.60;
-    let mut rnd = crate::brush::Marsaglia::new(d[5] as i64);
+    let mut rnd = crate::rng::Marsaglia::new(d[5] as i64);
     let count = (d[1] as i32).max(0);
     d.push(count as f64);
     for _ in 0..count {

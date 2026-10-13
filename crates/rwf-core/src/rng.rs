@@ -95,13 +95,52 @@ impl JavaRandom {
         Self { seed: (seed as u64 ^ Self::MULT) & Self::MASK }
     }
 
-    fn next(&mut self, bits: u32) -> i32 {
+    /// `next(bits)`: the next `bits` random bits (as Java's `int`).
+    pub fn next(&mut self, bits: u32) -> i32 {
         self.seed = self.seed.wrapping_mul(Self::MULT).wrapping_add(0xB) & Self::MASK;
         (self.seed >> (48 - bits)) as i64 as i32
     }
 
     pub fn next_double(&mut self) -> f64 {
         (((self.next(26) as i64) << 27) + self.next(27) as i64) as f64 * (1.0 / (1u64 << 53) as f64)
+    }
+
+    /// `nextInt(bound)`.
+    pub fn next_int(&mut self, bound: i32) -> i32 {
+        let mut r = self.next(31);
+        let m = bound - 1;
+        if bound & m == 0 {
+            return ((bound as i64 * r as i64) >> 31) as i32;
+        }
+        let mut u = r;
+        loop {
+            r = u % bound;
+            if u.wrapping_sub(r).wrapping_add(m) >= 0 {
+                return r;
+            }
+            u = self.next(31);
+        }
+    }
+}
+
+/// JWildfire's `MarsagliaRandomGenerator`.
+pub struct Marsaglia {
+    pub(crate) u: i32,
+    pub(crate) v: i32,
+}
+
+impl Marsaglia {
+    /// A generator after `randomize(seed)`.
+    pub fn new(seed: i64) -> Self {
+        let s = (seed << 16) as i32;
+        Self { u: s, v: s >> 16 }
+    }
+
+    pub fn random(&mut self) -> f64 {
+        self.v = 36969i32.wrapping_mul(self.v & 65535).wrapping_add(self.v >> 16);
+        self.u = 18000i32.wrapping_mul(self.u & 65535).wrapping_add(self.u >> 16);
+        let rnd = (self.v << 16).wrapping_add(self.u);
+        (rnd as f64 * (1.0 / i32::MAX as f64)).abs()
     }
 }
 

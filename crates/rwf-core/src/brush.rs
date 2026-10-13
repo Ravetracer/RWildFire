@@ -28,6 +28,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::math::{EPSILON, M_PI, ftoi};
 use crate::resources::{self, ImageMap};
+use crate::rng::Marsaglia;
 
 /// Number of built-in brushes (`PainterlyStyleMutation.MAX_BRUSH`).
 pub const MAX_BRUSH: i32 = 245;
@@ -52,26 +53,6 @@ static BRUSH_PNGS: [&[u8]; 245] = brushes!(
     "211", "212", "213", "214", "215", "216", "217", "218", "219", "220", "221", "222", "223", "224", "225", "226", "227", "228", "229", "230", "231",
     "232", "233", "234", "235", "236", "237", "238", "239", "240", "241", "242", "243", "244", "245"
 );
-
-/// `MarsagliaRandomGenerator`.
-pub struct Marsaglia {
-    pub(crate) u: i32,
-    pub(crate) v: i32,
-}
-
-impl Marsaglia {
-    pub fn new(seed: i64) -> Self {
-        let s = (seed << 16) as i32;
-        Self { u: s, v: s >> 16 }
-    }
-
-    pub fn random(&mut self) -> f64 {
-        self.v = 36969i32.wrapping_mul(self.v & 65535).wrapping_add(self.v >> 16);
-        self.u = 18000i32.wrapping_mul(self.u & 65535).wrapping_add(self.u >> 16);
-        let rnd = (self.v << 16).wrapping_add(self.u);
-        (rnd as f64 * (1.0 / i32::MAX as f64)).abs()
-    }
-}
 
 /// Working ARGB image.
 #[derive(Clone)]

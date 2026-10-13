@@ -896,7 +896,7 @@ fn greebles_apply(d: &[f64], ctx: &mut Ctx, a: &Pt, v: &mut Pt, amount: f64) {
     let cell_seed = (seed as i64).wrapping_add(((base[0] * 100.0) as i64).wrapping_mul(73856093))
         ^ ((base[1] * 100.0) as i64).wrapping_mul(19349663)
         ^ ((base[2] * 100.0) as i64).wrapping_mul(83492791);
-    let height = gheight * crate::brush::Marsaglia::new(cell_seed).random();
+    let height = gheight * crate::rng::Marsaglia::new(cell_seed).random();
     let up = if normal[1].abs() > 0.999 { [1.0, 0.0, 0.0] } else { [0.0, 1.0, 0.0] };
     let tangent = norm(cross(normal, up));
     let bitangent = norm(cross(normal, tangent));
