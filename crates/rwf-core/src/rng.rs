@@ -81,3 +81,37 @@ impl Rng {
         self.random() < p
     }
 }
+
+/// `java.util.Random` (48-bit LCG), for variations that build their geometry from a seed.
+pub struct JavaRandom {
+    seed: u64,
+}
+
+impl JavaRandom {
+    const MULT: u64 = 0x5DEECE66D;
+    const MASK: u64 = (1 << 48) - 1;
+
+    pub fn new(seed: i64) -> Self {
+        Self { seed: (seed as u64 ^ Self::MULT) & Self::MASK }
+    }
+
+    fn next(&mut self, bits: u32) -> i32 {
+        self.seed = self.seed.wrapping_mul(Self::MULT).wrapping_add(0xB) & Self::MASK;
+        (self.seed >> (48 - bits)) as i64 as i32
+    }
+
+    pub fn next_double(&mut self) -> f64 {
+        (((self.next(26) as i64) << 27) + self.next(27) as i64) as f64 * (1.0 / (1u64 << 53) as f64)
+    }
+}
+
+#[cfg(test)]
+mod java_random_tests {
+    #[test]
+    fn matches_java_util_random() {
+        // new java.util.Random(42).nextDouble() x 2
+        let mut r = super::JavaRandom::new(42);
+        assert_eq!(r.next_double(), 0.7275636800328681);
+        assert_eq!(r.next_double(), 0.6832234717598454);
+    }
+}

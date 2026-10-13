@@ -482,3 +482,33 @@ fn res_shape_point(base: u32, o: u32, aa: f32) -> vec4<f32> {
   }
   return vec4<f32>(q, prm[p + 2u], 1.0);
 }
+
+// DrawFunc.randXY + plotPolygon: random point of a regular n-gon; fill = hole ratio.
+fn res_ngon_point(sides: i32, fill: f32) -> vec2<f32> {
+  let n = max(sides, 3);
+  let mid = TWO_PI / f32(n);
+  let tan90_m_2 = tan(HALF_PI + mid / 2.0);
+  let arc_tan1 = 13.0 / pow(f32(n), 1.3);
+  let arc_tan2 = 2.0 * atan(arc_tan1 / -2.0);
+  let r0 = rnd();
+  let k = i32(rnd() * 32767.0) % n;
+  var ang = (atan(arc_tan1 * (r0 - 0.5)) / arc_tan2 + 0.5 + f32(k)) * mid;
+  var p = vec2<f32>(sin(ang), cos(ang));
+  for (var i = 0; i < 64 && ang > mid; i++) { ang -= mid; }
+  let xt = tan90_m_2 / (tan90_m_2 - tan(ang));
+  let yt = xt * tan(ang);
+  let outer = sqrt(xt * xt + yt * yt);
+  let unused = rnd();
+  let inner = fill * outer;
+  p *= inner + sqrt(rnd()) * (outer - inner);
+  let s = sin(mid / 2.0);
+  let c = cos(mid / 2.0);
+  return vec2<f32>(c * p.x - s * p.y, s * p.x + c * p.y);
+}
+
+// DrawFunc.plotTriangle: uniform point in a triangle.
+fn res_triangle_point(p1: vec2<f32>, p2: vec2<f32>, p3: vec2<f32>) -> vec2<f32> {
+  let sqrt_r1 = sqrt(rnd());
+  let r2 = rnd();
+  return (1.0 - sqrt_r1) * p1 + sqrt_r1 * (1.0 - r2) * p2 + r2 * sqrt_r1 * p3;
+}
