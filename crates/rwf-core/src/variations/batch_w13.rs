@@ -27,6 +27,24 @@ use crate::math::*;
 use crate::model::Affine;
 use super::complex::Complex;
 
+/// WGSL for [`sym_apply`]; the argument is the number of parameters (start of the block).
+macro_rules! sym_wgsl {
+    ($n:literal) => {
+        concat!(
+            "let o = base + ",
+            $n,
+            "u;
+let x = a.x + prm[o];
+let y = a.y + prm[o + 1u];
+let n = prm[o + 2u];
+let k = o + 3u + 6u * u32(min(floor(n * rnd()), n - 1.0));
+v.x += AMOUNT * (prm[k] * x + prm[k + 1u] * y + prm[k + 2u]);
+v.y += AMOUNT * (prm[k + 3u] * x + prm[k + 4u] * y + prm[k + 5u]);
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }"
+        )
+    };
+}
+
 pub static DEFS: &[VarDef] = &[
     VarDef {
         name: "spirograph3D",
@@ -726,6 +744,436 @@ v.y += AMOUNT * (o.y * scale + py);
 v.color = sc;
 if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
     },
+    VarDef {
+        name: "supernova",
+        params: &[ParamDef::new("radius", 0.5), ParamDef::new("boost", 2.0), ParamDef::new("spin", 0.3)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let radius = java_max(d[0].abs(), 0.01);
+            let r = (a.x * a.x + a.y * a.y).sqrt();
+            let theta = a.y.atan2(a.x);
+            let ring = r - radius;
+            let env = (-ring * ring / (radius * radius * 0.1 + 1e-6)).exp();
+            let new_r = r + env * d[1] * r;
+            let new_theta = theta + d[2] * env;
+            v.x += amount * new_r * new_theta.cos();
+            v.y += amount * new_r * new_theta.sin();
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "let radius = max(abs(D(0)), 0.01);
+let r = sqrt(a.x * a.x + a.y * a.y);
+let theta = atan2(a.y, a.x);
+let ring = r - radius;
+let env = exp(-ring * ring / (radius * radius * 0.1 + 1e-6));
+let new_r = r + env * D(1) * r;
+let new_theta = theta + D(2) * env;
+v.x += AMOUNT * new_r * cos(new_theta);
+v.y += AMOUNT * new_r * sin(new_theta);
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "superposition",
+        params: &[ParamDef::new("freq1", 3.0), ParamDef::new("freq2", 5.0), ParamDef::new("phase", 0.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let r = (a.x * a.x + a.y * a.y).sqrt();
+            let wave = 0.5 * ((d[0] * r).sin() + (d[1] * r + d[2]).sin());
+            v.x += amount * a.x * wave;
+            v.y += amount * a.y * wave;
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "let r = sqrt(a.x * a.x + a.y * a.y);
+let wave = 0.5 * (sin(D(0) * r) + sin(D(1) * r + D(2)));
+v.x += AMOUNT * a.x * wave;
+v.y += AMOUNT * a.y * wave;
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "superShape3d",
+        params: &[
+            ParamDef::new("rho", 9.9),
+            ParamDef::new("phi", 2.5),
+            ParamDef::new("m1", 6.0),
+            ParamDef::new("m2", 3.0),
+            ParamDef::new("a1", 1.0),
+            ParamDef::new("a2", 1.0),
+            ParamDef::new("b1", 1.0),
+            ParamDef::new("b2", 1.0),
+            ParamDef::new("n1_1", 1.0),
+            ParamDef::new("n1_2", 1.0),
+            ParamDef::new("n2_1", 1.0),
+            ParamDef::new("n2_2", 1.0),
+            ParamDef::new("n3_1", 1.0),
+            ParamDef::new("n3_2", 1.0),
+            ParamDef::new("spiral", 0.0),
+            ParamDef::int("toroidmap", 0.0, 0.0, 1.0),
+        ],
+        kind: VarKind::Normal,
+        is_3d: true,
+        // d = [16 params, n1n_1(16), n1n_2, an2_1, an2_2, bn3_1, bn3_2, m4_1, m4_2, rho_pi, phi_pi(25)]
+        apply: |d, ctx, _a, v, amount| {
+            let rho1 = ctx.random() * d[24];
+            let mut phi1 = ctx.random() * d[25];
+            if ctx.random_int(i32::MAX as usize) % 2 == 1 {
+                phi1 = -phi1;
+            }
+            let (sinr, cosr) = rho1.sin_cos();
+            let (sinp, cosp) = phi1.sin_cos();
+            let (msinr, mcosr) = (d[22] * rho1).sin_cos();
+            let (msinp, mcosp) = (d[23] * phi1).sin_cos();
+            let pr1 = d[18] * mcosr.abs().powf(d[10]) + d[20] * msinr.abs().powf(d[12]);
+            let pr2 = d[19] * mcosp.abs().powf(d[11]) + d[21] * msinp.abs().powf(d[13]);
+            let r1 = pr1.powf(d[16]) + d[14] * rho1;
+            let r2 = pr2.powf(d[17]);
+            if d[15] as i32 == 1 {
+                v.x += amount * cosr * (r1 + r2 * cosp);
+                v.y += amount * sinr * (r1 + r2 * cosp);
+            } else {
+                v.x += amount * r1 * cosr * r2 * cosp;
+                v.y += amount * r1 * sinr * r2 * cosp;
+            }
+            v.z += amount * r2 * sinp;
+        },
+        prepare: Some(|p, _| {
+            let mut d = p.to_vec();
+            d[15] = ftoi(p[15]).clamp(0, 1) as f64;
+            d.extend([
+                -1.0 / p[8],
+                -1.0 / p[9],
+                (1.0 / p[4]).abs().powf(p[10]),
+                (1.0 / p[5]).abs().powf(p[11]),
+                (1.0 / p[6]).abs().powf(p[12]),
+                (1.0 / p[7]).abs().powf(p[13]),
+                p[2] / 4.0,
+                p[3] / 4.0,
+                p[0] * M_2_PI,
+                p[1] * M_2_PI,
+            ]);
+            d
+        }),
+        wgsl: "let rho1 = rnd() * D(24);
+var phi1 = rnd() * D(25);
+if (rnd() >= 0.5) { phi1 = -phi1; }
+let sinr = sin(rho1);
+let cosr = cos(rho1);
+let sinp = sin(phi1);
+let cosp = cos(phi1);
+let msinr = sin(D(22) * rho1);
+let mcosr = cos(D(22) * rho1);
+let msinp = sin(D(23) * phi1);
+let mcosp = cos(D(23) * phi1);
+let pr1 = D(18) * pow(abs(mcosr), D(10)) + D(20) * pow(abs(msinr), D(12));
+let pr2 = D(19) * pow(abs(mcosp), D(11)) + D(21) * pow(abs(msinp), D(13));
+let r1 = pow(pr1, D(16)) + D(14) * rho1;
+let r2 = pow(pr2, D(17));
+if (i32(D(15)) == 1) {
+  v.x += AMOUNT * cosr * (r1 + r2 * cosp);
+  v.y += AMOUNT * sinr * (r1 + r2 * cosp);
+} else {
+  v.x += AMOUNT * r1 * cosr * r2 * cosp;
+  v.y += AMOUNT * r1 * sinr * r2 * cosp;
+}
+v.z += AMOUNT * r2 * sinp;",
+    },
+    VarDef {
+        name: "svensson_js",
+        params: &[ParamDef::new("a", 1.4), ParamDef::new("b", 1.56), ParamDef::new("c", 1.4), ParamDef::new("d", -6.56)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let x = d[3] * (d[0] * a.x).sin() - (d[1] * a.y).sin();
+            let y = d[2] * (d[0] * a.x).cos() + (d[1] * a.y).cos();
+            v.x = x * amount;
+            v.y = y * amount;
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "let x = D(3) * sin(D(0) * a.x) - sin(D(1) * a.y);
+let y = D(2) * cos(D(0) * a.x) + cos(D(1) * a.y);
+v.x = x * AMOUNT;
+v.y = y * AMOUNT;
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "svf",
+        params: &[ParamDef::new("n", 2.0)],
+        kind: VarKind::Normal,
+        is_3d: true,
+        apply: |d, _ctx, a, v, amount| {
+            let cn = (d[0] * a.y).cos();
+            let (sx, cx) = a.x.sin_cos();
+            let (sy, cy) = a.y.sin_cos();
+            v.x += amount * (cy * (cn * cx));
+            v.y += amount * (cy * (cn * sx));
+            v.z += amount * (sy * cn);
+        },
+        prepare: None,
+        wgsl: "let cn = cos(D(0) * a.y);
+v.x += AMOUNT * (cos(a.y) * (cn * cos(a.x)));
+v.y += AMOUNT * (cos(a.y) * (cn * sin(a.x)));
+v.z += AMOUNT * (sin(a.y) * cn);",
+    },
+    VarDef {
+        name: "swirl3",
+        params: &[ParamDef::new("shift", 0.5)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let rad = a.rad();
+            let ang = a.atan_yx() + rad.ln() * d[0];
+            v.x += amount * rad * ang.cos();
+            v.y += amount * rad * ang.sin();
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "let r = rad(a);
+let ang = atan_yx(a) + log(r) * D(0);
+v.x += AMOUNT * r * cos(ang);
+v.y += AMOUNT * r * sin(ang);
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "sym_bg1",
+        params: &[ParamDef::new("stepx", 0.0), ParamDef::new("stepy", 0.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| sym_apply(&d[2..], ctx, a, v, amount),
+        prepare: Some(sym_bg1_prepare),
+        wgsl: sym_wgsl!("2"),
+    },
+    VarDef {
+        name: "sym_bg2",
+        params: &[ParamDef::new("stepx", 0.0), ParamDef::new("stepy", 0.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| sym_apply(&d[2..], ctx, a, v, amount),
+        prepare: Some(sym_bg2_prepare),
+        wgsl: sym_wgsl!("2"),
+    },
+    VarDef {
+        name: "sym_bg3",
+        params: &[ParamDef::new("stepx", 0.0), ParamDef::new("stepy", 0.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| sym_apply(&d[2..], ctx, a, v, amount),
+        prepare: Some(sym_bg3_prepare),
+        wgsl: sym_wgsl!("2"),
+    },
+    VarDef {
+        name: "sym_bg4",
+        params: &[ParamDef::new("stepx", 0.0), ParamDef::new("stepy", 0.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| sym_apply(&d[2..], ctx, a, v, amount),
+        prepare: Some(sym_bg4_prepare),
+        wgsl: sym_wgsl!("2"),
+    },
+    VarDef {
+        name: "sym_bg5",
+        params: &[ParamDef::new("stepx", 0.0), ParamDef::new("stepy", 0.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| sym_apply(&d[2..], ctx, a, v, amount),
+        prepare: Some(sym_bg5_prepare),
+        wgsl: sym_wgsl!("2"),
+    },
+    VarDef {
+        name: "sym_bg6",
+        params: &[ParamDef::new("stepx", 0.0), ParamDef::new("stepy", 0.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| sym_apply(&d[2..], ctx, a, v, amount),
+        prepare: Some(sym_bg6_prepare),
+        wgsl: sym_wgsl!("2"),
+    },
+    VarDef {
+        name: "sym_bg7",
+        params: &[ParamDef::new("stepx", 0.0), ParamDef::new("stepy", 0.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| sym_apply(&d[2..], ctx, a, v, amount),
+        prepare: Some(sym_bg7_prepare),
+        wgsl: sym_wgsl!("2"),
+    },
+    VarDef {
+        name: "sym_ng1",
+        params: &[ParamDef::new("stepx", 0.5), ParamDef::new("stepy", 0.5)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| sym_apply(&d[2..], ctx, a, v, amount),
+        prepare: Some(sym_ng1_prepare),
+        wgsl: sym_wgsl!("2"),
+    },
+    VarDef {
+        name: "sym_ng10",
+        params: &[ParamDef::new("space", 0.0), ParamDef::new("spacex", 0.0), ParamDef::new("spacey", 0.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| sym_apply(&d[3..], ctx, a, v, amount),
+        prepare: Some(sym_ng10_prepare),
+        wgsl: sym_wgsl!("3"),
+    },
+    VarDef {
+        name: "sym_ng11",
+        params: &[ParamDef::new("space", 0.0), ParamDef::new("spacex", 0.0), ParamDef::new("spacey", 0.0), ParamDef::new("stepx", 1.5), ParamDef::new("stepy", 1.5)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| sym_apply(&d[5..], ctx, a, v, amount),
+        prepare: Some(sym_ng11_prepare),
+        wgsl: sym_wgsl!("5"),
+    },
+    VarDef {
+        name: "sym_ng12",
+        params: &[ParamDef::new("space", 0.0), ParamDef::new("spacex", 0.0), ParamDef::new("spacey", 0.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| sym_apply(&d[3..], ctx, a, v, amount),
+        prepare: Some(sym_ng12_prepare),
+        wgsl: sym_wgsl!("3"),
+    },
+    VarDef {
+        name: "sym_ng13",
+        params: &[ParamDef::new("radius", 0.0), ParamDef::new("stepx", 0.0), ParamDef::new("stepy", 0.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| sym_apply(&d[3..], ctx, a, v, amount),
+        prepare: Some(sym_ng13_prepare),
+        wgsl: sym_wgsl!("3"),
+    },
+    VarDef {
+        name: "sym_ng14",
+        params: &[ParamDef::new("radius", 0.0), ParamDef::new("stepx", 0.0), ParamDef::new("stepy", 0.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| sym_apply(&d[3..], ctx, a, v, amount),
+        prepare: Some(sym_ng14_prepare),
+        wgsl: sym_wgsl!("3"),
+    },
+    VarDef {
+        name: "sym_ng15",
+        params: &[ParamDef::new("radius", 0.0), ParamDef::new("stepx", 0.0), ParamDef::new("stepy", 0.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| sym_apply(&d[3..], ctx, a, v, amount),
+        prepare: Some(sym_ng15_prepare),
+        wgsl: sym_wgsl!("3"),
+    },
+    VarDef {
+        name: "sym_ng16",
+        params: &[ParamDef::new("radius", 0.0), ParamDef::new("stepx", 0.0), ParamDef::new("stepy", 0.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| sym_apply(&d[3..], ctx, a, v, amount),
+        prepare: Some(sym_ng16_prepare),
+        wgsl: sym_wgsl!("3"),
+    },
+    VarDef {
+        name: "sym_ng17",
+        params: &[ParamDef::new("radius", 0.0), ParamDef::new("stepx", 0.0), ParamDef::new("stepy", 0.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| sym_apply(&d[3..], ctx, a, v, amount),
+        prepare: Some(sym_ng17_prepare),
+        wgsl: sym_wgsl!("3"),
+    },
+    VarDef {
+        name: "sym_ng2",
+        params: &[ParamDef::new("stepx", 2.0), ParamDef::new("stepy", 2.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| sym_apply(&d[2..], ctx, a, v, amount),
+        prepare: Some(sym_ng2_prepare),
+        wgsl: sym_wgsl!("2"),
+    },
+    VarDef {
+        name: "sym_ng3",
+        params: &[ParamDef::new("sepx", 0.5), ParamDef::new("sepy", 0.0), ParamDef::new("step", 2.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| sym_apply(&d[3..], ctx, a, v, amount),
+        prepare: Some(sym_ng3_prepare),
+        wgsl: sym_wgsl!("3"),
+    },
+    VarDef {
+        name: "sym_ng4",
+        params: &[ParamDef::new("sepx", 0.0), ParamDef::new("sepy", 0.0), ParamDef::new("stepx", 0.0), ParamDef::new("stepy", 0.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| sym_apply(&d[4..], ctx, a, v, amount),
+        prepare: Some(sym_ng4_prepare),
+        wgsl: sym_wgsl!("4"),
+    },
+    VarDef {
+        name: "sym_ng5",
+        params: &[ParamDef::new("sepx", 0.0), ParamDef::new("sepy", 0.0), ParamDef::new("stepx", 0.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| sym_apply(&d[3..], ctx, a, v, amount),
+        prepare: Some(sym_ng5_prepare),
+        wgsl: sym_wgsl!("3"),
+    },
+    VarDef {
+        name: "sym_ng6",
+        params: &[ParamDef::new("sepy", 0.1), ParamDef::new("stepx", 1.0), ParamDef::new("stepy", 1.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| sym_apply(&d[3..], ctx, a, v, amount),
+        prepare: Some(sym_ng6_prepare),
+        wgsl: sym_wgsl!("3"),
+    },
+    VarDef {
+        name: "sym_ng7",
+        params: &[ParamDef::new("sepx", 0.0), ParamDef::new("sepy", 0.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| sym_apply(&d[2..], ctx, a, v, amount),
+        prepare: Some(sym_ng7_prepare),
+        wgsl: sym_wgsl!("2"),
+    },
+    VarDef {
+        name: "sym_ng8",
+        params: &[ParamDef::new("sepx", 0.0), ParamDef::new("sepy", 0.0), ParamDef::new("skewx", 0.0), ParamDef::new("skewy", 0.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| sym_apply(&d[4..], ctx, a, v, amount),
+        prepare: Some(sym_ng8_prepare),
+        wgsl: sym_wgsl!("4"),
+    },
+    VarDef {
+        name: "sym_ng9",
+        params: &[ParamDef::new("sepx", 0.0), ParamDef::new("sepy", 0.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| sym_apply(&d[2..], ctx, a, v, amount),
+        prepare: Some(sym_ng9_prepare),
+        wgsl: sym_wgsl!("2"),
+    },
+    VarDef {
+        name: "symmetric_icon",
+        params: &[ParamDef::new("lambda", 1.56), ParamDef::new("alpha", -1.0), ParamDef::new("beta", 0.1), ParamDef::new("omega", -0.82)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let (lambda, alpha, beta, omega) = (d[0], d[1], d[2], d[3]);
+            let r2 = a.x * a.x + a.y * a.y;
+            let nx = lambda * a.x + alpha * (a.x * a.x - a.y * a.y) + beta * r2 * a.x + omega * a.x * a.y;
+            let ny = lambda * a.y + 2.0 * alpha * a.x * a.y + beta * r2 * a.y + omega * a.x * a.x;
+            v.x += amount * nx;
+            v.y += amount * ny;
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "let r2 = a.x * a.x + a.y * a.y;
+let nx = D(0) * a.x + D(1) * (a.x * a.x - a.y * a.y) + D(2) * r2 * a.x + D(3) * a.x * a.y;
+let ny = D(0) * a.y + 2.0 * D(1) * a.x * a.y + D(2) * r2 * a.y + D(3) * a.x * a.x;
+v.x += AMOUNT * nx;
+v.y += AMOUNT * ny;
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
     // @@NEXT@@
 ];
 
@@ -780,3 +1228,663 @@ const SQRT_ACOTH_WGSL: &str = sqrt_complex_wgsl!("cx_acoth");
 const SQRT_ASECH_WGSL: &str = sqrt_complex_wgsl!("cx_asech");
 const SQRT_ASINH_WGSL: &str = sqrt_complex_wgsl!("cx_asinh");
 const SQRT_ATANH_WGSL: &str = sqrt_complex_wgsl!("cx_atanh");
+
+/// `SymBandG*Func` / `SymNetG*Func`: prepared data after the parameters,
+/// `[offset_x, offset_y, n, n affine maps (a, b, c, d, e, f)]`.
+fn sym_data(p: &[f64], offset: [f64; 2], t: &[[f64; 6]]) -> Vec<f64> {
+    let mut d = p.to_vec();
+    d.extend([offset[0], offset[1], t.len() as f64]);
+    for m in t {
+        d.extend_from_slice(m);
+    }
+    d
+}
+
+/// Applies one uniformly chosen map of a [`sym_data`] block to the shifted input point.
+fn sym_apply(d: &[f64], ctx: &mut Ctx, a: &Pt, v: &mut Pt, amount: f64) {
+    let (x, y) = (a.x + d[0], a.y + d[1]);
+    // Java draws the map with Math.random()
+    let k = (d[2] * ctx.random()) as usize;
+    let m = &d[3 + 6 * k..9 + 6 * k];
+    v.x += amount * (m[0] * x + m[1] * y + m[2]);
+    v.y += amount * (m[3] * x + m[4] * y + m[5]);
+    ctx.pass_z(a, v, amount);
+}
+
+
+fn sym_bg1_prepare(p: &[f64], _: &Affine) -> Vec<f64> {
+    let stepx = p[0];
+    let stepy = p[1];
+    let mut t: [[f64; 6]; 2] = [
+        [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+        [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+    ];
+    t[0][2] = -stepx / 2.0 - 1.0;
+    t[0][5] = -stepy / 2.0;
+    t[1][2] = stepx / 2.0;
+    t[1][5] = stepy / 2.0;
+    sym_data(p, [0.0, 0.0], &t)
+}
+
+fn sym_bg2_prepare(p: &[f64], _: &Affine) -> Vec<f64> {
+    let stepx = p[0];
+    let stepy = p[1];
+    let mut t: [[f64; 6]; 2] = [
+        [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+        [1.0, 0.0, 0.0, 0.0, -1.0, 0.0],
+    ];
+    t[0][2] = -stepx / 2.0 - 1.0;
+    t[0][5] = -stepy / 2.0;
+    t[1][2] = stepx / 2.0;
+    t[1][5] = stepy / 2.0 + 1.0;
+    sym_data(p, [0.0, 0.0], &t)
+}
+
+fn sym_bg3_prepare(p: &[f64], _: &Affine) -> Vec<f64> {
+    let stepx = p[0];
+    let stepy = p[1];
+    let mut t: [[f64; 6]; 2] = [
+        [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+        [-1.0, 0.0, 0.0, 0.0, -1.0, 0.0],
+    ];
+    t[0][2] = -stepx / 2.0 - 1.0;
+    t[0][5] = -stepy / 2.0 - 0.5;
+    t[1][2] = stepx / 2.0 + 1.0;
+    t[1][5] = stepy / 2.0 + 0.5;
+    sym_data(p, [0.0, 0.0], &t)
+}
+
+fn sym_bg4_prepare(p: &[f64], _: &Affine) -> Vec<f64> {
+    let stepx = p[0];
+    let stepy = p[1];
+    let mut t: [[f64; 6]; 2] = [
+        [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+        [-1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+    ];
+    t[0][2] = -stepx / 2.0 - 1.0;
+    t[0][5] = -stepy / 2.0 - 0.5;
+    t[1][2] = stepx / 2.0 + 1.0;
+    t[1][5] = stepy / 2.0 + 0.5;
+    sym_data(p, [0.0, 0.0], &t)
+}
+
+fn sym_bg5_prepare(p: &[f64], _: &Affine) -> Vec<f64> {
+    let stepx = p[0];
+    let stepy = p[1];
+    let mut t: [[f64; 6]; 2] = [
+        [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+        [1.0, 0.0, 0.0, 0.0, -1.0, 0.0],
+    ];
+    t[0][2] = -stepx / 2.0 - 1.0;
+    t[0][5] = -stepy / 2.0 - 0.5;
+    t[1][2] = stepx / 2.0 - 1.0;
+    t[1][5] = stepy / 2.0 + 0.5;
+    sym_data(p, [0.0, 0.0], &t)
+}
+
+fn sym_bg6_prepare(p: &[f64], _: &Affine) -> Vec<f64> {
+    let stepx = p[0];
+    let stepy = p[1];
+    let mut t: [[f64; 6]; 4] = [
+        [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+        [-1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+        [1.0, 0.0, 0.0, 0.0, -1.0, 0.0],
+        [-1.0, 0.0, 0.0, 0.0, -1.0, 0.0],
+    ];
+    t[0][2] = -stepx / 2.0 - 1.0;
+    t[0][5] = -stepy / 2.0 - 0.5;
+    t[1][2] = stepx / 2.0 + 1.0;
+    t[1][5] = stepy / 2.0 - 0.5;
+    t[2][2] = -stepx / 2.0 - 1.0;
+    t[2][5] = -stepy / 2.0 + 0.5;
+    t[3][2] = stepx / 2.0 + 1.0;
+    t[3][5] = stepy / 2.0 + 0.5;
+    sym_data(p, [0.0, 0.0], &t)
+}
+
+fn sym_bg7_prepare(p: &[f64], _: &Affine) -> Vec<f64> {
+    let stepx = p[0];
+    let stepy = p[1];
+    let mut t: [[f64; 6]; 4] = [
+        [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+        [-1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+        [1.0, 0.0, 0.0, 0.0, -1.0, 0.0],
+        [-1.0, 0.0, 0.0, 0.0, -1.0, 0.0],
+    ];
+    t[0][2] = -stepx / 2.0 - 2.0;
+    t[0][5] = -stepy / 2.0 - 0.5;
+    t[1][2] = stepx / 2.0 + 2.0;
+    t[1][5] = stepy / 2.0 - 0.5;
+    t[2][2] = stepx / 2.0;
+    t[2][5] = stepy / 2.0 + 0.5;
+    t[3][2] = -stepx / 2.0;
+    t[3][5] = -stepy / 2.0 + 0.5;
+    sym_data(p, [0.0, 0.0], &t)
+}
+
+fn sym_ng1_prepare(p: &[f64], _: &Affine) -> Vec<f64> {
+    let stepx = p[0];
+    let stepy = p[1];
+    let mut t: [[f64; 6]; 2] = [
+        [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+        [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+    ];
+    t[0][2] = -stepx / 2.0;
+    t[0][5] = -stepy / 2.0;
+    t[1][2] = stepx / 2.0;
+    t[1][5] = stepy / 2.0;
+    sym_data(p, [0.0, 0.0], &t)
+}
+
+fn sym_ng10_prepare(p: &[f64], _: &Affine) -> Vec<f64> {
+    let space = p[0];
+    let spacex = p[1];
+    let spacey = p[2];
+    let mut t: [[f64; 6]; 4] = [
+        [-1.0, 0.0, 0.0, 0.0, -1.0, 0.0],
+        [0.0, 1.0, 0.0, -1.0, -0.0, 0.0],
+        [-0.0, -1.0, -0.0, 1.0, -0.0, 0.0],
+        [1.0, -0.0, 0.0, 0.0, 1.0, 0.0],
+    ];
+    t[0][2] = -spacex / 2.0;
+    t[1][2] = -spacex / 2.0;
+    t[2][2] = spacex / 2.0;
+    t[3][2] = spacex / 2.0;
+    t[0][5] = -spacey / 2.0;
+    t[1][5] = -spacey / 2.0;
+    t[2][5] = spacey / 2.0;
+    t[3][5] = spacey / 2.0;
+    sym_data(p, [space, space], &t)
+}
+
+fn sym_ng11_prepare(p: &[f64], _: &Affine) -> Vec<f64> {
+    let space = p[0];
+    let spacex = p[1];
+    let spacey = p[2];
+    let stepx = p[3];
+    let stepy = p[4];
+    let mut t: [[f64; 6]; 8] = [
+        [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+        [-1.0, 0.0, 0.0, 0.0, -1.0, 0.0],
+        [-0.0, 1.0, -0.0, -1.0, -0.0, 0.0],
+        [-0.0, -1.0, -0.0, 1.0, -0.0, 0.0],
+        [-1.0, 0.0, -0.0, 0.0, 1.0, 0.0],
+        [-0.0, -1.0, -0.0, -1.0, -0.0, 0.0],
+        [-0.0, 1.0, -0.0, 1.0, -0.0, 0.0],
+        [1.0, 0.0, -0.0, 0.0, -1.0, 0.0],
+    ];
+    t[0][2] = spacex + stepx / 2.0;
+    t[0][5] = spacey + stepy / 2.0;
+    t[1][2] = -spacex + stepx / 2.0;
+    t[1][5] = -spacey + stepy / 2.0;
+    t[2][2] = spacex + stepx / 2.0;
+    t[2][5] = -spacey + stepy / 2.0;
+    t[3][2] = -spacex + stepx / 2.0;
+    t[3][5] = spacey + stepy / 2.0;
+    t[4][2] = -spacex - stepx / 2.0;
+    t[4][5] = spacey - stepy / 2.0;
+    t[5][2] = -spacex - stepx / 2.0;
+    t[5][5] = -spacey - stepy / 2.0;
+    t[6][2] = spacex - stepx / 2.0;
+    t[6][5] = spacey - stepy / 2.0;
+    t[7][2] = spacex - stepx / 2.0;
+    t[7][5] = -spacey - stepy / 2.0;
+    sym_data(p, [space, space], &t)
+}
+
+fn sym_ng12_prepare(p: &[f64], _: &Affine) -> Vec<f64> {
+    let space = p[0];
+    let spacex = p[1];
+    let spacey = p[2];
+    let mut t: [[f64; 6]; 8] = [
+        [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+        [-1.0, 0.0, 0.0, 0.0, -1.0, 0.0],
+        [-0.0, 1.0, 0.0, -1.0, -0.0, 0.0],
+        [-0.0, -1.0, -0.0, 1.0, -0.0, 0.0],
+        [-1.0, 0.0, -0.0, 0.0, 1.0, 0.0],
+        [-0.0, -1.0, -0.0, -1.0, -0.0, 0.0],
+        [-0.0, 1.0, 0.0, 1.0, -0.0, 0.0],
+        [1.0, 0.0, 0.0, 0.0, -1.0, 0.0],
+    ];
+    t[0][2] = spacex;
+    t[0][5] = spacey;
+    t[1][2] = -spacex;
+    t[1][5] = -spacey;
+    t[2][2] = spacex;
+    t[2][5] = -spacey;
+    t[3][2] = -spacex;
+    t[3][5] = spacey;
+    t[4][2] = -spacex;
+    t[4][5] = spacey;
+    t[5][2] = -spacex;
+    t[5][5] = -spacey;
+    t[6][2] = spacex;
+    t[6][5] = spacey;
+    t[7][2] = spacex;
+    t[7][5] = -spacey;
+    sym_data(p, [space, space], &t)
+}
+
+fn sym_ng13_prepare(p: &[f64], _: &Affine) -> Vec<f64> {
+    let radius = p[0];
+    let stepx = p[1];
+    let stepy = p[2];
+    let mut t: [[f64; 6]; 6] = [
+        [1.0, 0.0, 0.0, 0.0, -1.0, 0.0],
+        [-0.5, -0.866, -0.0, -0.866, 0.5, 0.0],
+        [-0.5, 0.866, -0.0, 0.866, 0.5, 0.0],
+        [1.0, 0.0, 0.0, 0.0, -1.0, 0.0],
+        [-0.5, -0.866, -0.0, -0.866, 0.5, 0.0],
+        [-0.5, 0.866, -0.0, 0.866, 0.5, 0.0],
+    ];
+    let sx = stepx / 2.0;
+    let sy = stepy / 2.0;
+    let spacex = f64::sqrt(radius * radius / 2.0);
+    let spacey = spacex;
+    t[0][2] = -sx;
+    t[0][5] = -sy;
+    t[1][2] = -sx;
+    t[1][5] = -sy;
+    t[2][2] = -sx;
+    t[2][5] = -sy;
+    t[3][2] = sx;
+    t[3][5] = sy;
+    t[4][2] = sx;
+    t[4][5] = sy;
+    t[5][2] = sx;
+    t[5][5] = sy;
+    sym_data(p, [spacex, spacey], &t)
+}
+
+fn sym_ng14_prepare(p: &[f64], _: &Affine) -> Vec<f64> {
+    let radius = p[0];
+    let stepx = p[1];
+    let stepy = p[2];
+    let mut t: [[f64; 6]; 12] = [
+        [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+        [1.0, 0.0, 0.0, 0.0, -1.0, 0.0],
+        [-0.5, -0.866, -0.0, 0.866, -0.5, 0.0],
+        [-0.5, 0.866, -0.0, -0.866, -0.5, 0.0],
+        [-0.5, -0.866, -0.0, -0.866, 0.5, 0.0],
+        [-0.5, 0.866, -0.0, 0.866, 0.5, 0.0],
+        [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+        [1.0, 0.0, 0.0, 0.0, -1.0, 0.0],
+        [-0.5, -0.866, -0.0, 0.866, -0.5, 0.0],
+        [-0.5, 0.866, -0.0, -0.866, -0.5, 0.0],
+        [-0.5, -0.866, -0.0, -0.866, 0.5, 0.0],
+        [-0.5, 0.866, -0.0, 0.866, 0.5, 0.0],
+    ];
+    let sx = stepx / 2.0;
+    let sy = stepy / 2.0;
+    let spacex = f64::sqrt(radius * radius / 2.0);
+    t[0][2] = -sx;
+    t[0][5] = -sy;
+    t[1][2] = -sx;
+    t[1][5] = -sy;
+    t[2][2] = -sx;
+    t[2][5] = -sy;
+    t[3][2] = -sx;
+    t[3][5] = -sy;
+    t[4][2] = -sx;
+    t[4][5] = -sy;
+    t[5][2] = -sx;
+    t[5][5] = -sy;
+    t[6][2] = sx;
+    t[6][5] = sy;
+    t[7][2] = sx;
+    t[7][5] = sy;
+    t[8][2] = sx;
+    t[8][5] = sy;
+    t[9][2] = sx;
+    t[9][5] = sy;
+    t[10][2] = sx;
+    t[10][5] = sy;
+    t[11][2] = sx;
+    t[11][5] = sy;
+    sym_data(p, [spacex, spacex], &t)
+}
+
+fn sym_ng15_prepare(p: &[f64], _: &Affine) -> Vec<f64> {
+    let radius = p[0];
+    let stepx = p[1];
+    let stepy = p[2];
+    let mut t: [[f64; 6]; 12] = [
+        [0.0, 1.0, 0.0, -1.0, 0.0, 0.0],
+        [0.0, -1.0, 0.0, -1.0, 0.0, 0.0],
+        [0.866, -0.5, 0.0, 0.5, 0.866, 0.0],
+        [0.866, 0.5, -0.0, 0.5, -0.866, 0.0],
+        [-0.866, -0.5, -0.0, 0.5, -0.866, 0.0],
+        [-0.866, 0.5, -0.0, 0.5, 0.866, 0.0],
+        [0.0, 1.0, 0.0, -1.0, 0.0, 0.0],
+        [0.0, -1.0, 0.0, -1.0, 0.0, 0.0],
+        [0.866, -0.5, 0.0, 0.5, 0.866, 0.0],
+        [0.866, 0.5, -0.0, 0.5, -0.866, 0.0],
+        [-0.866, -0.5, -0.0, 0.5, -0.866, 0.0],
+        [-0.866, 0.5, -0.0, 0.5, 0.866, 0.0],
+    ];
+    let sx = stepx / 2.0;
+    let sy = stepy / 2.0;
+    let spacex = f64::sqrt(radius * radius / 2.0);
+    t[0][2] = -sx;
+    t[0][5] = -sy;
+    t[1][2] = -sx;
+    t[1][5] = -sy;
+    t[2][2] = -sx;
+    t[2][5] = -sy;
+    t[3][2] = -sx;
+    t[3][5] = -sy;
+    t[4][2] = -sx;
+    t[4][5] = -sy;
+    t[5][2] = -sx;
+    t[5][5] = -sy;
+    t[6][2] = sx;
+    t[6][5] = sy;
+    t[7][2] = sx;
+    t[7][5] = sy;
+    t[8][2] = sx;
+    t[8][5] = sy;
+    t[9][2] = sx;
+    t[9][5] = sy;
+    t[10][2] = sx;
+    t[10][5] = sy;
+    t[11][2] = sx;
+    t[11][5] = sy;
+    sym_data(p, [spacex, spacex], &t)
+}
+
+fn sym_ng16_prepare(p: &[f64], _: &Affine) -> Vec<f64> {
+    let radius = p[0];
+    let stepx = p[1];
+    let stepy = p[2];
+    let mut t: [[f64; 6]; 12] = [
+        [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+        [0.5, -0.866, 0.0, 0.866, 0.5, 0.0],
+        [-0.5, -0.866, -0.0, 0.866, -0.5, 0.0],
+        [-1.0, 0.0, -0.0, 0.0, -1.0, 0.0],
+        [-0.5, 0.866, -0.0, -0.866, -0.5, 0.0],
+        [0.5, 0.866, -0.0, -0.866, 0.5, 0.0],
+        [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+        [0.5, -0.866, 0.0, 0.866, 0.5, 0.0],
+        [-0.5, -0.866, -0.0, 0.866, -0.5, 0.0],
+        [-1.0, 0.0, -0.0, 0.0, -1.0, 0.0],
+        [-0.5, 0.866, -0.0, -0.866, -0.5, 0.0],
+        [0.5, 0.866, -0.0, -0.866, 0.5, 0.0],
+    ];
+    let space = f64::sqrt(radius * radius / 2.0);
+    let sx = stepx / 2.0;
+    let sy = stepy / 2.0;
+    t[0][2] = -sx;
+    t[0][5] = -sy;
+    t[1][2] = -sx;
+    t[1][5] = -sy;
+    t[2][2] = -sx;
+    t[2][5] = -sy;
+    t[3][2] = -sx;
+    t[3][5] = -sy;
+    t[4][2] = -sx;
+    t[4][5] = -sy;
+    t[5][2] = -sx;
+    t[5][5] = -sy;
+    t[6][2] = sx;
+    t[6][5] = sy;
+    t[7][2] = sx;
+    t[7][5] = sy;
+    t[8][2] = sx;
+    t[8][5] = sy;
+    t[9][2] = sx;
+    t[9][5] = sy;
+    t[10][2] = sx;
+    t[10][5] = sy;
+    t[11][2] = sx;
+    t[11][5] = sy;
+    sym_data(p, [space, space], &t)
+}
+
+fn sym_ng17_prepare(p: &[f64], _: &Affine) -> Vec<f64> {
+    let radius = p[0];
+    let stepx = p[1];
+    let stepy = p[2];
+    let mut t: [[f64; 6]; 24] = [
+        [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+        [1.0, 0.0, 0.0, 0.0, -1.0, 0.0],
+        [0.5, -0.866, -0.0, 0.866, 0.5, 0.0],
+        [0.5, 0.866, -0.0, 0.866, -0.5, 0.0],
+        [-0.5, -0.866, -0.0, 0.866, -0.5, 0.0],
+        [-0.5, 0.866, -0.0, 0.866, 0.5, 0.0],
+        [-1.0, 0.0, -0.0, 0.0, -1.0, 0.0],
+        [-1.0, 0.0, -0.0, 0.0, 1.0, 0.0],
+        [-0.5, 0.866, -0.0, -0.866, -0.5, 0.0],
+        [-0.5, -0.866, -0.0, -0.866, 0.5, 0.0],
+        [0.5, 0.866, -0.0, -0.866, 0.5, 0.0],
+        [0.5, -0.866, -0.0, -0.866, -0.5, 0.0],
+        [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+        [1.0, 0.0, 0.0, 0.0, -1.0, 0.0],
+        [0.5, -0.866, -0.0, 0.866, 0.5, 0.0],
+        [0.5, 0.866, -0.0, 0.866, -0.5, 0.0],
+        [-0.5, -0.866, -0.0, 0.866, -0.5, 0.0],
+        [-0.5, 0.866, -0.0, 0.866, 0.5, 0.0],
+        [-1.0, 0.0, -0.0, 0.0, -1.0, 0.0],
+        [-1.0, 0.0, -0.0, 0.0, 1.0, 0.0],
+        [-0.5, 0.866, -0.0, -0.866, -0.5, 0.0],
+        [-0.5, -0.866, -0.0, -0.866, 0.5, 0.0],
+        [0.5, 0.866, -0.0, -0.866, 0.5, 0.0],
+        [0.5, -0.866, -0.0, -0.866, -0.5, 0.0],
+    ];
+    let space = f64::sqrt(radius * radius / 2.0);
+    let sx = stepx / 2.0;
+    let sy = stepy / 2.0;
+    t[0][2] = -sx;
+    t[0][5] = -sy;
+    t[1][2] = -sx;
+    t[1][5] = -sy;
+    t[2][2] = -sx;
+    t[2][5] = -sy;
+    t[3][2] = -sx;
+    t[3][5] = -sy;
+    t[4][2] = -sx;
+    t[4][5] = -sy;
+    t[5][2] = -sx;
+    t[5][5] = -sy;
+    t[6][2] = -sx;
+    t[6][5] = -sy;
+    t[7][2] = -sx;
+    t[7][5] = -sy;
+    t[8][2] = -sx;
+    t[8][5] = -sy;
+    t[9][2] = -sx;
+    t[9][5] = -sy;
+    t[10][2] = -sx;
+    t[10][5] = -sy;
+    t[11][2] = -sx;
+    t[11][5] = -sy;
+    t[12][2] = sx;
+    t[12][5] = sy;
+    t[13][2] = sx;
+    t[13][5] = sy;
+    t[14][2] = sx;
+    t[14][5] = sy;
+    t[15][2] = sx;
+    t[15][5] = sy;
+    t[16][2] = sx;
+    t[16][5] = sy;
+    t[17][2] = sx;
+    t[17][5] = sy;
+    t[18][2] = sx;
+    t[18][5] = sy;
+    t[19][2] = sx;
+    t[19][5] = sy;
+    t[20][2] = sx;
+    t[20][5] = sy;
+    t[21][2] = sx;
+    t[21][5] = sy;
+    t[22][2] = sx;
+    t[22][5] = sy;
+    t[23][2] = sx;
+    t[23][5] = sy;
+    sym_data(p, [space, space], &t)
+}
+
+fn sym_ng2_prepare(p: &[f64], _: &Affine) -> Vec<f64> {
+    let stepx = p[0];
+    let stepy = p[1];
+    let mut t: [[f64; 6]; 2] = [
+        [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+        [1.0, 0.0, 0.0, 0.0, -1.0, 0.0],
+    ];
+    t[0][2] = -stepx / 2.0;
+    t[0][5] = -stepy / 2.0;
+    t[1][2] = stepx / 2.0;
+    t[1][5] = stepy / 2.0;
+    sym_data(p, [0.0, 0.0], &t)
+}
+
+fn sym_ng3_prepare(p: &[f64], _: &Affine) -> Vec<f64> {
+    let sepx = p[0];
+    let sepy = p[1];
+    let step = p[2];
+    let mut t: [[f64; 6]; 2] = [
+        [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+        [-1.0, 0.0, 0.0, 0.0, -1.0, 0.0],
+    ];
+    t[0][2] = -sepx - step / 2.0;
+    t[0][5] = -sepy - step / 2.0;
+    t[1][2] = sepx + step / 2.0;
+    t[1][5] = sepy + step / 2.0;
+    sym_data(p, [0.0, 0.0], &t)
+}
+
+fn sym_ng4_prepare(p: &[f64], _: &Affine) -> Vec<f64> {
+    let sepx = p[0];
+    let sepy = p[1];
+    let stepx = p[2];
+    let stepy = p[3];
+    let mut t: [[f64; 6]; 4] = [
+        [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+        [-1.0, 0.0, 0.0, 0.0, -1.0, 0.0],
+        [1.0, 0.0, 0.0, 0.0, -1.0, 0.0],
+        [-1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+    ];
+    let sx = sepx / 2.0;
+    let sy = sepy / 2.0;
+    let stpx = stepx / 2.0;
+    let stpy = stepy / 2.0;
+    t[0][2] = -sx - 2.0 - stpx;
+    t[0][5] = sy - 1.5 - stpy;
+    t[1][2] = sx - stpx;
+    t[1][5] = -sy - 0.5 - stpy;
+    t[2][2] = -sx + stpx;
+    t[2][5] = -sy + 0.5 + stpy;
+    t[3][2] = sx + 2.0 + stpx;
+    t[3][5] = sy - 0.5 + stpy;
+    sym_data(p, [0.0, 0.0], &t)
+}
+
+fn sym_ng5_prepare(p: &[f64], _: &Affine) -> Vec<f64> {
+    let sepx = p[0];
+    let sepy = p[1];
+    let stepx = p[2];
+    let mut t: [[f64; 6]; 4] = [
+        [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+        [-1.0, 0.0, 0.0, 0.0, -1.0, 0.0],
+        [1.0, 0.0, 0.0, 0.0, -1.0, 0.0],
+        [-1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+    ];
+    t[0][2] = -sepx - 2.0 - stepx / 2.0;
+    t[0][5] = sepy - 0.5;
+    t[1][2] = sepx - stepx / 2.0;
+    t[1][5] = -sepy - 0.5;
+    t[2][2] = -sepx + stepx / 2.0;
+    t[2][5] = -sepy - 0.5;
+    t[3][2] = 2.0 + sepx + stepx / 2.0;
+    t[3][5] = sepy - 0.5;
+    sym_data(p, [0.0, 0.0], &t)
+}
+
+fn sym_ng6_prepare(p: &[f64], _: &Affine) -> Vec<f64> {
+    let sepy = p[0];
+    let stepx = p[1];
+    let stepy = p[2];
+    let mut t: [[f64; 6]; 4] = [
+        [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+        [1.0, 0.0, 0.0, 0.0, -1.0, 0.0],
+        [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+        [1.0, 0.0, 0.0, 0.0, -1.0, 0.0],
+    ];
+    t[0][2] = -stepx / 2.0;
+    t[0][5] = -stepy / 2.0 + sepy / 2.0;
+    t[1][2] = -stepx / 2.0;
+    t[1][5] = -stepy / 2.0 - sepy / 2.0;
+    t[2][2] = stepx / 2.0;
+    t[2][5] = stepy / 2.0 + sepy / 2.0;
+    t[3][2] = stepx / 2.0;
+    t[3][5] = stepy / 2.0 - sepy / 2.0;
+    sym_data(p, [0.0, 0.0], &t)
+}
+
+fn sym_ng7_prepare(p: &[f64], _: &Affine) -> Vec<f64> {
+    let sepx = p[0];
+    let sepy = p[1];
+    let mut t: [[f64; 6]; 2] = [
+        [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+        [1.0, 0.0, 0.0, 0.0, -1.0, 0.0],
+    ];
+    t[0][2] = -sepx / 2.0;
+    t[0][5] = sepy / 2.0;
+    t[1][2] = sepx / 2.0;
+    t[1][5] = -sepy / 2.0;
+    sym_data(p, [0.0, 0.0], &t)
+}
+
+fn sym_ng8_prepare(p: &[f64], _: &Affine) -> Vec<f64> {
+    let sepx = p[0];
+    let sepy = p[1];
+    let skewx = p[2];
+    let skewy = p[3];
+    let mut t: [[f64; 6]; 8] = [
+        [1.0, 0.0, 0.0, 0.0, -1.0, 0.0],
+        [-1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+        [-1.0, 0.0, 0.0, 0.0, -1.0, 0.0],
+        [1.0, 0.0, 0.0, 0.0, 1.0, -0.0],
+        [1.0, 0.0, 0.0, 0.0, -1.0, 0.0],
+        [-1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+        [-1.0, 0.0, 0.0, 0.0, -1.0, 0.0],
+        [1.0, 0.0, 0.0, 0.0, 1.0, -0.0],
+    ];
+    t[0][2] = -1.0 - sepx / 2.0 - skewx / 2.0;
+    t[0][5] = -sepy / 2.0 - skewy / 2.0;
+    t[1][2] = 1.0 + sepx / 2.0 - skewx / 2.0;
+    t[1][5] = sepy / 2.0 - skewy / 2.0;
+    t[2][2] = 1.0 + sepx / 2.0 - skewx / 2.0;
+    t[2][5] = -sepy / 2.0 - skewy / 2.0;
+    t[3][2] = -1.0 - sepx / 2.0 - skewx / 2.0;
+    t[3][5] = sepy / 2.0 - skewy / 2.0;
+    t[4][2] = -1.0 - sepx / 2.0 + skewx / 2.0;
+    t[4][5] = -sepy / 2.0 + skewy / 2.0;
+    t[5][2] = 1.0 + sepx / 2.0 + skewx / 2.0;
+    t[5][5] = sepy / 2.0 + skewy / 2.0;
+    t[6][2] = 1.0 + sepx / 2.0 + skewx / 2.0;
+    t[6][5] = -sepy / 2.0 + skewy / 2.0;
+    t[7][2] = -1.0 - sepx / 2.0 + skewx / 2.0;
+    t[7][5] = sepy / 2.0 + skewy / 2.0;
+    sym_data(p, [0.0, 0.0], &t)
+}
+
+fn sym_ng9_prepare(p: &[f64], _: &Affine) -> Vec<f64> {
+    let sepx = p[0];
+    let sepy = p[1];
+    let mut t: [[f64; 6]; 4] = [
+        [1.0, 0.0, 0.0, 0.0, -1.0, 0.0],
+        [-1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+        [-1.0, 0.0, 0.0, 0.0, -1.0, 0.0],
+        [1.0, 0.0, 0.0, 0.0, 1.0, -0.0],
+    ];
+    t[0][2] = sepx / 2.0;
+    t[0][5] = -sepy / 2.0;
+    t[1][2] = -sepx / 2.0;
+    t[1][5] = sepy / 2.0;
+    t[2][2] = -sepx / 2.0;
+    t[2][5] = -sepy / 2.0;
+    t[3][2] = sepx / 2.0;
+    t[3][5] = sepy / 2.0;
+    sym_data(p, [0.0, 0.0], &t)
+}
