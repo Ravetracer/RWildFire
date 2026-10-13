@@ -1868,8 +1868,8 @@ dc_output(&v, AMOUNT, uv, colo, i32(D(10)), D(11), D(12), i32(D(13)));",
         apply: |d, ctx, _a, v, amount| {
             let p = 2.0 * ctx.random() - 1.0;
             let q = 2.0 * ctx.random() - 1.0;
-            let i = ctx.random_int(3);
-            let j = ctx.random_int(2) == 1;
+            let i = ctx.random_int(i32::MAX as usize) % 3;
+            let j = (ctx.random_int(i32::MAX as usize) & 1) == 1;
             let sg = if j { -1.0 } else { 1.0 };
             let (x, y, z) = match i {
                 0 => {
