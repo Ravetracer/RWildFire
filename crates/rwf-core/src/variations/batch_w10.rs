@@ -837,7 +837,8 @@ pub static DEFS: &[VarDef] = &[
             let oy = a.y + d[3];
             let oz = a.z - d[4];
             let n = ox * ox + oy * oy + oz * oz;
-            let rsum = ctx.random() + ctx.random() + ctx.random() + ctx.random() - 2.0;
+            let key = d.as_ptr() as usize;
+            let rsum = ctx.gauss_ring_sum(key, 4) - 2.0;
             let rr = amount * n.powf(d[0]) * rsum;
             let theta = oy.atan2(ox);
             let phi = (oz / n.sqrt()).acos();
@@ -845,22 +846,39 @@ pub static DEFS: &[VarDef] = &[
             let (sv, cv) = phi.sin_cos();
             let (sru, cru) = (ctx.random() * M_2PI).sin_cos();
             let (srv, crv) = (ctx.random() * M_2PI).sin_cos();
+            ctx.gauss_ring_push(key, 4, 3);
             let rsrv = d[1] * srv;
             v.x += rr * (sv * cu + rsrv * cru);
             v.y += rr * (sv * su + rsrv * sru);
             v.z += rr * (cv + d[1] * crv);
         },
         prepare: None,
-        wgsl: "let ox = a.x - D(2);
+        wgsl: "var<private> exblur_ring: array<f32, 4>;
+var<private> exblur_idx: u32;
+var<private> exblur_init: bool;
+fn exblur_sum() -> f32 {
+  if (!exblur_init) {
+    exblur_init = true;
+    for (var i = 0; i < 4; i++) { exblur_ring[i] = rnd(); }
+  }
+  return exblur_ring[0] + exblur_ring[1] + exblur_ring[2] + exblur_ring[3];
+}
+fn exblur_push() {
+  exblur_ring[exblur_idx] = rnd();
+  exblur_idx = (exblur_idx + 1u) & 3u;
+}
+@body
+let ox = a.x - D(2);
 let oy = a.y + D(3);
 let oz = a.z - D(4);
 let n = ox * ox + oy * oy + oz * oz;
-let rsum = rnd() + rnd() + rnd() + rnd() - 2.0;
+let rsum = exblur_sum() - 2.0;
 let rr = AMOUNT * java_pow(n, D(0)) * rsum;
 let theta = atan2(oy, ox);
 let phi = acos(clamp(oz / sqrt(n), -1.0, 1.0));
 let tu = rnd() * TWO_PI;
 let tv = rnd() * TWO_PI;
+exblur_push();
 let rsrv = D(1) * sin(tv);
 v.x += rr * (sin(phi) * cos(theta) + rsrv * cos(tu));
 v.y += rr * (sin(phi) * sin(theta) + rsrv * sin(tu));
@@ -1274,7 +1292,7 @@ if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
         is_3d: false,
         apply: |d, ctx, _a, v, amount| {
             // d = [x, y, z, x_origin, y_origin, z_origin]
-            let rsum = ctx.random() + ctx.random() + ctx.random() + ctx.random() - 2.0;
+            let rsum = ctx.gauss_ring(d.as_ptr() as usize, 4, 3) - 2.0;
             let r = amount * (sqr(v.x - d[3]) + sqr(v.y - d[4]) + sqr(v.z - d[5])) * rsum;
             let (su, cu) = (ctx.random() * M_2PI).sin_cos();
             let (sv, cv) = (ctx.random() * M_2PI).sin_cos();
@@ -1283,7 +1301,23 @@ if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
             v.z += d[2] * r * cv;
         },
         prepare: None,
-        wgsl: "let rsum = rnd() + rnd() + rnd() + rnd() - 2.0;
+        wgsl: "var<private> farblur_ring: array<f32, 4>;
+var<private> farblur_idx: u32;
+var<private> farblur_init: bool;
+fn farblur_sum() -> f32 {
+  if (!farblur_init) {
+    farblur_init = true;
+    for (var i = 0; i < 4; i++) { farblur_ring[i] = rnd(); }
+  }
+  return farblur_ring[0] + farblur_ring[1] + farblur_ring[2] + farblur_ring[3];
+}
+fn farblur_push() {
+  farblur_ring[farblur_idx] = rnd();
+  farblur_idx = (farblur_idx + 1u) & 3u;
+}
+@body
+let rsum = farblur_sum() - 2.0;
+farblur_push();
 let dx = v.x - D(3);
 let dy = v.y - D(4);
 let dz = v.z - D(5);

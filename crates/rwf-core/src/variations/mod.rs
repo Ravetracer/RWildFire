@@ -244,19 +244,26 @@ impl Ctx {
     /// The ring is kept per render thread (keyed by `key`, the address of the prepared data) and
     /// filled on first use, as each JWildfire render thread fills its own in `init`.
     pub(crate) fn gauss_ring(&mut self, key: usize, n: usize, mask: usize) -> f64 {
+        let sum = self.gauss_ring_sum(key, n);
+        self.gauss_ring_push(key, n, mask);
+        sum
+    }
+    /// Sum of the ring of [`Ctx::gauss_ring`] (without replacing an entry).
+    pub(crate) fn gauss_ring_sum(&mut self, key: usize, n: usize) -> f64 {
         if !self.states.contains_key(&key) {
             let mut ring: Vec<f64> = (0..n).map(|_| self.random()).collect();
             ring.push(0.0);
             self.states.insert(key, ring);
         }
-        let ring = &self.states[&key];
-        let sum = ring[..n].iter().fold(0.0, |s, g| s + g);
-        let i = ring[n] as usize;
+        self.states[&key][..n].iter().fold(0.0, |s, g| s + g)
+    }
+    /// Replaces the current entry of the ring of [`Ctx::gauss_ring`] and advances its index.
+    pub(crate) fn gauss_ring_push(&mut self, key: usize, n: usize, mask: usize) {
         let r = self.random();
-        let ring = self.states.get_mut(&key).unwrap();
+        let ring = self.states.get_mut(&key).expect("gauss_ring_sum first");
+        let i = ring[n] as usize;
         ring[i] = r;
         ring[n] = ((i + 1) & mask) as f64;
-        sum
     }
     pub fn random(&mut self) -> f64 {
         self.rng.random()
