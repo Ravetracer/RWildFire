@@ -379,12 +379,17 @@ fn variations_editor(ui: &mut Ui, doc: &mut Document, st: &mut TransformsState) 
                     if var.params.len() < def.params.len() {
                         var.params.resize(def.params.len(), 0.0);
                     }
+                    let mut chosen_preset = None;
                     egui::Grid::new(("vparams", vi)).num_columns(2).spacing([10.0, 4.0]).show(ui, |ui| {
                         for (pi, p) in def.params.iter().enumerate() {
                             widgets::label(ui, p.name);
                             let v = &mut var.params[pi];
                             if def.name == "obj_mesh_primitive_wf" && p.name == "primitive" {
                                 primitive_combo(ui, vi, v);
+                            } else if p.name == "preset_id"
+                                && let Some(presets) = variations::presets::presets(def.name)
+                            {
+                                chosen_preset = preset_combo(ui, vi, *v as i32, presets);
                             } else if p.integer {
                                 let mut iv = v.round() as i64;
                                 ui.add(egui::DragValue::new(&mut iv).speed(0.05).range(p.min as i64..=p.max as i64 * 4));
@@ -402,6 +407,9 @@ fn variations_editor(ui: &mut Ui, doc: &mut Document, st: &mut TransformsState) 
                             }
                         }
                     });
+                    if let Some(id) = chosen_preset {
+                        variations::presets::apply(var, id);
+                    }
                 }
                 let res = variations::resources_of(&var.name).map_or(&[][..], |rv| rv.resources);
                 for (k, v) in &var.raw_params {
@@ -497,6 +505,20 @@ fn resource_picker(ui: &mut Ui, var: &mut VariationInstance, r: &variations::Res
     };
     let image_filter = ("Image", &["png", "jpg", "jpeg"][..]);
     match r.kind {
+        ResKind::Formula => {
+            let mut value = var.resource(r.name);
+            ui.vertical(|ui| {
+                let edit = egui::TextEdit::multiline(&mut value).desired_width(200.0).desired_rows(2).code_editor();
+                if ui.add(edit).changed() {
+                    var.set_resource(r.name, &value);
+                    // an edited formula no longer matches its preset (`validatePresetId`)
+                    var.set_param("preset_id", -1.0);
+                }
+                if let Err(e) = variations::check_formula(&var.name, &value) {
+                    ui.label(RichText::new(e).small().color(theme::WARN));
+                }
+            });
+        }
         ResKind::ImageData => {
             let len = var.resource_bytes(r.name).len();
             ui.horizontal(|ui| {
@@ -540,4 +562,18 @@ fn resource_picker(ui: &mut Ui, var: &mut VariationInstance, r: &variations::Res
             });
         }
     }
+}
+
+/// Preset selection of the formula variations; returns the chosen preset id.
+fn preset_combo(ui: &mut Ui, vi: usize, current: i32, presets: &[variations::presets::Preset]) -> Option<i32> {
+    let text = presets.iter().find(|p| p.id == current).map_or_else(|| "custom".to_string(), |p| format!("{} {}", p.id, p.name));
+    let mut chosen = None;
+    egui::ComboBox::from_id_salt(("preset", vi)).selected_text(text).width(180.0).show_ui(ui, |ui| {
+        for p in presets {
+            if ui.selectable_label(p.id == current, format!("{} {}", p.id, p.name)).clicked() {
+                chosen = Some(p.id);
+            }
+        }
+    });
+    chosen
 }

@@ -179,6 +179,10 @@ impl VariationInstance {
                         inst.set_resource(r.name, r.default);
                     }
                 }
+                // Formula variations start with their first preset (JWildfire: a random one).
+                if let Some(p) = variations::presets::presets(name).and_then(|ps| ps.first()) {
+                    variations::presets::apply(&mut inst, p.id);
+                }
                 inst
             }
             None => Self { name: name.to_string(), amount, priority: 0, params: Vec::new(), raw_params: Vec::new() },

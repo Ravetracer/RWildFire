@@ -342,3 +342,128 @@ fn res_metaballs(base: u32, v_in: Pt, amount: f32) -> Pt {
   v.color = clamp(v.color, 0.0, 1.0);
   return v;
 }
+
+// Formula bytecode (crate::formula) in prm[start .. start + len] (absolute indices); vars are
+// the runtime inputs in compile order.
+fn res_formula(start: u32, len: u32, vars: vec4<f32>) -> f32 {
+  var st: array<f32, 32>;
+  var sp = 0u;
+  var pc = start;
+  let end = start + len;
+  loop {
+    if (pc >= end) { break; }
+    let op = u32(prm[pc]);
+    pc += 1u;
+    if (op <= 1u) {
+      var val = prm[pc];
+      if (op == 1u) { val = vars[min(u32(val), 3u)]; }
+      st[sp] = val;
+      sp += 1u;
+      pc += 1u;
+      continue;
+    }
+    if (op == 18u) {
+      let c = st[sp - 3u];
+      st[sp - 3u] = select(st[sp - 1u], st[sp - 2u], c != 0.0);
+      sp -= 2u;
+      continue;
+    }
+    if ((op >= 3u && op <= 16u) || op == 26u || op == 35u || op == 43u || op == 44u || op == 50u) {
+      let a = st[sp - 2u];
+      let b = st[sp - 1u];
+      sp -= 1u;
+      var r = 0.0;
+      switch op {
+        case 3u: { r = a + b; }
+        case 4u: { r = a - b; }
+        case 5u: { r = a * b; }
+        case 6u: { r = a / b; }
+        case 7u: { r = select(trunc(a / b), 0.0, b == 0.0); }
+        case 8u: { r = fmod(a, b); }
+        case 9u: { r = select(0.0, 1.0, a < b); }
+        case 10u: { r = select(0.0, 1.0, a <= b); }
+        case 11u: { r = select(0.0, 1.0, a > b); }
+        case 12u: { r = select(0.0, 1.0, a >= b); }
+        case 13u: { r = select(0.0, 1.0, a == b); }
+        case 14u: { r = select(0.0, 1.0, a != b); }
+        case 15u: { r = select(0.0, 1.0, a != 0.0 && b != 0.0); }
+        case 16u: { r = select(0.0, 1.0, a != 0.0 || b != 0.0); }
+        case 26u: { r = atan2(a, b); }
+        case 35u: { r = java_pow(a, b); }
+        case 43u: { r = min(a, b); }
+        case 44u: { r = max(a, b); }
+        default: { r = sqrt(a * a + b * b); }
+      }
+      st[sp - 1u] = r;
+      continue;
+    }
+    let a = st[sp - 1u];
+    var r = a;
+    switch op {
+      case 2u: { r = -a; }
+      case 17u: { r = select(0.0, 1.0, a == 0.0); }
+      case 19u: { r = f32(i32(a)); }
+      case 20u: { r = sin(a); }
+      case 21u: { r = cos(a); }
+      case 22u: { r = tan(a); }
+      case 23u: { r = asin(a); }
+      case 24u: { r = acos(a); }
+      case 25u: { r = atan(a); }
+      case 27u: { r = sinh(a); }
+      case 28u: { r = cosh(a); }
+      case 29u: { r = tanh(a); }
+      case 30u: { r = exp(a); }
+      case 31u: { r = log(a); }
+      case 32u: { r = log10(a); }
+      case 33u: { r = sqrt(a); }
+      case 34u: { r = a * a; }
+      case 36u: { r = abs(a); }
+      case 37u: { r = floor(a); }
+      case 38u: { r = ceil(a); }
+      case 39u: { r = floor(a + 0.5); }
+      case 40u: { r = round(a); }
+      case 41u: { r = trunc(a); }
+      case 42u: { r = a - trunc(a); }
+      case 45u: { r = sign(a); }
+      case 46u: { r = log(sqrt(a * a - 1.0) + a); }
+      case 47u: { r = erf(a); }
+      case 48u: { r = lgamma(a); }
+      case 49u: { r = sign(a) * pow(abs(a), 1.0 / 3.0); }
+      default: { r = math_nan(); }
+    }
+    st[sp - 1u] = r;
+  }
+  if (sp == 0u) { return 0.0; }
+  return st[sp - 1u];
+}
+
+// Formula in slot `slot` of the variation data ([start, length] relative to base).
+fn res_f(base: u32, slot: u32, vars: vec4<f32>) -> f32 {
+  return res_formula(base + u32(prm[base + slot]), u32(prm[base + slot + 1u]), vars);
+}
+
+// VectorD.cross + normalize
+fn res_normal(a: vec3<f32>, b: vec3<f32>) -> vec3<f32> {
+  let c = cross(a, b);
+  return c / (length(c) + 1.0e-16);
+}
+
+// Plot variations: displacement map value (0..1) at (ru, rv) in 0..1 (v bottom-up).
+fn res_plot_displ(base: u32, o: u32, blend: bool, ru: f32, rv: f32) -> f32 {
+  let iw = prm[base + o] - 1.0;
+  let ih = prm[base + o + 1u] - 1.0;
+  return res_image_displ(base, o, blend, clamp(ru * iw, 0.0, iw), clamp(ih - rv * ih, 0.0, ih));
+}
+
+// Plot variations: colormap coloring at (ru, rv) (if an image is loaded).
+fn res_plot_color(base: u32, o: u32, blend: bool, ru: f32, rv: f32, v_in: Pt) -> Pt {
+  var v = v_in;
+  if (prm[base + o] > 0.0) {
+    let iw = prm[base + o] - 1.0;
+    let ih = prm[base + o + 1u] - 1.0;
+    let rgb = res_image_color(base, o, blend, clamp(ru * iw, 0.0, iw), clamp(ih - rv * ih, 0.0, ih));
+    v.rgbc = 1.0; v.r = rgb.x; v.g = rgb.y; v.b = rgb.z;
+    v.color = res_uv_color_idx(rgb);
+  }
+  return v;
+}

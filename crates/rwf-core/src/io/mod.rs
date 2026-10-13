@@ -487,7 +487,11 @@ fn parse_xform(el: &Element) -> XForm {
             {
                 continue;
             }
-            inst.raw_params.push((pname, v.clone()));
+            // replaces defaults of resources (see VariationInstance::new)
+            match inst.raw_params.iter_mut().find(|(k, _)| *k == pname) {
+                Some(e) => e.1 = v.clone(),
+                None => inst.raw_params.push((pname, v.clone())),
+            }
             continue;
         }
         xf.extra_attrs.push((k.clone(), v.clone()));

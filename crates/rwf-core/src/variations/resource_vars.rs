@@ -37,21 +37,21 @@ use crate::mesh::{self, Mesh, MeshSource, Refinement};
 use crate::resources::{self, ImageMap};
 
 /// `limitIntVal(Tools.FTOI(x), lo, hi)` as `f64`.
-fn ftoi_limit(x: f64, lo: i32, hi: i32) -> f64 {
+pub(super) fn ftoi_limit(x: f64, lo: i32, hi: i32) -> f64 {
     ftoi(x).clamp(lo, hi) as f64
 }
 
 /// Values per image block.
-const IMG: usize = 3;
+pub(super) const IMG: usize = 3;
 
 /// Fills the image block at `d[o..o + 3]` and appends the pixels (no-op if the image is missing).
-fn load_image(d: &mut Vec<f64>, o: usize, path: &[u8]) {
+pub(super) fn load_image(d: &mut Vec<f64>, o: usize, path: &[u8]) {
     if let Some(img) = resources::image(&text(path)) {
         push_image(d, o, &img);
     }
 }
 
-fn push_image(d: &mut Vec<f64>, o: usize, img: &ImageMap) {
+pub(super) fn push_image(d: &mut Vec<f64>, o: usize, img: &ImageMap) {
     d[o] = img.width as f64;
     d[o + 1] = img.height as f64;
     d[o + 2] = d.len() as f64;
@@ -66,7 +66,7 @@ fn push_alpha(d: &mut Vec<f64>, o: usize, img: &ImageMap) {
     d.extend(img.alpha.iter().map(|&a| a as f64));
 }
 
-fn text(b: &[u8]) -> String {
+pub(super) fn text(b: &[u8]) -> String {
     String::from_utf8_lossy(b).into_owned()
 }
 
@@ -94,7 +94,7 @@ fn sample(d: &[f64], o: usize, blend: bool, ix: i64, iy: i64, iu: f64, iv: f64) 
 }
 
 /// `ColorMapHolder.applyImageColor`: true color from the image, black outside of it.
-fn apply_image_color(d: &[f64], o: usize, blend: bool, v: &mut Pt, iu: f64, iv: f64) {
+pub(super) fn apply_image_color(d: &[f64], o: usize, blend: bool, v: &mut Pt, iu: f64, iv: f64) {
     let c = sample(d, o, blend, iu.trunc() as i64, iv.trunc() as i64, iu, iv).unwrap_or([0.0; 3]);
     v.rgb_color = true;
     v.red = c[0];
@@ -103,7 +103,7 @@ fn apply_image_color(d: &[f64], o: usize, blend: bool, v: &mut Pt, iu: f64, iv: 
 }
 
 /// `DisplacementMapHolder.calculateImageDisplacement`: green channel, 0..1.
-fn image_displacement(d: &[f64], o: usize, blend: bool, iu: f64, iv: f64) -> f64 {
+pub(super) fn image_displacement(d: &[f64], o: usize, blend: bool, iu: f64, iv: f64) -> f64 {
     sample(d, o, blend, iu.trunc() as i64, iv.trunc() as i64, iu, iv).map_or(0.0, |c| c[1] / 255.0)
 }
 

@@ -45,6 +45,8 @@ pub mod noise;
 
 mod basic;
 pub mod resource_vars;
+mod plots;
+pub mod presets;
 mod batch_a;
 mod batch_b;
 mod batch_c;
@@ -351,6 +353,8 @@ pub enum ResKind {
     ImageData,
     /// Free text (e.g. a brush list, or JWildfire `HREF` source/description links).
     Text,
+    /// A formula (Java expression, see `crate::formula`).
+    Formula,
 }
 
 /// A resource parameter: a string value (e.g. a file name), stored hex-encoded in `.flame` files.
@@ -384,7 +388,12 @@ pub struct ResourceVar {
 /// Resource declaration of a variation, if it has resources.
 pub fn resources_of(name: &str) -> Option<&'static ResourceVar> {
     let name = find(name)?.name;
-    resource_vars::RESOURCES.iter().find(|r| r.name == name)
+    resource_vars::RESOURCES.iter().chain(plots::RESOURCES).find(|r| r.name == name)
+}
+
+/// Checks a formula resource of a variation (`Err` with a message if it does not compile).
+pub fn check_formula(variation: &str, src: &str) -> Result<(), String> {
+    plots::check_formula(variation, src)
 }
 
 /// Prepared data of a variation instance, including its resources.
@@ -415,7 +424,7 @@ fn registry() -> &'static Registry {
     REG.get_or_init(|| {
         let mut defs: Vec<&'static VarDef> = Vec::new();
         #[allow(unused_mut)]
-        let mut lists: Vec<&'static [VarDef]> = vec![basic::DEFS, resource_vars::DEFS, batch_a::DEFS, batch_b::DEFS, batch_c::DEFS, batch_d::DEFS];
+        let mut lists: Vec<&'static [VarDef]> = vec![basic::DEFS, resource_vars::DEFS, plots::DEFS, batch_a::DEFS, batch_b::DEFS, batch_c::DEFS, batch_d::DEFS];
         #[cfg(feature = "w01")]
         lists.push(batch_w01::DEFS);
         #[cfg(feature = "w02")]
