@@ -97,6 +97,166 @@ fn riemann_z(n: i32) -> f64 {
     POS_INT[n as usize]
 }
 
+const AFFINE3D_PARAMS: &[ParamDef] = &[
+    ParamDef::new("translateX", 0.0),
+    ParamDef::new("translateY", 0.0),
+    ParamDef::new("translateZ", 0.0),
+    ParamDef::new("scaleX", 1.0),
+    ParamDef::new("scaleY", 1.0),
+    ParamDef::new("scaleZ", 1.0),
+    ParamDef::range("rotateX", 0.0, -180.0, 180.0),
+    ParamDef::range("rotateY", 0.0, -180.0, 180.0),
+    ParamDef::range("rotateZ", 0.0, -180.0, 180.0),
+    ParamDef::new("shearXY", 0.0),
+    ParamDef::new("shearXZ", 0.0),
+    ParamDef::new("shearYX", 0.0),
+    ParamDef::new("shearYZ", 0.0),
+    ParamDef::new("shearZX", 0.0),
+    ParamDef::new("shearZY", 0.0),
+];
+
+// d = [translateX, translateY, translateZ, scaleX, scaleY, scaleZ, rotateX, rotateY, rotateZ,
+//      shearXY, shearXZ, shearYX, shearYZ, shearZX, shearZY, sinX, cosX, sinY, cosY, sinZ, cosZ, has_shear]
+fn affine3d_prepare(p: &[f64]) -> Vec<f64> {
+    let mut d = p.to_vec();
+    for &rot in &p[6..9] {
+        let ang = rot * M_PI / 180.0;
+        d.extend([ang.sin(), ang.cos()]);
+    }
+    d.push(if p[9..15].iter().any(|s| s.abs() > EPSILON) { 1.0 } else { 0.0 });
+    d
+}
+
+/// `AbstractAffine3DFunc.affineTransform`
+fn affine3d_xform(d: &[f64], x: f64, y: f64, z: f64, amount: f64) -> (f64, f64, f64) {
+    let (sx, sy, sz) = (d[3], d[4], d[5]);
+    let (sin_x, cos_x, sin_y, cos_y, sin_z, cos_z) = (d[15], d[16], d[17], d[18], d[19], d[20]);
+    if d[21] != 0.0 {
+        let u = d[9] * sy * y + d[10] * sz * z + sx * x;
+        let w = d[11] * sx * x + d[12] * sz * z + sy * y;
+        let t = d[13] * sx * x + d[14] * sy * y + sz * z;
+        (
+            amount * (cos_z * (cos_y * u + sin_y * (sin_x * w + cos_x * t)) - sin_z * (cos_x * w - sin_x * t) + d[0]),
+            amount * (sin_z * (cos_y * u + sin_y * (sin_x * w + cos_x * t)) + cos_z * (cos_x * w - sin_x * t) + d[1]),
+            amount * (-sin_y * u + cos_y * (sin_x * w + cos_x * t) + d[2]),
+        )
+    } else {
+        (
+            amount * (cos_z * (cos_y * sx * x + sin_y * (cos_x * sz * z + sin_x * sy * y)) - sin_z * (cos_x * sy * y - sin_x * sz * z) + d[0]),
+            amount * (sin_z * (cos_y * sx * x + sin_y * (cos_x * sz * z + sin_x * sy * y)) + cos_z * (cos_x * sy * y - sin_x * sz * z) + d[1]),
+            amount * (-sin_y * sx * x + cos_y * (cos_x * sz * z + sin_x * sy * y) + d[2]),
+        )
+    }
+}
+
+/// WGSL body of [`affine3d_xform`] (input `ax, ay, az`, output `r`).
+macro_rules! affine3d_wgsl {
+    () => {
+        "let sx = D(3);
+let sy = D(4);
+let sz = D(5);
+let sin_x = D(15);
+let cos_x = D(16);
+let sin_y = D(17);
+let cos_y = D(18);
+let sin_z = D(19);
+let cos_z = D(20);
+var u = sx * ax;
+var w = sy * ay;
+var t = sz * az;
+if (D(21) != 0.0) {
+  u = D(9) * sy * ay + D(10) * sz * az + sx * ax;
+  w = D(11) * sx * ax + D(12) * sz * az + sy * ay;
+  t = D(13) * sx * ax + D(14) * sy * ay + sz * az;
+}
+let m = cos_y * u + sin_y * (sin_x * w + cos_x * t);
+let n = cos_x * w - sin_x * t;
+let r = AMOUNT * vec3<f32>(cos_z * m - sin_z * n + D(0), sin_z * m + cos_z * n + D(1), -sin_y * u + cos_y * (sin_x * w + cos_x * t) + D(2));
+"
+    };
+}
+
+/// Java `js.glsl.mat3` in constructor order `[a00, a10, a20, a01, a11, a21, a02, a12, a22]`.
+type JMat3 = [f64; 9];
+
+/// `multiply(A, B)` of the `*_crop` variations: passes the row-major product to the
+/// column-major `mat3` constructor (i.e. returns the transposed product).
+fn jmat3_multiply(a: &JMat3, b: &JMat3) -> JMat3 {
+    let g = |m: &JMat3, r: usize, c: usize| m[c * 3 + r];
+    let mut res = [0.0; 9];
+    for (i, e) in res.iter_mut().enumerate() {
+        let (r, c) = (i / 3, i % 3);
+        *e = g(a, r, 0) * g(b, 0, c) + g(a, r, 1) * g(b, 1, c) + g(a, r, 2) * g(b, 2, c);
+    }
+    res
+}
+
+/// `euler_rotation(rot)` of the `*_crop` variations (angles in degrees).
+fn jmat3_euler(rx: f64, ry: f64, rz: f64) -> JMat3 {
+    let (sx, cx) = (-rx * M_PI / 180.0).sin_cos();
+    let (sy, cy) = (-ry * M_PI / 180.0).sin_cos();
+    let (sz, cz) = (-rz * M_PI / 180.0).sin_cos();
+    let mx = [1.0, 0.0, 0.0, 0.0, cx, -sx, 0.0, sx, cx];
+    let my = [cy, 0.0, sy, 0.0, 1.0, 0.0, -sy, 0.0, cy];
+    let mz = [cz, -sz, 0.0, sz, cz, 0.0, 0.0, 0.0, 1.0];
+    let id = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
+    jmat3_multiply(&jmat3_multiply(&jmat3_multiply(&id, &mx), &my), &mz)
+}
+
+/// `vec3.times(mat3)`
+fn jmat3_vtimes(m: &[f64], x: f64, y: f64, z: f64) -> (f64, f64, f64) {
+    (x * m[0] + y * m[1] + z * m[2], x * m[3] + y * m[4] + z * m[5], x * m[6] + y * m[7] + z * m[8])
+}
+
+/// Bailout test at the end of every iteration of the `*_crop` variations: scales the point
+/// again while inside, zeroes it otherwise.
+fn crop_step(v: &mut Pt, amount: f64, r: f64, bailout: f64, pcolor: f64) {
+    if r < bailout {
+        v.x *= amount;
+        v.y *= amount;
+        v.z *= amount;
+        v.color = r.sin() * pcolor;
+    } else {
+        v.x = 0.0;
+        v.y = 0.0;
+        v.z = 0.0;
+    }
+}
+
+/// WGSL of [`crop_step`] (uses `r`, bailout `$b`, color `$c`).
+macro_rules! crop_step_wgsl {
+    ($b:literal, $c:literal) => {
+        concat!(
+            "  if (r < ",
+            $b,
+            ") {
+    v.x *= AMOUNT;
+    v.y *= AMOUNT;
+    v.z *= AMOUNT;
+    v.color = sin(r) * ",
+            $c,
+            ";
+  } else {
+    v.x = 0.0;
+    v.y = 0.0;
+    v.z = 0.0;
+  }
+"
+        )
+    };
+}
+
+/// Prepared data of the `*_crop` variations: iterations clamped to 0..250 and, if `color` is
+/// given, the color factor to 0..1.
+fn crop_prepare(p: &[f64], iters: usize, color: Option<usize>) -> Vec<f64> {
+    let mut d = p.to_vec();
+    d[iters] = limit_value(ftoi(p[iters]), 0, 250) as f64;
+    if let Some(c) = color {
+        d[c] = limit_value(p[c], 0.0, 1.0);
+    }
+    d
+}
+
 /// `cern.jet.math.Arithmetic.longFactorial` as a double (`k` in 0..=20).
 fn long_factorial(k: i32) -> f64 {
     (1..=k.max(0) as i64).product::<i64>() as f64
@@ -793,6 +953,606 @@ for (var i = 0; i < n; i++) {
     v.y = 0.0;
     v.z = 0.0;
   }
+}",
+    },
+    VarDef {
+        name: "post_affine3D",
+        params: AFFINE3D_PARAMS,
+        kind: VarKind::Post,
+        is_3d: true,
+        apply: |d, _, _a, v, amount| {
+            (v.x, v.y, v.z) = affine3d_xform(d, v.x, v.y, v.z, amount);
+        },
+        prepare: Some(|p, _| affine3d_prepare(p)),
+        wgsl: concat!("let ax = v.x;\nlet ay = v.y;\nlet az = v.z;\n", affine3d_wgsl!(), "v.x = r.x;\nv.y = r.y;\nv.z = r.z;"),
+    },
+    VarDef {
+        name: "post_asurf_crop",
+        params: &[
+            ParamDef::int("iterations", 12.0, 0.0, 250.0),
+            ParamDef::new("bailout", 16.0),
+            ParamDef::new("scaleX", 1.0),
+            ParamDef::new("scaleY", 1.0),
+            ParamDef::new("scaleZ", 1.0),
+            ParamDef::range("color", 1.0, 0.0, 1.0),
+            ParamDef::int("mode", 1.0, 0.0, 1.0),
+            ParamDef::range("angle", 0.0, -180.0, 180.0),
+            ParamDef::new("rot_x", 0.0),
+            ParamDef::new("rot_y", 0.0),
+            ParamDef::new("rot_z", 1.0),
+            ParamDef::new("minR", 0.25),
+            ParamDef::new("maxR", 1.0),
+        ],
+        kind: VarKind::Post,
+        is_3d: true,
+        apply: |d, _, _a, v, amount| {
+            // d = [iterations, bailout, scaleX, scaleY, scaleZ, color, mode, angle, rot_x, rot_y, rot_z,
+            //      minR, maxR, rot (mat3, 9)]
+            let (x1, y1, z1) = (v.x * d[2], v.y * d[3], v.z * d[4]);
+            let (mut px, mut py, mut pz) = (x1, y1, z1);
+            let (min_r, max_r) = (d[11], d[12]);
+            for _ in 0..d[0] as i32 {
+                px = (px + 1.0).abs() - (px - 1.0).abs() - px;
+                py = (py + 1.0).abs() - (py - 1.0).abs() - py;
+                if d[6] as i32 == 0 {
+                    pz = (pz + 1.0).abs() - (pz - 1.0).abs() - pz;
+                }
+                let rr = (px * px + py * py + pz * pz).sqrt();
+                if rr < min_r {
+                    let f = max_r / min_r;
+                    (px, py, pz) = (px * f, py * f, pz * f);
+                } else if rr < max_r {
+                    let f = max_r / rr;
+                    (px, py, pz) = (px * f, py * f, pz * f);
+                }
+                (px, py, pz) = jmat3_vtimes(&d[13..22], px, py, pz);
+                (px, py, pz) = (px + x1, py + y1, pz + z1);
+                crop_step(v, amount, px * px + py * py + pz * pz, d[1], d[5]);
+            }
+        },
+        prepare: Some(|p, _| {
+            let mut d = crop_prepare(p, 0, Some(5));
+            d[6] = limit_value(ftoi(p[6]), 0, 1) as f64;
+            let len = (p[8] * p[8] + p[9] * p[9] + p[10] * p[10]).sqrt();
+            let (x, y, z) = (p[8] / len, p[9] / len, p[10] / len);
+            let (s, c) = (p[7] * M_PI / 180.0).sin_cos();
+            d.extend([
+                c + (1.0 - c) * x * x,
+                (1.0 - c) * x * y - s * z,
+                (1.0 - c) * x * z + s * y,
+                (1.0 - c) * x * y + s * z,
+                c + (1.0 - c) * y * y,
+                (1.0 - c) * y * z - s * x,
+                (1.0 - c) * x * z - s * y,
+                (1.0 - c) * y * z + s * x,
+                c + (1.0 - c) * z * z,
+            ]);
+            d
+        }),
+        wgsl: concat!(
+            "let p1 = vec3<f32>(v.x * D(2), v.y * D(3), v.z * D(4));
+var p = p1;
+let min_r = D(11);
+let max_r = D(12);
+let n = i32(D(0));
+for (var i = 0; i < n; i++) {
+  p.x = abs(p.x + 1.0) - abs(p.x - 1.0) - p.x;
+  p.y = abs(p.y + 1.0) - abs(p.y - 1.0) - p.y;
+  if (i32(D(6)) == 0) { p.z = abs(p.z + 1.0) - abs(p.z - 1.0) - p.z; }
+  let rr = length(p);
+  if (rr < min_r) { p = p * (max_r / min_r); } else if (rr < max_r) { p = p * (max_r / rr); }
+  p = vec3<f32>(p.x * D(13) + p.y * D(14) + p.z * D(15), p.x * D(16) + p.y * D(17) + p.z * D(18), p.x * D(19) + p.y * D(20) + p.z * D(21));
+  p = p + p1;
+  let r = dot(p, p);
+",
+            crop_step_wgsl!("D(1)", "D(5)"),
+            "}"
+        ),
+    },
+    VarDef {
+        name: "post_axis_symmetry_wf",
+        params: &[
+            ParamDef::int("axis", 0.0, 0.0, 2.0),
+            ParamDef::new("centre_x", 0.25),
+            ParamDef::new("centre_y", 0.5),
+            ParamDef::new("centre_z", 0.5),
+            ParamDef::range("rotation", 30.0, -360.0, 360.0),
+            ParamDef::new("x1colorshift", 0.0),
+            ParamDef::new("y1colorshift", 0.0),
+            ParamDef::new("z1colorshift", 0.0),
+            ParamDef::new("x2colorshift", 0.0),
+            ParamDef::new("y2colorshift", 0.0),
+            ParamDef::new("z2colorshift", 0.0),
+        ],
+        kind: VarKind::Post,
+        is_3d: true,
+        apply: |d, ctx, _a, v, amount| {
+            // d = [axis, centre_x, centre_y, centre_z, rotation, x1, y1, z1, x2, y2, z2 colorshift,
+            //      sin, cos, do_rotate]
+            if amount.abs() <= EPSILON {
+                return;
+            }
+            let (cx, cy, cz) = (d[1], d[2], d[3]);
+            let (sina, cosa, rot) = (d[11], d[12], d[13] != 0.0);
+            let halve = amount / 2.0;
+            match d[0] as i32 {
+                0 => {
+                    let dx = v.x - cx;
+                    if ctx.random() < 0.5 {
+                        let (mut ax, mut ay) = (cx + dx + halve, v.y);
+                        if rot {
+                            let (dx, dy) = (ax - cx, ay - cy);
+                            (ax, ay) = (cx + dx * cosa + dy * sina, cy + dy * cosa - dx * sina);
+                        }
+                        (v.x, v.y) = (ax, ay);
+                        v.color = fmod(v.color + d[5], 1.0);
+                    } else {
+                        let (mut bx, mut by) = (cx - dx - halve, v.y);
+                        if rot {
+                            let (dx, dy) = (bx - cx, by - cy);
+                            (bx, by) = (cx + dx * cosa - dy * sina, cy + dy * cosa + dx * sina);
+                        }
+                        (v.x, v.y) = (bx, by);
+                        v.color = fmod(v.color + d[8], 1.0);
+                    }
+                }
+                1 => {
+                    let dy = v.y - cy;
+                    if ctx.random() < 0.5 {
+                        let (mut ax, mut ay) = (v.x, cy + dy + halve);
+                        if rot {
+                            let (dx, dy) = (ax - cx, ay - cy);
+                            (ax, ay) = (cx + dx * cosa + dy * sina, cy + dy * cosa - dx * sina);
+                        }
+                        (v.x, v.y) = (ax, ay);
+                        v.color = fmod(v.color + d[6], 1.0);
+                    } else {
+                        let (mut bx, mut by) = (v.x, cy - dy - halve);
+                        // Java applies the second color shift only when rotating.
+                        if rot {
+                            let (dx, dy) = (bx - cx, by - cy);
+                            (bx, by) = (cx + dx * cosa - dy * sina, cy + dy * cosa + dx * sina);
+                            v.color = fmod(v.color + d[9], 1.0);
+                        }
+                        (v.x, v.y) = (bx, by);
+                    }
+                }
+                _ => {
+                    // Java rotates around (centre_x, centre_y) in the xz plane.
+                    let dz = v.z - cz;
+                    if ctx.random() < 0.5 {
+                        let (mut ax, mut az) = (v.x, cz + dz + halve);
+                        if rot {
+                            let (dx, dz) = (ax - cx, az - cz);
+                            (ax, az) = (cx + dx * cosa + dz * sina, cy + dz * cosa - dx * sina);
+                        }
+                        (v.x, v.z) = (ax, az);
+                        v.color = fmod(v.color + d[7], 1.0);
+                    } else {
+                        let (mut bx, mut bz) = (v.x, cz - dz - halve);
+                        if rot {
+                            let (dx, dz) = (bx - cx, bz - cz);
+                            (bx, bz) = (cx + dx * cosa - dz * sina, cy + dz * cosa + dx * sina);
+                        }
+                        (v.x, v.z) = (bx, bz);
+                        v.color = fmod(v.color + d[10], 1.0);
+                    }
+                }
+            }
+        },
+        prepare: Some(|p, _| {
+            let mut d = p.to_vec();
+            d[0] = limit_value(ftoi(p[0]), 0, 2) as f64;
+            let a = p[4] * M_2PI / 180.0 / 2.0;
+            d.extend([a.sin(), a.cos(), if a.abs() > EPSILON { 1.0 } else { 0.0 }]);
+            d
+        }),
+        wgsl: "if (abs(AMOUNT) > EPSILON) {
+  let c = vec3<f32>(D(1), D(2), D(3));
+  let sina = D(11);
+  let cosa = D(12);
+  let rot = D(13) != 0.0;
+  let halve = AMOUNT / 2.0;
+  let axis = i32(D(0));
+  let first = rnd() < 0.5;
+  var sgn = -1.0;
+  if (first) { sgn = 1.0; }
+  if (axis == 0) {
+    var p = vec2<f32>(c.x + sgn * (v.x - c.x + halve), v.y);
+    if (rot) {
+      let q = p - c.xy;
+      p = vec2<f32>(c.x + q.x * cosa + sgn * q.y * sina, c.y + q.y * cosa - sgn * q.x * sina);
+    }
+    v.x = p.x;
+    v.y = p.y;
+    v.color = fmod(v.color + select(D(8), D(5), first), 1.0);
+  } else if (axis == 1) {
+    var p = vec2<f32>(v.x, c.y + sgn * (v.y - c.y + halve));
+    if (rot) {
+      let q = p - c.xy;
+      p = vec2<f32>(c.x + q.x * cosa + sgn * q.y * sina, c.y + q.y * cosa - sgn * q.x * sina);
+      if (!first) { v.color = fmod(v.color + D(9), 1.0); }
+    }
+    v.x = p.x;
+    v.y = p.y;
+    if (first) { v.color = fmod(v.color + D(6), 1.0); }
+  } else {
+    var p = vec2<f32>(v.x, c.z + sgn * (v.z - c.z + halve));
+    if (rot) {
+      let q = p - c.xz;
+      p = vec2<f32>(c.x + q.x * cosa + sgn * q.y * sina, c.y + q.y * cosa - sgn * q.x * sina);
+    }
+    v.x = p.x;
+    v.z = p.y;
+    v.color = fmod(v.color + select(D(10), D(7), first), 1.0);
+  }
+}",
+    },
+    VarDef {
+        name: "post_benesi_crop",
+        params: &[
+            ParamDef::int("iterations", 12.0, 0.0, 250.0),
+            ParamDef::new("bailout", 16.0),
+            ParamDef::new("scaleX", 1.0),
+            ParamDef::new("scaleY", 1.0),
+            ParamDef::new("ScaleZ", 1.0),
+            ParamDef::range("color", 1.0, 0.0, 1.0),
+        ],
+        kind: VarKind::Post,
+        is_3d: true,
+        apply: |d, _, _a, v, amount| {
+            // d = [iterations, bailout, scaleX, scaleY, scaleZ, color]
+            let (x1, y1, z1) = (v.x * d[2], v.y * d[3], v.z * d[4]);
+            let (mut x, mut y, mut z) = (x1, y1, z1);
+            for _ in 0..d[0] as i32 {
+                let r1 = y * y + z * z;
+                let nx = if x1 < 0.0 || x < r1.sqrt() { x * x - r1 } else { -x * x + r1 };
+                let r1 = -1.0 / r1.sqrt() * 2.0 * x.abs();
+                let ny = r1 * (y * y - z * z);
+                let nz = r1 * 2.0 * y * z;
+                (x, y, z) = (nx + x1, ny + y1, nz + z1);
+                crop_step(v, amount, (x * x + y * y + z * z).sqrt(), d[1], d[5]);
+            }
+        },
+        prepare: Some(|p, _| crop_prepare(p, 0, Some(5))),
+        wgsl: concat!(
+            "let p1 = vec3<f32>(v.x * D(2), v.y * D(3), v.z * D(4));
+var x = p1.x;
+var y = p1.y;
+var z = p1.z;
+let n = i32(D(0));
+for (var i = 0; i < n; i++) {
+  var r1 = y * y + z * z;
+  var nx = -x * x + r1;
+  if (p1.x < 0.0 || x < sqrt(r1)) { nx = x * x - r1; }
+  r1 = -1.0 / sqrt(r1) * 2.0 * abs(x);
+  let ny = r1 * (y * y - z * z);
+  let nz = r1 * 2.0 * y * z;
+  x = nx + p1.x;
+  y = ny + p1.y;
+  z = nz + p1.z;
+  let r = sqrt(x * x + y * y + z * z);
+",
+            crop_step_wgsl!("D(1)", "D(5)"),
+            "}"
+        ),
+    },
+    VarDef {
+        name: "post_bristorbrot_crop",
+        params: &[
+            ParamDef::int("iterations", 12.0, 0.0, 250.0),
+            ParamDef::new("bailout", 16.0),
+            ParamDef::new("scaleX", 1.0),
+            ParamDef::new("scaleY", 1.0),
+            ParamDef::new("ScaleZ", 1.0),
+            ParamDef::range("color", 1.0, 0.0, 1.0),
+        ],
+        kind: VarKind::Post,
+        is_3d: true,
+        apply: |d, _, _a, v, amount| {
+            // d = [iterations, bailout, scaleX, scaleY, scaleZ, color]
+            let (x1, y1, z1) = (v.x * d[2], v.y * d[3], v.z * d[4]);
+            let (mut x, mut y, mut z) = (x1, y1, z1);
+            for _ in 0..d[0] as i32 {
+                let nx = x * x - y * y - z * z;
+                let ny = y * (2.0 * x - z);
+                let nz = z * (2.0 * x + y);
+                (x, y, z) = (nx + x1, ny + y1, nz + z1);
+                crop_step(v, amount, (x * x + y * y + z * z).sqrt(), d[1], d[5]);
+            }
+        },
+        prepare: Some(|p, _| crop_prepare(p, 0, Some(5))),
+        wgsl: concat!(
+            "let p1 = vec3<f32>(v.x * D(2), v.y * D(3), v.z * D(4));
+var p = p1;
+let n = i32(D(0));
+for (var i = 0; i < n; i++) {
+  p = vec3<f32>(p.x * p.x - p.y * p.y - p.z * p.z, p.y * (2.0 * p.x - p.z), p.z * (2.0 * p.x + p.y)) + p1;
+  let r = length(p);
+",
+            crop_step_wgsl!("D(1)", "D(5)"),
+            "}"
+        ),
+    },
+    VarDef {
+        name: "post_bulbtorus_crop",
+        params: &[
+            ParamDef::new("power1", 9.0),
+            ParamDef::new("power2", 9.0),
+            ParamDef::int("iterations", 12.0, 0.0, 250.0),
+            ParamDef::new("bailout", 16.0),
+            ParamDef::new("scaleX", 1.0),
+            ParamDef::new("scaleY", 1.0),
+            ParamDef::new("ScaleZ", 1.0),
+            ParamDef::range("color", 1.0, 0.0, 1.0),
+        ],
+        kind: VarKind::Post,
+        is_3d: true,
+        apply: |d, _, _a, v, amount| {
+            // d = [power1, power2, iterations, bailout, scaleX, scaleY, scaleZ, color]
+            let (x1, y1, z1) = (v.x * d[4], v.y * d[5], v.z * d[6]);
+            let (mut x, mut y, mut z) = (x1, y1, z1);
+            for _ in 0..d[2] as i32 {
+                let rh = (x * x + y * y).sqrt();
+                let phi = y.atan2(x);
+                let phipow = phi * d[0];
+                let theta = rh.atan2(z);
+                let px = x - phi.cos() * 1.5;
+                let py = y - phi.sin() * 1.5;
+                let rhrad = (px * px + py * py + z * z).sqrt();
+                let rh1 = rhrad.powf(d[1]);
+                let rh2 = rhrad.powf(d[0]);
+                let thetapow = theta * d[1];
+                let st = thetapow.sin() * rh2;
+                (x, y, z) = (st * phipow.cos() + x1, st * phipow.sin() + y1, thetapow.cos() * rh1 + z1);
+                crop_step(v, amount, (x * x + y * y + z * z).sqrt(), d[3], d[7]);
+            }
+        },
+        prepare: Some(|p, _| crop_prepare(p, 2, None)),
+        wgsl: concat!(
+            "let p1 = vec3<f32>(v.x * D(4), v.y * D(5), v.z * D(6));
+var p = p1;
+let n = i32(D(2));
+for (var i = 0; i < n; i++) {
+  let rh = sqrt(p.x * p.x + p.y * p.y);
+  let phi = atan2(p.y, p.x);
+  let phipow = phi * D(0);
+  let theta = atan2(rh, p.z);
+  let px = p.x - cos(phi) * 1.5;
+  let py = p.y - sin(phi) * 1.5;
+  let rhrad = sqrt(px * px + py * py + p.z * p.z);
+  let thetapow = theta * D(1);
+  let st = sin(thetapow) * java_pow(rhrad, D(0));
+  p = vec3<f32>(st * cos(phipow), st * sin(phipow), cos(thetapow) * java_pow(rhrad, D(1))) + p1;
+  let r = length(p);
+",
+            crop_step_wgsl!("D(3)", "D(7)"),
+            "}"
+        ),
+    },
+    VarDef {
+        name: "post_bwraps2",
+        params: &[
+            ParamDef::new("cellsize", 1.0),
+            ParamDef::new("space", 0.0),
+            ParamDef::new("gain", 2.0),
+            ParamDef::new("inner_twist", 0.0),
+            ParamDef::new("outer_twist", 0.0),
+        ],
+        kind: VarKind::Post,
+        is_3d: false,
+        apply: |d, _, _a, v, amount| {
+            // d = [cellsize, space, gain, inner_twist, outer_twist, g2, r2, rfactor]
+            let (vx, vy) = (v.x, v.y);
+            let cs = d[0];
+            if cs.abs() < SMALL_EPSILON {
+                v.x = amount * vx;
+                v.y = amount * vy;
+                return;
+            }
+            let cx = ((vx / cs).floor() + 0.5) * cs;
+            let cy = ((vy / cs).floor() + 0.5) * cs;
+            let (mut lx, mut ly) = (vx - cx, vy - cy);
+            if lx * lx + ly * ly > d[6] {
+                v.x = amount * vx;
+                v.y = amount * vy;
+                return;
+            }
+            lx *= d[5];
+            ly *= d[5];
+            let r = d[7] / ((lx * lx + ly * ly) / 4.0 + 1.0);
+            lx *= r;
+            ly *= r;
+            let r = (lx * lx + ly * ly) / d[6];
+            let (s, c) = (d[3] * (1.0 - r) + d[4] * r).sin_cos();
+            v.x = amount * (cx + c * lx + s * ly);
+            v.y = amount * (cy - s * lx + c * ly);
+        },
+        prepare: Some(|p, _| {
+            let radius = 0.5 * (p[0] / (1.0 + p[1] * p[1]));
+            let g2 = p[2] * p[2] / p[0] + 1.0e-6;
+            let mut max_bubble = g2 * radius;
+            if max_bubble > 2.0 {
+                max_bubble = 1.0;
+            } else {
+                max_bubble *= 1.0 / ((max_bubble * max_bubble) / 4.0 + 1.0);
+            }
+            let mut d = p.to_vec();
+            d.extend([g2, radius * radius, radius / max_bubble]);
+            d
+        }),
+        wgsl: "let cs = D(0);
+var l = vec2<f32>(0.0);
+var cc = vec2<f32>(v.x, v.y);
+if (abs(cs) >= EPS) {
+  cc = (floor(vec2<f32>(v.x, v.y) / cs) + 0.5) * cs;
+  l = vec2<f32>(v.x, v.y) - cc;
+  if (dot(l, l) > D(6)) {
+    cc = vec2<f32>(v.x, v.y);
+    l = vec2<f32>(0.0);
+  } else {
+    l *= D(5);
+    l *= D(7) / (dot(l, l) / 4.0 + 1.0);
+    let r = dot(l, l) / D(6);
+    let theta = D(3) * (1.0 - r) + D(4) * r;
+    let s = sin(theta);
+    let c = cos(theta);
+    l = vec2<f32>(c * l.x + s * l.y, -s * l.x + c * l.y);
+  }
+}
+v.x = AMOUNT * (cc.x + l.x);
+v.y = AMOUNT * (cc.y + l.y);",
+    },
+    VarDef {
+        name: "post_circlecrop",
+        params: &[
+            ParamDef::new("radius", 1.0),
+            ParamDef::new("x", 0.0),
+            ParamDef::new("y", 0.0),
+            ParamDef::range("scatter_area", 0.0, -1.0, 1.0),
+            ParamDef::int("zero", 1.0, 0.0, 1.0),
+        ],
+        kind: VarKind::Post,
+        is_3d: false,
+        apply: |d, ctx, _a, v, amount| {
+            // d = [radius, x, y, scatter_area, zero, cA]
+            let (x0, y0, cr) = (d[1], d[2], d[0]);
+            v.x -= x0;
+            v.y -= y0;
+            let rad = (v.x * v.x + v.y * v.y).sqrt();
+            let ang = v.y.atan2(v.x);
+            let rdc = cr + ctx.random() * 0.5 * d[5];
+            let esc = rad > cr;
+            let cr0 = d[4] as i32 == 1;
+            let (s, c) = ang.sin_cos();
+            v.do_hide = false;
+            if cr0 && esc {
+                v.x = 0.0;
+                v.y = 0.0;
+                v.do_hide = true;
+            } else if !cr0 && esc {
+                v.x = amount * rdc * c + x0;
+                v.y = amount * rdc * s + y0;
+            } else {
+                v.x = amount * v.x + x0;
+                v.y = amount * v.y + y0;
+            }
+        },
+        prepare: Some(|p, _| {
+            let mut d = p.to_vec();
+            d[4] = ftoi(p[4]) as f64;
+            d.push(java_max(-1.0, java_min(p[3], 1.0)));
+            d
+        }),
+        wgsl: "let x0 = D(1);
+let y0 = D(2);
+let cr = D(0);
+let px = v.x - x0;
+let py = v.y - y0;
+let rad = sqrt(px * px + py * py);
+let ang = atan2(py, px);
+let rdc = cr + rnd() * 0.5 * D(5);
+let esc = rad > cr;
+let cr0 = i32(D(4)) == 1;
+v.hide = 0.0;
+if (cr0 && esc) {
+  v.x = 0.0;
+  v.y = 0.0;
+  v.hide = 1.0;
+} else if (!cr0 && esc) {
+  v.x = AMOUNT * rdc * cos(ang) + x0;
+  v.y = AMOUNT * rdc * sin(ang) + y0;
+} else {
+  v.x = AMOUNT * px + x0;
+  v.y = AMOUNT * py + y0;
+}",
+    },
+    VarDef {
+        name: "post_coastalbrot_crop",
+        params: &[
+            ParamDef::int("iterations", 12.0, 0.0, 250.0),
+            ParamDef::new("bailout", 16.0),
+            ParamDef::new("scaleX", 1.0),
+            ParamDef::new("scaleY", 1.0),
+            ParamDef::new("ScaleZ", 1.0),
+            ParamDef::range("color", 1.0, 0.0, 1.0),
+            ParamDef::range("alpha", 0.0, -180.0, 180.0),
+            ParamDef::range("beta", 0.0, -180.0, 180.0),
+            ParamDef::range("gamma", 0.0, -180.0, 180.0),
+        ],
+        kind: VarKind::Post,
+        is_3d: true,
+        apply: |d, _, _a, v, amount| {
+            // d = [iterations, bailout, scaleX, scaleY, scaleZ, color, alpha, beta, gamma, rot (mat3, 9)]
+            let (x1, y1, z1) = (v.x * d[2], v.y * d[3], v.z * d[4]);
+            let (mut x, mut y, mut z) = (x1, y1, z1);
+            let mut r = (x * x + y * y + z * z).sqrt();
+            let s3 = |t: f64| (M_PI / 3.0 + t * M_PI).sin().sin().sin();
+            for _ in 0..d[0] as i32 {
+                let temp = r.powf(7.7) * r;
+                x = s3(x) + x1;
+                y = s3(y) + y1;
+                z = s3(z) * temp + z1;
+                let (zx, zy, zz) = jmat3_vtimes(&d[9..18], x, y, z);
+                r = (zx * zx + zy * zy + zz * zz).sqrt();
+                crop_step(v, amount, r, d[1], d[5]);
+            }
+        },
+        prepare: Some(|p, _| {
+            let mut d = crop_prepare(p, 0, Some(5));
+            d.extend(jmat3_euler(p[6], p[7], p[8]));
+            d
+        }),
+        wgsl: concat!(
+            "let p1 = vec3<f32>(v.x * D(2), v.y * D(3), v.z * D(4));
+var p = p1;
+var r = length(p);
+let n = i32(D(0));
+for (var i = 0; i < n; i++) {
+  let temp = pow(r, 7.7) * r;
+  p = sin(sin(sin(PI / 3.0 + p * PI)));
+  p = vec3<f32>(p.x, p.y, p.z * temp) + p1;
+  let q = vec3<f32>(p.x * D(9) + p.y * D(10) + p.z * D(11), p.x * D(12) + p.y * D(13) + p.z * D(14), p.x * D(15) + p.y * D(16) + p.z * D(17));
+  r = length(q);
+",
+            crop_step_wgsl!("D(1)", "D(5)"),
+            "}"
+        ),
+    },
+    VarDef {
+        name: "post_colorscale_wf",
+        params: &[
+            ParamDef::new("scale_x", 0.0),
+            ParamDef::new("scale_y", 0.0),
+            ParamDef::new("scale_z", 0.5),
+            ParamDef::new("offset_z", 0.0),
+            ParamDef::new("reset_z", 0.0),
+            ParamDef::new("sides", 0.0),
+        ],
+        kind: VarKind::Post,
+        is_3d: true,
+        apply: |d, ctx, _a, v, amount| {
+            v.x += amount * d[0] * v.x;
+            v.y += amount * d[1] * v.y;
+            let dz = v.color * d[2] * amount + d[3];
+            if d[4] > 0.0 {
+                v.z = dz;
+            } else if d[5] > 0.0 {
+                v.z += dz * ctx.random();
+            } else {
+                v.z += dz;
+            }
+        },
+        prepare: None,
+        wgsl: "v.x += AMOUNT * D(0) * v.x;
+v.y += AMOUNT * D(1) * v.y;
+let dz = v.color * D(2) * AMOUNT + D(3);
+if (D(4) > 0.0) {
+  v.z = dz;
+} else if (D(5) > 0.0) {
+  v.z += dz * rnd();
+} else {
+  v.z += dz;
 }",
     },
 ];
