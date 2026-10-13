@@ -25,6 +25,7 @@ use super::{Ctx, ParamDef, Pt, VarDef, VarKind, simple};
 use crate::math::*;
 #[allow(unused_imports)]
 use crate::model::Affine;
+use super::glsl::{Vec2, Vec3, dc_output, vec2};
 
 /// `Cubic_3DFunc` / `CubicLattice3DFunc` node: sign of the lattice offset per axis
 /// (x flips with bit 2, y with bit 0, z with bit 1).
@@ -143,6 +144,165 @@ fn chaos_cube_valid(mode: i32, invert: bool, ix: i32, iy: i32, iz: i32) -> bool 
         _ => 3 - zeros == 2,
     };
     v != invert
+}
+
+/// `Cell3DFunc.rotatePoint3D` (degrees; z, then y, then x)
+fn cell3d_rotate(p: &mut [f64; 3], ax: f64, ay: f64, az: f64) {
+    let [mut x, mut y, mut z] = *p;
+    if az.abs() > 1e-9 {
+        let (s, c) = az.to_radians().sin_cos();
+        (x, y) = (x * c - y * s, x * s + y * c);
+    }
+    if ay.abs() > 1e-9 {
+        let (s, c) = ay.to_radians().sin_cos();
+        (x, z) = (x * c + z * s, -x * s + z * c);
+    }
+    if ax.abs() > 1e-9 {
+        let (s, c) = ax.to_radians().sin_cos();
+        (y, z) = (y * c - z * s, y * s + z * c);
+    }
+    *p = [x, y, z];
+}
+
+fn cell3d_apply(d: &[f64], ctx: &mut Ctx, a: &Pt, v: &mut Pt, amount: f64) {
+    let mut p = [a.x, a.y, a.z];
+    if d[2].abs() > 1e-9 || d[3].abs() > 1e-9 || d[4].abs() > 1e-9 {
+        cell3d_rotate(&mut p, d[2], d[3], d[4]);
+    }
+    let cs = if d[1].abs() < 1e-9 { if d[0].abs() < 1e-9 { 1.0 } else { d[0] } } else { d[0] / d[1] };
+    if cs.abs() < 1e-9 {
+        v.x += amount * p[0];
+        v.y += amount * p[1];
+        v.z += amount * p[2];
+        return;
+    }
+    let inv = 1.0 / cs;
+    let raw = p.map(|c| (c * inv).floor());
+    let proc = [0, 1, 2].map(|k| {
+        let pw = d[5 + k];
+        if (pw - 1.0).abs() > 1e-9 { raw[k].signum() * raw[k].abs().powf(pw) * if raw[k] == 0.0 { 0.0 } else { 1.0 } } else { raw[k] }
+    });
+    let mut dd = [0, 1, 2].map(|k| p[k] - raw[k] * cs);
+    if d[8] as i32 == 1 {
+        dd = dd.map(|c| cs / 2.0 - (c - cs / 2.0).abs());
+    }
+    if d[62] as i32 == 1 {
+        // (color_mode is limited to 0..1 in JWildfire, so only the cell index mode exists)
+        let c = proc[0] * d[63] + proc[1] * d[64] + proc[2] * d[65] + d[66];
+        v.color = c.abs() - c.abs().floor();
+    }
+    for k in 0..3 {
+        let pw = d[12 + k];
+        if (pw - 1.0).abs() > 1e-9 {
+            dd[k] = if dd[k].abs() < 1e-9 { 0.0 } else { dd[k].signum() * (dd[k] * inv).abs().powf(pw) * cs };
+        }
+        dd[k] *= d[9 + k];
+    }
+    if d[15].abs() > 1e-9 || d[16].abs() > 1e-9 || d[17].abs() > 1e-9 {
+        let h = cs / 2.0;
+        let mut q = dd.map(|c| c - h);
+        cell3d_rotate(&mut q, d[15], d[16], d[17]);
+        dd = q.map(|c| c + h);
+    }
+    let mut alt = false;
+    if d[35] as i32 == 1 {
+        let odd = (raw[0] as i64 + raw[1] as i64) % 2 != 0;
+        alt = odd == (d[36] as i32 == 0);
+    }
+    let g = |k: usize| d[if alt { 37 } else { 18 } + k];
+    let (px, py) = (proc[0], proc[1]);
+    let (mx, my) = if py >= 0.0 {
+        if px >= 0.0 { (g(0) * px + g(12), g(1) * py + g(13)) } else { (-(g(2) * px + g(4)), g(3) * py) }
+    } else if px >= 0.0 {
+        (g(5) * px + g(14), -(g(6) * py + g(7)))
+    } else {
+        (-(g(8) * px + g(10)), -(g(9) * py + g(11)))
+    };
+    let mz = proc[2] * g(15) + g(16);
+    let (fx, fy, fz) = (dd[0] + mx * cs, dd[1] + my * cs, dd[2] + mz * cs);
+    v.x += amount * fx;
+    v.y += amount * if d[57] as i32 == 1 { -fy } else { fy };
+    v.z += amount * if d[58] as i32 == 1 { -fz } else { fz };
+    if d[54] as i32 > 0 && ctx.random() < 0.5 {
+        v.x = -v.x;
+    }
+    if d[55] as i32 > 0 && ctx.random() < 0.5 {
+        v.y = -v.y;
+    }
+    if d[56] as i32 > 0 && ctx.random() < 0.5 {
+        v.z = -v.z;
+    }
+    v.x += d[59];
+    v.y += d[60];
+    v.z += d[61];
+}
+
+/// `DC_GenericMandelbrootFunc.gen_mandelbroot`
+fn gmandel_color(d: &[f64], p: Vec2) -> Vec3 {
+    // d = [randomize, colormode, iters, exp_re, exp_im, n, m, burnigship, conjugate, julia, jre,
+    //      jim, panX, panY, zoom, ...]
+    let (iters, dexp, k, n, m) = (d[2] as i32, d[3], d[4], d[5], d[6]);
+    let (bship, conj, julia) = (d[7] as i32 == 1, d[8] as i32 == 1, d[9] as i32 == 1);
+    let (mut ii, mut r) = (0.0f64, 0.0f64);
+    let mut z = p;
+    for i in 0..iters {
+        if bship {
+            z = vec2(z.x.abs(), z.y.abs());
+        }
+        if conj {
+            z.y = -z.y;
+        }
+        let q1 = z.y.atan2(z.x);
+        r = z.x * z.x + z.y * z.y;
+        let q2 = q1 * dexp + (k / 2.0) * (r + m).ln() + 2.0 * M_PI * n;
+        let q3 = r.powf(dexp / 2.0) / (k * q1).exp();
+        let base = if julia { vec2(d[10], d[11]) } else { p };
+        z = vec2(q3 * q2.cos() + base.x, q3 * q2.sin() + base.y);
+        if m == 0.0 && !julia && i == 0 {
+            r = 0.0;
+        }
+        if r > iters as f64 {
+            ii = i as f64;
+            break;
+        }
+    }
+    let q = if dexp == 0.0 { ii * r.powf(0.5) * ii.powf(0.75) / 255.0 } else { ii * r.powf(dexp.abs() / dexp * 0.5) * ii.powf(0.75) / 255.0 };
+    let jround = |x: f64| (x + 0.5).floor();
+    let (mut rrr, mut ggg, mut bbb) = (0.0, 0.0, 0.0);
+    match d[1] as i32 {
+        0 => {
+            let s = 0.125662 * ii;
+            Vec3::new((s + 0.9).cos() * 0.4 + 0.6, (s + 0.3).cos() * 0.4 + 0.6, (s + 0.2).cos() * 0.4 + 0.6)
+        }
+        1 => {
+            let ss = jround((1.12f64.powf(ii) - 1.0) / (1.12 - 1.0));
+            rrr = jround(ss / 256.0 / 256.0);
+            ggg = jround((ss - rrr * 256.0 * 256.0) / 256.0);
+            bbb = jround(ss - rrr * 256.0 * 256.0 - ggg * 256.0);
+            let _ = (ggg, bbb);
+            let hue = (255.0 * ii / iters as f64).floor();
+            let value = if ii <= iters as f64 { 255.0 } else { 0.0 };
+            // hsv(h, s = 1, v)
+            let (h, vv) = (hue / 255.0, value / 255.0);
+            let c = |o: f64| ((((o + h) / 3.0) - ((o + h) / 3.0).floor()) * 6.0 - 3.0).abs() - 1.0;
+            Vec3::new(c(3.0).clamp(0.0, 1.0) * vv, c(2.0).clamp(0.0, 1.0) * vv, c(1.0).clamp(0.0, 1.0) * vv)
+        }
+        2 => Vec3::new((rrr * q + z.x * z.x * ii / 255.0) / 255.0, (ggg * q - z.y * z.y * ii / 255.0) / 255.0, (bbb * q - ii * ii * ii / 255.0) / 255.0),
+        3 => Vec3::new(
+            (rrr * q + (z.x * z.x * ii).powf(0.5) / 255.0) / 255.0,
+            (ggg * q + (z.y * z.y * ii).powf(0.5) / 255.0) / 255.0,
+            bbb * q + (ii * ii * ii).powf(3.0) / 255.0,
+        ),
+        4 => {
+            let t = r * ii / iters as f64;
+            Vec3::new(ii * t.powf(0.45) / 255.0, ii * t.powf(0.35) / 255.0, ii * t.powf(0.25) / 255.0)
+        }
+        _ => {
+            let f = (1e20f64).min(z.x * z.x + z.y * z.y);
+            let f = 1.0 + f.log10() / 2.0f64.log10() / 16.0;
+            Vec3::new(f, f * f, f * f * f)
+        }
+    }
 }
 
 pub static DEFS: &[VarDef] = &[
@@ -602,5 +762,292 @@ if (cm > 0) {
   col = fmod(fmod(col, 1.0) + 1.0, 1.0);
   v.color += (col - v.color) * AMOUNT;
 }",
+    },
+    VarDef {
+        name: "cell3D",
+        params: &[
+            ParamDef::new("size", 0.6),
+            ParamDef::new("a", 1.0),
+            ParamDef::new("grid_rot_x", 0.0),
+            ParamDef::new("grid_rot_y", 0.0),
+            ParamDef::new("grid_rot_z", 0.0),
+            ParamDef::new("cell_idx_power_x", 1.0),
+            ParamDef::new("cell_idx_power_y", 1.0),
+            ParamDef::new("cell_idx_power_z", 1.0),
+            ParamDef::int("dxdydz_mode", 0.0, 0.0, 1.0),
+            ParamDef::new("cell_scale_x", 1.0),
+            ParamDef::new("cell_scale_y", 1.0),
+            ParamDef::new("cell_scale_z", 1.0),
+            ParamDef::new("cell_power_x", 1.0),
+            ParamDef::new("cell_power_y", 1.0),
+            ParamDef::new("cell_power_z", 1.0),
+            ParamDef::new("cell_rot_x", 0.0),
+            ParamDef::new("cell_rot_y", 0.0),
+            ParamDef::new("cell_rot_z", 0.0),
+            ParamDef::new("space_xa", 2.0),
+            ParamDef::new("space_ya", 2.0),
+            ParamDef::new("space_xb", 2.0),
+            ParamDef::new("space_yb", 2.0),
+            ParamDef::new("move_xa", 1.0),
+            ParamDef::new("space_xc", 2.0),
+            ParamDef::new("space_yc", 2.0),
+            ParamDef::new("move_ya", 1.0),
+            ParamDef::new("space_xd", 2.0),
+            ParamDef::new("space_yd", 2.0),
+            ParamDef::new("move_xb", 1.0),
+            ParamDef::new("move_yb", 1.0),
+            ParamDef::new("move_tr_x", 0.0),
+            ParamDef::new("move_tr_y", 0.0),
+            ParamDef::new("move_br_x", 0.0),
+            ParamDef::new("space_z", 1.0),
+            ParamDef::new("move_z", 0.0),
+            ParamDef::int("checker_mode", 0.0, 0.0, 1.0),
+            ParamDef::int("checker_invert", 0.0, 0.0, 1.0),
+            ParamDef::new("space_xa2", 2.0),
+            ParamDef::new("space_ya2", 2.0),
+            ParamDef::new("space_xb2", 2.0),
+            ParamDef::new("space_yb2", 2.0),
+            ParamDef::new("move_xa2", 1.0),
+            ParamDef::new("space_xc2", 2.0),
+            ParamDef::new("space_yc2", 2.0),
+            ParamDef::new("move_ya2", 1.0),
+            ParamDef::new("space_xd2", 2.0),
+            ParamDef::new("space_yd2", 2.0),
+            ParamDef::new("move_xb2", 1.0),
+            ParamDef::new("move_yb2", 1.0),
+            ParamDef::new("move_tr_x2", 0.0),
+            ParamDef::new("move_tr_y2", 0.0),
+            ParamDef::new("move_br_x2", 0.0),
+            ParamDef::new("space_z2", 1.0),
+            ParamDef::new("move_z2", 0.0),
+            ParamDef::int("mirror_x", 0.0, 0.0, 1.0),
+            ParamDef::int("mirror_y", 0.0, 0.0, 1.0),
+            ParamDef::int("mirror_z", 0.0, 0.0, 1.0),
+            ParamDef::int("invert_y", 1.0, 0.0, 1.0),
+            ParamDef::int("invert_z", 0.0, 0.0, 1.0),
+            ParamDef::new("offset_x", 0.0),
+            ParamDef::new("offset_y", 0.0),
+            ParamDef::new("offset_z", 0.0),
+            ParamDef::int("color_mode", 0.0, 0.0, 1.0),
+            ParamDef::new("cidx_scale_x", 0.05),
+            ParamDef::new("cidx_scale_y", 0.05),
+            ParamDef::new("cidx_scale_z", 0.05),
+            ParamDef::new("cidx_offset", 0.0),
+            ParamDef::new("cdist_scale", 1.0),
+            ParamDef::new("color_q1", 0.0),
+            ParamDef::new("color_q2", 0.25),
+            ParamDef::new("color_q3", 0.5),
+            ParamDef::new("color_q4", 0.75),
+            ParamDef::int("color_use_z_sign", 0.0, 0.0, 1.0),
+            ParamDef::new("color_z_neg_offset", 0.1),
+            ParamDef::new("cz_scale", 0.05),
+            ParamDef::new("cz_offset", 0.0)
+        ],
+        kind: VarKind::Normal,
+        is_3d: true,
+        apply: |d, ctx, a, v, amount| cell3d_apply(d, ctx, a, v, amount),
+        prepare: Some(|p, _| {
+            let mut d = p.to_vec();
+            for i in [8, 35, 36, 54, 55, 56, 57, 58, 62, 72] {
+                d[i] = ftoi(p[i]).clamp(0, 1) as f64;
+            }
+            for i in 68..72 {
+                d[i] = p[i].abs() - p[i].abs().floor();
+            }
+            d
+        }),
+        wgsl: "fn cell3D_rot(p: vec3<f32>, ax: f32, ay: f32, az: f32) -> vec3<f32> {
+  var q = p;
+  if (abs(az) > 1e-9) { let s = sin(radians(az)); let c = cos(radians(az)); q = vec3<f32>(q.x * c - q.y * s, q.x * s + q.y * c, q.z); }
+  if (abs(ay) > 1e-9) { let s = sin(radians(ay)); let c = cos(radians(ay)); q = vec3<f32>(q.x * c + q.z * s, q.y, -q.x * s + q.z * c); }
+  if (abs(ax) > 1e-9) { let s = sin(radians(ax)); let c = cos(radians(ax)); q = vec3<f32>(q.x, q.y * c - q.z * s, q.y * s + q.z * c); }
+  return q;
+}
+fn cell3D_pow(x: f32, pw: f32) -> f32 {
+  if (abs(pw - 1.0) > 1e-9) { if (x == 0.0) { return 0.0; } return sign(x) * pow(abs(x), pw); }
+  return x;
+}
+@body
+var p = vec3<f32>(a.x, a.y, a.z);
+if (abs(D(2)) > 1e-9 || abs(D(3)) > 1e-9 || abs(D(4)) > 1e-9) { p = cell3D_rot(p, D(2), D(3), D(4)); }
+var cs = D(0) / D(1);
+if (abs(D(1)) < 1e-9) { cs = select(D(0), 1.0, abs(D(0)) < 1e-9); }
+if (abs(cs) < 1e-9) {
+  v.x += AMOUNT * p.x; v.y += AMOUNT * p.y; v.z += AMOUNT * p.z;
+} else {
+  let inv = 1.0 / cs;
+  let raw = floor(p * inv);
+  let pr = vec3<f32>(cell3D_pow(raw.x, D(5)), cell3D_pow(raw.y, D(6)), cell3D_pow(raw.z, D(7)));
+  var dd = p - raw * cs;
+  if (i32(D(8)) == 1) { dd = cs / 2.0 - abs(dd - cs / 2.0); }
+  if (i32(D(62)) == 1) {
+    let c = abs(pr.x * D(63) + pr.y * D(64) + pr.z * D(65) + D(66));
+    v.color = c - floor(c);
+  }
+  let pw = vec3<f32>(D(12), D(13), D(14));
+  for (var k = 0; k < 3; k++) {
+    if (abs(pw[k] - 1.0) > 1e-9) {
+      if (abs(dd[k]) < 1e-9) { dd[k] = 0.0; } else { dd[k] = sign(dd[k]) * pow(abs(dd[k] * inv), pw[k]) * cs; }
+    }
+  }
+  dd *= vec3<f32>(D(9), D(10), D(11));
+  if (abs(D(15)) > 1e-9 || abs(D(16)) > 1e-9 || abs(D(17)) > 1e-9) { dd = cell3D_rot(dd - cs / 2.0, D(15), D(16), D(17)) + cs / 2.0; }
+  var g = base + 18u;
+  if (i32(D(35)) == 1) {
+    let odd = (i32(raw.x) + i32(raw.y)) % 2 != 0;
+    if (odd == (i32(D(36)) == 0)) { g = base + 37u; }
+  }
+  var m = vec2<f32>(0.0);
+  if (pr.y >= 0.0) {
+    if (pr.x >= 0.0) { m = vec2<f32>(prm[g] * pr.x + prm[g + 12u], prm[g + 1u] * pr.y + prm[g + 13u]); }
+    else { m = vec2<f32>(-(prm[g + 2u] * pr.x + prm[g + 4u]), prm[g + 3u] * pr.y); }
+  } else {
+    if (pr.x >= 0.0) { m = vec2<f32>(prm[g + 5u] * pr.x + prm[g + 14u], -(prm[g + 6u] * pr.y + prm[g + 7u])); }
+    else { m = vec2<f32>(-(prm[g + 8u] * pr.x + prm[g + 10u]), -(prm[g + 9u] * pr.y + prm[g + 11u])); }
+  }
+  let mz = pr.z * prm[g + 15u] + prm[g + 16u];
+  let f = vec3<f32>(dd.x + m.x * cs, dd.y + m.y * cs, dd.z + mz * cs);
+  v.x += AMOUNT * f.x;
+  v.y += AMOUNT * select(f.y, -f.y, i32(D(57)) == 1);
+  v.z += AMOUNT * select(f.z, -f.z, i32(D(58)) == 1);
+  if (i32(D(54)) > 0 && rnd() < 0.5) { v.x = -v.x; }
+  if (i32(D(55)) > 0 && rnd() < 0.5) { v.y = -v.y; }
+  if (i32(D(56)) > 0 && rnd() < 0.5) { v.z = -v.z; }
+  v.x += D(59); v.y += D(60); v.z += D(61);
+}",
+    },
+    VarDef {
+        name: "dc_cylinder",
+        params: &[
+            ParamDef::new("offset", 0.0),
+            ParamDef::new("angle", 0.0),
+            ParamDef::new("scale", 0.5),
+            ParamDef::new("x", 0.125),
+            ParamDef::new("y", 0.125),
+            ParamDef::new("blur", 1.0),
+        ],
+        kind: VarKind::Normal,
+        is_3d: true,
+        apply: |d, ctx, a, v, amount| {
+            // d = [offset, angle, scale, x, y, blur, 1 / scale, cos(angle), sin(angle)]
+            let (sr, cr) = (ctx.random() * M_2PI).sin_cos();
+            // JWildfire sums a sliding window of four randoms (one new per call); four fresh
+            // ones give the same distribution per sample
+            let rr = d[5] * (ctx.random() + ctx.random() + ctx.random() + ctx.random() - 2.0);
+            v.x += amount * (a.x + rr * sr).sin() * d[3];
+            v.y += rr + a.y * d[4];
+            v.z += amount * (a.x + rr * cr).cos();
+            v.color = (0.5 * (d[6] * (d[7] * v.x + d[8] * v.y + d[0]) + 1.0)).abs() % 1.0;
+        },
+        prepare: Some(|p, _| {
+            let mut d = p.to_vec();
+            d.extend([1.0 / if p[2] == 0.0 { 10e-6 } else { p[2] }, p[1].cos(), p[1].sin()]);
+            d
+        }),
+        wgsl: "let ang = rnd() * TWO_PI;
+let rr = D(5) * (rnd() + rnd() + rnd() + rnd() - 2.0);
+v.x += AMOUNT * sin(a.x + rr * sin(ang)) * D(3);
+v.y += rr + a.y * D(4);
+v.z += AMOUNT * cos(a.x + rr * cos(ang));
+v.color = fmod(abs(0.5 * (D(6) * (D(7) * v.x + D(8) * v.y + D(0)) + 1.0)), 1.0);",
+    },
+    VarDef {
+        name: "dc_gmandelbroot",
+        params: &[
+            ParamDef::int("randomize", 10000.0, 0.0, 10000000.0),
+            ParamDef::int("colormode", 0.0, 0.0, 5.0),
+            ParamDef::int("iters", 128.0, 1.0, 255.0),
+            ParamDef::new("exp_re", 2.0),
+            ParamDef::new("exp_im", 0.0),
+            ParamDef::new("n", 0.0),
+            ParamDef::new("m", 0.0),
+            ParamDef::int("burnigship", 0.0, 0.0, 1.0),
+            ParamDef::int("conjugate", 0.0, 0.0, 1.0),
+            ParamDef::int("julia", 0.0, 0.0, 1.0),
+            ParamDef::new("jre", 0.0),
+            ParamDef::new("jim", 0.0),
+            ParamDef::range("panX", 0.5, -2.0, 2.0),
+            ParamDef::range("panY", 0.0, -2.0, 2.0),
+            ParamDef::range("zoom", 4.0, 0.0, 100.0),
+            ParamDef::int("ColorOnly", 0.0, 0.0, 1.0),
+            ParamDef::int("Gradient", 0.0, 0.0, 2.0),
+            ParamDef::range("scale_z", 0.0, -2.0, 2.0),
+            ParamDef::range("offset_z", 0.0, -2.0, 2.0),
+            ParamDef::int("reset_z", 1.0, 0.0, 1.0),
+        ],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let uv = if d[15] as i32 == 1 { vec2(a.x, a.y) } else { vec2(2.0 * ctx.random() - 1.0, 2.0 * ctx.random() - 1.0) };
+            let color = gmandel_color(d, vec2(uv.x * d[14] - d[12], uv.y * d[14] - d[13]));
+            v.do_hide = color.x == 0.0 && color.y == 0.0 && color.z == 0.0;
+            dc_output(ctx, v, amount, uv, color, d[16] as i32, d[17], d[18], d[19] as i32);
+        },
+        prepare: Some(|p, _| {
+            let mut d = p.to_vec();
+            let lim = |v: f64, lo: f64, hi: f64| limit_value(v, lo, hi);
+            d[0] = lim(p[0], 0.0, 10000000.0).trunc();
+            d[1] = lim(p[1], 0.0, 5.0).trunc();
+            d[2] = lim(p[2], 1.0, 255.0).trunc();
+            for i in 7..10 {
+                d[i] = lim(p[i], 0.0, 1.0).trunc();
+            }
+            d[12] = lim(p[12], -2.0, 2.0);
+            d[13] = lim(p[13], -2.0, 2.0);
+            d[14] = lim(p[14], 0.0, 100.0);
+            d
+        }),
+        wgsl: "fn dc_gmandelbroot_color(base: u32, p: vec2<f32>) -> vec3<f32> {
+  let iters = i32(prm[base + 2u]);
+  let dexp = prm[base + 3u];
+  let k = prm[base + 4u];
+  let n = prm[base + 5u];
+  let m = prm[base + 6u];
+  let bship = i32(prm[base + 7u]) == 1;
+  let conj = i32(prm[base + 8u]) == 1;
+  let julia = i32(prm[base + 9u]) == 1;
+  var ii = 0.0;
+  var r = 0.0;
+  var z = p;
+  for (var i = 0; i < iters; i++) {
+    if (bship) { z = abs(z); }
+    if (conj) { z.y = -z.y; }
+    let q1 = atan2(z.y, z.x);
+    r = z.x * z.x + z.y * z.y;
+    let q2 = q1 * dexp + (k / 2.0) * log(r + m) + TWO_PI * n;
+    let q3 = java_pow(r, dexp / 2.0) / exp(k * q1);
+    var b = p;
+    if (julia) { b = vec2<f32>(prm[base + 10u], prm[base + 11u]); }
+    z = vec2<f32>(q3 * cos(q2), q3 * sin(q2)) + b;
+    if (m == 0.0 && !julia && i == 0) { r = 0.0; }
+    if (r > f32(iters)) { ii = f32(i); break; }
+  }
+  var q = ii * java_pow(r, 0.5) * java_pow(ii, 0.75) / 255.0;
+  if (dexp != 0.0) { q = ii * java_pow(r, abs(dexp) / dexp * 0.5) * java_pow(ii, 0.75) / 255.0; }
+  let mode = i32(prm[base + 1u]);
+  if (mode == 0) {
+    let s = 0.125662 * ii;
+    return vec3<f32>(cos(s + 0.9), cos(s + 0.3), cos(s + 0.2)) * 0.4 + 0.6;
+  } else if (mode == 1) {
+    let h = floor(255.0 * ii / f32(iters)) / 255.0;
+    let vv = select(0.0, 1.0, ii <= f32(iters));
+    return clamp(abs(fract((vec3<f32>(3.0, 2.0, 1.0) + h) / 3.0) * 6.0 - 3.0) - 1.0, vec3<f32>(0.0), vec3<f32>(1.0)) * vv;
+  } else if (mode == 2) {
+    return vec3<f32>((z.x * z.x * ii / 255.0) / 255.0, (-z.y * z.y * ii / 255.0) / 255.0, (-ii * ii * ii / 255.0) / 255.0);
+  } else if (mode == 3) {
+    return vec3<f32>((sqrt(z.x * z.x * ii) / 255.0) / 255.0, (sqrt(z.y * z.y * ii) / 255.0) / 255.0, java_pow(ii * ii * ii, 3.0) / 255.0);
+  } else if (mode == 4) {
+    let t = r * ii / f32(iters);
+    return vec3<f32>(ii * java_pow(t, 0.45) / 255.0, ii * java_pow(t, 0.35) / 255.0, ii * java_pow(t, 0.25) / 255.0);
+  }
+  let f = 1.0 + log2(min(1e20, dot(z, z))) / 16.0;
+  return vec3<f32>(f, f * f, f * f * f);
+}
+@body
+var uv = vec2<f32>(2.0 * rnd() - 1.0, 2.0 * rnd() - 1.0);
+if (i32(D(15)) == 1) { uv = vec2<f32>(a.x, a.y); }
+let color = dc_gmandelbroot_color(base, uv * D(14) - vec2<f32>(D(12), D(13)));
+if (color.x == 0.0 && color.y == 0.0 && color.z == 0.0) { v.hide = 1.0; } else { v.hide = 0.0; }
+dc_output(&v, AMOUNT, uv, color, i32(D(16)), D(17), D(18), i32(D(19)));",
     },
 ];
