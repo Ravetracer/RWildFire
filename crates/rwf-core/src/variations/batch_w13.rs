@@ -4074,8 +4074,269 @@ if (pwy >= 0.0 && pwy < 1e-4) {
 }
 if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
     },
+    VarDef {
+        name: "waves2_radial",
+        params: &[
+            ParamDef::new("w2r_scalex", 0.1),
+            ParamDef::new("w2r_scaley", 0.1),
+            ParamDef::new("w2r_freqx", 7.0),
+            ParamDef::new("w2r_freqy", 13.0),
+            ParamDef::new("w2r_null", 2.0),
+            ParamDef::new("w2r_distance", 10.0),
+        ],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let (x0, y0) = (a.x, a.y);
+            let dist = (sqr(x0) + sqr(y0)).sqrt();
+            let mut factor = if dist < d[5] { (dist - d[4]) / (d[5] - d[4]) } else { 1.0 };
+            if dist < d[4] {
+                factor = 0.0;
+            }
+            v.x += amount * (x0 + factor * (y0 * d[2]).sin() * d[0]);
+            v.y += amount * (y0 + factor * (x0 * d[3]).sin() * d[1]);
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "let dist = sqrt(sqr(a.x) + sqr(a.y));
+var factor = 1.0;
+if (dist < D(5)) { factor = (dist - D(4)) / (D(5) - D(4)); }
+if (dist < D(4)) { factor = 0.0; }
+v.x += AMOUNT * (a.x + factor * sin(a.y * D(2)) * D(0));
+v.y += AMOUNT * (a.y + factor * sin(a.x * D(3)) * D(1));
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "waves3",
+        params: &[
+            ParamDef::new("scalex", 0.05),
+            ParamDef::new("scaley", 0.05),
+            ParamDef::new("freqx", 7.0),
+            ParamDef::new("freqy", 13.0),
+            ParamDef::new("sx_freq", 0.0),
+            ParamDef::new("sy_freq", 2.0),
+        ],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let (x0, y0) = (a.x, a.y);
+            let sxx = 0.5 * d[0] * (1.0 + (y0 * d[4]).sin());
+            let syy = 0.5 * d[1] * (1.0 + (x0 * d[5]).sin());
+            v.x += amount * (x0 + (y0 * d[2]).sin() * sxx);
+            v.y += amount * (y0 + (x0 * d[3]).sin() * syy);
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "let sxx = 0.5 * D(0) * (1.0 + sin(a.y * D(4)));
+let syy = 0.5 * D(1) * (1.0 + sin(a.x * D(5)));
+v.x += AMOUNT * (a.x + sin(a.y * D(2)) * sxx);
+v.y += AMOUNT * (a.y + sin(a.x * D(3)) * syy);
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "waves3d_decay",
+        params: &[ParamDef::new("freq", 3.0), ParamDef::new("decay", 0.5)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let r = (a.x * a.x + a.y * a.y).sqrt();
+            let theta = a.y.atan2(a.x);
+            let nr = r + (r * d[0]).sin() * (-r * d[1]).exp();
+            v.x += amount * nr * theta.cos();
+            v.y += amount * nr * theta.sin();
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "let r = sqrt(a.x * a.x + a.y * a.y);
+let theta = atan2(a.y, a.x);
+let nr = r + sin(r * D(0)) * exp(-r * D(1));
+v.x += AMOUNT * nr * cos(theta);
+v.y += AMOUNT * nr * sin(theta);
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "waves3_wf",
+        params: &[
+            ParamDef::new("scalex", 0.25),
+            ParamDef::new("scaley", 0.5),
+            ParamDef::new("freqx", M_PI / 2.0),
+            ParamDef::new("freqy", M_PI / 4.0),
+            ParamDef::int("use_cos_x", 1.0, 0.0, 1.0),
+            ParamDef::int("use_cos_y", 0.0, 0.0, 1.0),
+            ParamDef::new("dampx", 0.0),
+            ParamDef::new("dampy", 0.0),
+        ],
+        kind: VarKind::Normal,
+        is_3d: false,
+        // d = [8 params, damping_x, damping_y]
+        apply: |d, ctx, a, v, amount| {
+            let (dx, dy) = (d[8], d[9]);
+            let tx = if d[4] as i32 == 1 { (a.y * d[2]).cos() } else { (a.y * d[2]).sin() };
+            v.x += amount * (a.x + dx * d[0] * tx * tx) * dx;
+            let ty = if d[5] as i32 == 1 { (a.x * d[3]).cos() } else { (a.x * d[3]).sin() };
+            v.y += amount * (a.y + dy * d[1] * ty * ty) * dy;
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: Some(|p, _| {
+            let mut d = p.to_vec();
+            d[4] = ftoi(p[4]) as f64;
+            d[5] = ftoi(p[5]) as f64;
+            d.extend([if p[6].abs() < EPSILON { 1.0 } else { p[6].exp() }, if p[7].abs() < EPSILON { 1.0 } else { p[7].exp() }]);
+            d
+        }),
+        wgsl: "var tx = sin(a.y * D(2));
+if (i32(D(4)) == 1) { tx = cos(a.y * D(2)); }
+v.x += AMOUNT * (a.x + D(8) * D(0) * tx * tx) * D(8);
+var ty = sin(a.x * D(3));
+if (i32(D(5)) == 1) { ty = cos(a.x * D(3)); }
+v.y += AMOUNT * (a.y + D(9) * D(1) * ty * ty) * D(9);
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "waves4",
+        params: &[
+            ParamDef::new("scalex", 0.05),
+            ParamDef::new("scaley", 0.05),
+            ParamDef::new("freqx", 7.0),
+            ParamDef::new("freqy", 13.0),
+            ParamDef::int("cont", 0.0, 0.0, 1.0),
+            ParamDef::new("yfact", 0.1),
+        ],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| waves4_apply(d, ctx, a, v, amount, (a.y * d[2] / M_2PI).floor()),
+        prepare: Some(|p, _| {
+            let mut d = p.to_vec();
+            d[4] = limit_value(p[4], 0.0, 1.0) as i32 as f64;
+            d
+        }),
+        wgsl: "let ax0 = floor(a.y * D(2) / TWO_PI);
+var ax = sin(ax0 * 12.9898 + ax0 * 78.233 + 1.0 + a.y * 0.001 * D(5)) * 43758.5453;
+ax = ax - trunc(ax);
+if (i32(D(4)) == 1) { ax = select(0.0, 1.0, ax > 0.5); }
+v.x += AMOUNT * (a.x + sin(a.y * D(2)) * ax * ax * D(0));
+v.y += AMOUNT * (a.y + sin(a.x * D(3)) * D(1));
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "waves42",
+        params: &[
+            ParamDef::new("scalex", 0.05),
+            ParamDef::new("scaley", 0.05),
+            ParamDef::new("freqx", 7.0),
+            ParamDef::new("freqy", 13.0),
+            ParamDef::int("cont", 0.0, 0.0, 1.0),
+            ParamDef::new("yfact", 0.1),
+            ParamDef::new("freqx2", 1.0),
+        ],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| waves4_apply(d, ctx, a, v, amount, (a.y * d[6]).floor()),
+        prepare: Some(|p, _| {
+            let mut d = p.to_vec();
+            d[4] = limit_value(p[4], 0.0, 1.0) as i32 as f64;
+            d
+        }),
+        wgsl: "let ax0 = floor(a.y * D(6));
+var ax = sin(ax0 * 12.9898 + ax0 * 78.233 + 1.0 + a.y * 0.001 * D(5)) * 43758.5453;
+ax = ax - trunc(ax);
+if (i32(D(4)) == 1) { ax = select(0.0, 1.0, ax > 0.5); }
+v.x += AMOUNT * (a.x + sin(a.y * D(2)) * ax * ax * D(0));
+v.y += AMOUNT * (a.y + sin(a.x * D(3)) * D(1));
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "waves4_wf",
+        params: &[
+            ParamDef::new("scalex", 0.25),
+            ParamDef::new("scaley", 0.5),
+            ParamDef::new("freqx", M_PI / 2.0),
+            ParamDef::new("freqy", M_PI / 4.0),
+            ParamDef::int("use_cos_x", 1.0, 0.0, 1.0),
+            ParamDef::int("use_cos_y", 0.0, 0.0, 1.0),
+            ParamDef::new("dampx", 0.0),
+            ParamDef::new("dampy", 0.0),
+        ],
+        kind: VarKind::Normal,
+        is_3d: false,
+        // d = [8 params, damping_x, damping_y]
+        apply: |d, ctx, a, v, amount| {
+            let (dx, dy) = (d[8], d[9]);
+            let (sx, cx) = ((a.y * d[2]).sin(), (a.y * d[2]).cos());
+            if d[4] as i32 == 1 {
+                v.x += amount * (a.x + dx * d[0] * cx * sx * cx) * dx;
+            } else {
+                v.x += amount * (a.x + dx * d[0] * sx * cx * sx) * dx;
+            }
+            let (sy, cy) = ((a.x * d[3]).sin(), (a.x * d[3]).cos());
+            if d[5] as i32 == 1 {
+                v.y += amount * (a.y + dy * d[1] * cy * sy * cy) * dy;
+            } else {
+                v.y += amount * (a.y + dy * d[1] * sy * cy * sy) * dy;
+            }
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: Some(|p, _| {
+            let mut d = p.to_vec();
+            d[4] = ftoi(p[4]) as f64;
+            d[5] = ftoi(p[5]) as f64;
+            d.extend([if p[6].abs() < EPSILON { 1.0 } else { p[6].exp() }, if p[7].abs() < EPSILON { 1.0 } else { p[7].exp() }]);
+            d
+        }),
+        wgsl: "let sx = sin(a.y * D(2));
+let cx = cos(a.y * D(2));
+var tx = sx * cx * sx;
+if (i32(D(4)) == 1) { tx = cx * sx * cx; }
+v.x += AMOUNT * (a.x + D(8) * D(0) * tx) * D(8);
+let sy = sin(a.x * D(3));
+let cy = cos(a.x * D(3));
+var ty = sy * cy * sy;
+if (i32(D(5)) == 1) { ty = cy * sy * cy; }
+v.y += AMOUNT * (a.y + D(9) * D(1) * ty) * D(9);
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "waves_phase",
+        params: &[
+            ParamDef::new("scale_x", 0.25),
+            ParamDef::new("scale_y", 0.25),
+            ParamDef::new("freq_x", 2.0),
+            ParamDef::new("freq_y", 2.0),
+            ParamDef::new("phase_x", 0.0),
+            ParamDef::new("phase_y", 0.0),
+        ],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let safe = |s: f64| if s.abs() < 1e-4 { (if s + 1e-5 < 0.0 { -1.0 } else { 1.0 }) * 1e-4 } else { s * s };
+            v.x += amount * (a.x + d[0] * (a.y * d[2] / safe(d[0]) + d[4]).sin());
+            v.y += amount * (a.y + d[1] * (a.x * d[3] / safe(d[1]) + d[5]).sin());
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "var sx2 = D(0) * D(0);
+if (abs(D(0)) < 1e-4) { sx2 = select(1.0, -1.0, D(0) + 1e-5 < 0.0) * 1e-4; }
+var sy2 = D(1) * D(1);
+if (abs(D(1)) < 1e-4) { sy2 = select(1.0, -1.0, D(1) + 1e-5 < 0.0) * 1e-4; }
+v.x += AMOUNT * (a.x + D(0) * sin(a.y * D(2) / sx2 + D(4)));
+v.y += AMOUNT * (a.y + D(1) * sin(a.x * D(3) / sy2 + D(5)));
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
     // @@NEXT@@
 ];
+
+/// Shared tail of `Waves4Func` / `Waves42Func`; `ax0` is the floored row index.
+fn waves4_apply(d: &[f64], ctx: &mut Ctx, a: &Pt, v: &mut Pt, amount: f64, ax0: f64) {
+    let (x0, y0) = (a.x, a.y);
+    let mut ax = (ax0 * 12.9898 + ax0 * 78.233 + 1.0 + y0 * 0.001 * d[5]).sin() * 43758.5453;
+    ax -= (ax as i32) as f64;
+    if d[4] as i32 == 1 {
+        ax = if ax > 0.5 { 1.0 } else { 0.0 };
+    }
+    v.x += amount * (x0 + (y0 * d[2]).sin() * ax * ax * d[0]);
+    v.y += amount * (y0 + (x0 * d[3]).sin() * d[1]);
+    ctx.pass_z(a, v, amount);
+}
 
 /// `cern.jet.math.Bessel.j1` (Colt)
 fn waves2b_bessel_j1(x: f64) -> f64 {
