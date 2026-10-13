@@ -60,6 +60,7 @@ pub fn show(ui: &mut Ui, doc: &mut Document, st: &mut InspectorState, preview: &
 }
 
 fn transform_tab(ui: &mut Ui, doc: &mut Document, st: &mut InspectorState) {
+    let solid = doc.flame.solid.enabled;
     let n_xforms = doc.layer().xforms.len();
     let gradient = doc.layer().gradient.clone();
     let sel = doc.selection;
@@ -226,6 +227,14 @@ fn transform_tab(ui: &mut Ui, doc: &mut Document, st: &mut InspectorState) {
         });
         ui.label(RichText::new("Color modulation is applied by the CPU renderer.").small().color(theme::TEXT_MUTED));
     });
+    if solid {
+        egui::CollapsingHeader::new(RichText::new("Solid material").color(theme::TEXT_MUTED)).default_open(true).show(ui, |ui| {
+            grid(ui, "xf-material", |ui| {
+                slider(ui, "Material", &mut xf.material, 0.0..=8.0).on_hover_text("Material index; fractional values blend two materials");
+                slider(ui, "Material speed", &mut xf.material_speed, -1.0..=1.0);
+            });
+        });
+    }
 }
 
 fn camera_tab(ui: &mut Ui, doc: &mut Document) {
@@ -500,6 +509,9 @@ fn render_tab(ui: &mut Ui, doc: &mut Document, preview: &mut Preview, canvas: &m
             slider(ui, "Falloff", &mut f.post_blur_falloff, 0.0..=10.0);
         }
     });
+
+    super::solid::solid_section(ui, f);
+    let f = &mut doc.flame;
 
     theme::section_label(ui, "Denoiser");
     grid(ui, "denoiser", |ui| {

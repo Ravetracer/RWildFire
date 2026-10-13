@@ -54,6 +54,8 @@ pub struct PreparedXForm {
     pub mod_contrast: (f64, f64),
     pub mod_saturation: (f64, f64),
     pub mod_hue: (f64, f64),
+    /// `material1` / `material2`: material index blending like the color.
+    pub material: (f64, f64),
     pub draw_mode: DrawMode,
     pub opacity: f64,
     pub affine_mode: AffineMode,
@@ -173,6 +175,7 @@ fn prepare_xform(xf: &XForm, color_type: ColorType, colormap: &[[f64; 3]], missi
         mod_contrast: speed(xf.mod_contrast, xf.mod_contrast_speed),
         mod_saturation: speed(xf.mod_saturation, xf.mod_saturation_speed),
         mod_hue: speed(xf.mod_hue, xf.mod_hue_speed),
+        material: speed(xf.material, xf.material_speed),
         draw_mode: xf.draw_mode,
         opacity: xf.opacity,
         affine_mode: affine_mode(&xf.coefs, &xf.yz_coefs, &xf.zx_coefs),
@@ -316,6 +319,7 @@ impl PreparedXForm {
         a.mod_contrast = src.mod_contrast * self.mod_contrast.0 + self.mod_contrast.1;
         a.mod_saturation = src.mod_saturation * self.mod_saturation.0 + self.mod_saturation.1;
         a.mod_hue = src.mod_hue * self.mod_hue.0 + self.mod_hue.1;
+        a.material = src.material * self.material.0 + self.material.1;
 
         // Affine step
         let (x, y, z) = apply_affine(self.affine_mode, &self.coefs, &self.yz, &self.zx, src.x, src.y, src.z);

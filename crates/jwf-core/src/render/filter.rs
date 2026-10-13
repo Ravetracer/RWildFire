@@ -121,7 +121,7 @@ impl FilterKernel {
         )
     }
 
-    fn spatial_support(&self) -> f64 {
+    pub fn spatial_support(&self) -> f64 {
         match self {
             FilterKernel::Bell | FilterKernel::Gaussian | FilterKernel::Quadratic => 1.5,
             FilterKernel::Box => 0.5,
@@ -143,7 +143,7 @@ impl FilterKernel {
         }
     }
 
-    fn coeff(&self, t: f64) -> f64 {
+    pub fn coeff(&self, t: f64) -> f64 {
         match self {
             FilterKernel::Bell => {
                 let t = t.abs();

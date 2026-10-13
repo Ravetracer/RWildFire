@@ -441,6 +441,8 @@ pub struct Flame {
     pub ai_post_denoiser: crate::render::denoise::Denoiser,
     pub post_denoiser_blend: f64,
     pub post_denoiser_only_for_cpu: bool,
+    /// Solid rendering (lights, materials, ambient occlusion, shadows).
+    pub solid: crate::solid::SolidSettings,
     pub antialias_amount: f64,
     pub antialias_radius: f64,
     /// Density estimation radius (0 = off), curve and the before/after comparison line (0..1).
@@ -523,6 +525,7 @@ impl Default for Flame {
             ai_post_denoiser: crate::render::denoise::Denoiser::None,
             post_denoiser_blend: 0.11111,
             post_denoiser_only_for_cpu: true,
+            solid: crate::solid::SolidSettings::default(),
             antialias_amount: 0.25,
             antialias_radius: 0.5,
             de_radius: 1.0,
@@ -564,7 +567,8 @@ impl Flame {
     /// True if the 3D camera path (pitch/yaw/perspective...) is needed.
     pub fn is_3d_projection_required(&self) -> bool {
         use crate::math::EPSILON;
-        self.cam_yaw.abs() > EPSILON
+        self.solid.enabled
+            || self.cam_yaw.abs() > EPSILON
             || self.cam_pitch.abs() > EPSILON
             || self.cam_bank.abs() > EPSILON
             || self.cam_perspective.abs() > EPSILON

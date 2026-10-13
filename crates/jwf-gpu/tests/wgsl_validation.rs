@@ -21,3 +21,23 @@ fn sample_flames_generate_valid_programs() {
         }
     }
 }
+
+#[test]
+fn solid_programs_and_passes_are_valid() {
+    validate_wgsl(include_str!("../src/solid.wgsl")).unwrap();
+    validate_wgsl(include_str!("../src/tonemap.wgsl")).unwrap();
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../testdata/TINA0001.flame");
+    let mut flame = jwf_core::io::read_flames_from_file(std::path::Path::new(path)).unwrap().remove(0);
+    flame.solid.enabled = true;
+    for shadows in [jwf_core::solid::ShadowType::Off, jwf_core::solid::ShadowType::Smooth] {
+        flame.solid.shadow_type = shadows;
+        for dof in [0.0, 0.3] {
+            flame.cam_dof = dof;
+            let prepared = PreparedFlame::new(&flame);
+            let prog = Program::new(&flame, &prepared);
+            if let Err(err) = validate_wgsl(&prog.wgsl) {
+                panic!("solid {shadows:?} dof {dof}: {err}");
+            }
+        }
+    }
+}

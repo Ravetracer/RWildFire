@@ -228,6 +228,7 @@ fn parse_flame(el: &Element) -> Flame {
             flame.extra_attrs.push((k.clone(), v.clone()));
         }
     }
+    flame.solid = crate::solid::SolidSettings::take_from_attrs(&mut flame.extra_attrs);
 
     let layer_elements: Vec<&Element> = el.children_named("layer").collect();
     if layer_elements.is_empty() {
@@ -469,7 +470,7 @@ fn parse_xform(el: &Element) -> XForm {
 // ---------------------------------------------------------------------------------------------
 // Writing
 
-fn fmt_f(v: f64) -> String {
+pub(crate) fn fmt_f(v: f64) -> String {
     if v == v.trunc() && v.abs() < 1e15 { format!("{:.1}", v) } else { format!("{}", v) }
 }
 
@@ -507,6 +508,7 @@ pub fn write_flame(flame: &Flame) -> String {
     attr(&mut s, "post_blur_radius", flame.post_blur_radius.to_string());
     attr(&mut s, "post_blur_fade", fmt_f(flame.post_blur_fade));
     attr(&mut s, "post_blur_falloff", fmt_f(flame.post_blur_falloff));
+    flame.solid.write_attrs(|k, v| attr(&mut s, k, v));
     attr(&mut s, "ai_post_denoiser", flame.ai_post_denoiser.as_str());
     attr(&mut s, "post_optix_denoiser_blend", fmt_f(flame.post_denoiser_blend));
     attr(&mut s, "ai_post_denoiser_only_for_cpu", if flame.post_denoiser_only_for_cpu { "1" } else { "0" });

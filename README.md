@@ -54,6 +54,7 @@ Each variation is a `VarDef` with a CPU function and a WGSL snippet that read th
 - Adaptive filter (`MITCHELL_SINEPOW`): per-pixel kernel choice by edge strength and density, with JWildfire's indicator view
 - Post blur (radius, fade, falloff)
 - AI post denoiser: runs Intel Open Image Denoise's `oidnDenoise` (found in `PATH` or via `JWF_OIDN_DENOISE`) on exported images and video frames
+- Solid rendering, CPU and GPU: z-buffer with surface normals, distant lights, materials (per-transform material index, blended between neighbours, optional PNG reflection maps), ambient occlusion, fast or smooth shadow maps, and post DOF with bokeh. Material, light color and AO changes re-shade without restarting the render
 
 ## Gradients
 
@@ -71,9 +72,9 @@ Each variation is a `VarDef` with a CPU function and a WGSL snippet that read th
 
 ## Status / roadmap
 
-Done: core editor, file compatibility, CPU and GPU renderer, 508 variations (incl. prepost), gradient editing, random generators, mutations, PNG export, density estimation, DOF, layers, animation and video export, adaptive filter, post blur, AI denoiser.
+Done: core editor, file compatibility, CPU and GPU renderer, 508 variations (incl. prepost), gradient editing, random generators, mutations, PNG export, density estimation, DOF, layers, animation and video export, adaptive filter, post blur, AI denoiser, solid rendering.
 
 Next:
-- solid rendering (lighting, materials, ambient occlusion, shadows, post DOF)
+- solid rendering extras: `plane_wf` / mesh "receive only shadows" variations, JPEG reflection maps, light motion curves
 - remaining JWildfire variations (~500; 13 batch files are prepared but empty, see `variations/batch_w*.rs` and the `wNN` features)
 - resource-based variations (images, formulas, subflames, SVG, text)

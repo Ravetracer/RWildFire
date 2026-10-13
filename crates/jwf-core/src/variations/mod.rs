@@ -97,6 +97,10 @@ pub struct Pt {
     pub green: f64,
     pub blue: f64,
     pub do_hide: bool,
+    /// Solid rendering: material index (interpolated between materials).
+    pub material: f64,
+    /// Solid rendering: the point only receives shadows (e.g. `plane_wf` ground planes).
+    pub receive_only_shadows: bool,
 }
 
 impl Pt {

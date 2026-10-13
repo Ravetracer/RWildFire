@@ -140,6 +140,37 @@ impl View {
         Some((self.bws * px, self.bhs * py, intensity))
     }
 
+    /// Projection for solid rendering: camera only, DOF becomes a post effect. Returns
+    /// `(px, py, intensity, camera z, dof distance)`.
+    pub fn project_solid(&self, x: f64, y: f64, z: f64) -> Option<(f64, f64, f64, f64, f64)> {
+        let m = &self.matrix;
+        let cx = m[0][0] * x + m[1][0] * y + m[2][0] * z + self.cam_pos[0];
+        let cy = m[0][1] * x + m[1][1] * y + m[2][1] * z + self.cam_pos[1];
+        let cz = m[0][2] * x + m[1][2] * y + m[2][2] * z + self.cam_pos[2];
+        let zr = 1.0 - self.cam_perspective * cz + self.cam_pos[2];
+        if zr < EPSILON {
+            return None;
+        }
+        let mut intensity = 1.0;
+        if self.dimish_z > EPSILON {
+            let zdist = self.dim_z_distance - cz;
+            if zdist > 0.0 {
+                intensity = (-zdist * zdist * self.dimish_z).exp();
+            }
+        }
+        let dof = self.dof.as_ref().and_then(|d| d.distance(cx, cy, cz)).unwrap_or(0.0);
+        let (x, y) = (cx / zr, cy / zr);
+        let px = x * self.cosa + y * self.sina + self.rc_x;
+        if px < 0.0 || px > self.cam_w {
+            return None;
+        }
+        let py = y * self.cosa - x * self.sina + self.rc_y;
+        if py < 0.0 || py > self.cam_h {
+            return None;
+        }
+        Some((self.bws * px, self.bhs * py, intensity, cz, dof))
+    }
+
     /// Inverse of the 2D projection for UI interaction: image pixel -> world coordinates.
     /// Ignores the 3D camera.
     pub fn image_to_world(&self, ix: f64, iy: f64) -> (f64, f64) {

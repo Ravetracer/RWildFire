@@ -222,6 +222,7 @@ pub struct GpuRenderer {
     output_generation: u64,
     /// Number of flame states accumulated into the histogram (motion blur packets).
     packets: u32,
+    solid: crate::solid::SolidGpu,
 }
 
 fn storage_buffer(device: &wgpu::Device, label: &str, size: u64) -> wgpu::Buffer {
@@ -308,6 +309,7 @@ impl GpuRenderer {
             tone_base: None,
             output_generation: 0,
             packets: 1,
+            solid: crate::solid::SolidGpu::new(),
             ctx,
         }
     }
@@ -390,9 +392,9 @@ impl GpuRenderer {
         }
         let device = &self.ctx.device;
         let prepared = PreparedFlame::new(flame);
-        let program = Program::new(flame, &prepared);
         let filter_size = flame.filter_kernel.filter_size(flame.spatial_filter_radius, flame.spatial_oversampling.max(1));
         let view = View::new(flame, width, height, filter_size);
+        let program = Program::new_scaled(flame, &prepared, view.ppu_scale);
 
         // Pipeline
         if self.pipelines.as_ref().map(|p| p.signature.as_str()) != Some(program.signature.as_str()) {
@@ -449,8 +451,16 @@ impl GpuRenderer {
             });
         }
 
+        // Solid rendering buffers and shadow map placement
+        if flame.solid.enabled {
+            let maps = program.shadow_maps.iter().flatten().count();
+            self.solid.frames = if maps > 0 { jwf_core::render::cpu::solid_shadow_frames(flame, width, height) } else { Vec::new() };
+            self.solid.ensure_buffers(device, view.raster_width, view.raster_height, width, height, flame.solid.lights.len(), maps, program.shadow_map_size);
+        }
+
         // Parameter data
-        let prm = program.pack_params(flame, &prepared);
+        let mut prm = program.pack_params(flame, &prepared);
+        program.pack_solid(&mut prm, flame, &self.solid.frames);
         let nxt = program.pack_next(&prepared);
         let cmap = program.pack_colormaps(&prepared);
         self.prm = Some(self.upload(&self.prm, "prm", bytemuck::cast_slice(&prm)));
@@ -613,6 +623,7 @@ impl GpuRenderer {
             let mut enc = self.ctx.device.create_command_encoder(&Default::default());
             enc.clear_buffer(&b.hist, 0, None);
             enc.clear_buffer(&b.accum, 0, None);
+            self.solid.clear(&mut enc);
             self.ctx.queue.submit(Some(enc.finish()));
         }
     }
@@ -631,7 +642,8 @@ impl GpuRenderer {
             let fx = (next() >> 8) as f32 / 16_777_216.0 * 2.0 - 1.0;
             let fy = (next() >> 8) as f32 / 16_777_216.0 * 2.0 - 1.0;
             let fc = (next() >> 8) as f32 / 16_777_216.0;
-            data.extend_from_slice(&[fx.to_bits(), fy.to_bits(), 0f32.to_bits(), fc.to_bits(), 0, 0, 0, 0, next() | 1, 30, 0, 0]);
+            let fm = (next() >> 8) as f32 / 16_777_216.0;
+            data.extend_from_slice(&[fx.to_bits(), fy.to_bits(), 0f32.to_bits(), fc.to_bits(), 0, 0, 0, 0, next() | 1, 30, 0, fm.to_bits()]);
         }
         self.ctx.queue.write_buffer(&self.states, 0, bytemuck::cast_slice(&data));
         self.frame_seed = self.frame_seed.wrapping_add(1);
@@ -659,18 +671,25 @@ impl GpuRenderer {
         let iters_offset = std::mem::offset_of!(IterUniforms, iters) as u64;
         self.ctx.queue.write_buffer(&self.iter_uniforms, iters_offset, bytemuck::bytes_of(&iters));
 
-        let iter_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("iterate-bg"),
-            layout: &iterate.get_bind_group_layout(0),
-            entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: self.iter_uniforms.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: prm.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: nxt.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 3, resource: cmap.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 4, resource: self.states.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 5, resource: hist.as_entire_binding() },
-            ],
-        });
+        let mut entries = vec![
+            wgpu::BindGroupEntry { binding: 0, resource: self.iter_uniforms.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 1, resource: prm.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 2, resource: nxt.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 3, resource: cmap.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 4, resource: self.states.as_entire_binding() },
+        ];
+        let program = self.program.as_ref().expect("program");
+        match (&self.solid.buffers, program.solid_base) {
+            (Some(sb), Some(_)) => {
+                entries.push(wgpu::BindGroupEntry { binding: 6, resource: sb.zbuf.as_entire_binding() });
+                entries.push(wgpu::BindGroupEntry { binding: 7, resource: sb.sattr.as_entire_binding() });
+                if program.shadow_maps.iter().any(Option::is_some) {
+                    entries.push(wgpu::BindGroupEntry { binding: 8, resource: sb.smap.as_entire_binding() });
+                }
+            }
+            _ => entries.push(wgpu::BindGroupEntry { binding: 5, resource: hist.as_entire_binding() }),
+        }
+        let iter_bg = device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("iterate-bg"), layout: &iterate.get_bind_group_layout(0), entries: &entries });
         let resolve_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("resolve-bg"),
             layout: &self.resolve_pipeline.get_bind_group_layout(0),
@@ -709,6 +728,11 @@ impl GpuRenderer {
         let (Some(flame), Some(view), Some(bufs), Some(filter)) = (&self.flame, &self.view, &self.buffers, &self.filter) else {
             return;
         };
+        if flame.solid.enabled {
+            let (flame, view, output) = (flame.clone(), view.clone(), bufs.output_view.clone());
+            self.solid.render(&self.ctx.device, &self.ctx.queue, &flame, &view, &output, self.with_alpha);
+            return;
+        }
         let Some(mut tone) = self.tone_base else {
             return;
         };

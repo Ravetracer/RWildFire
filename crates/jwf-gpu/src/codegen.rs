@@ -27,7 +27,10 @@ mod xo {
     pub const YZ_POST: usize = 27;
     pub const ZX: usize = 33;
     pub const ZX_POST: usize = 39;
-    pub const VARS: usize = 45;
+    /// Material blending (`material1`, `material2`), used by solid rendering.
+    pub const MAT1: usize = 45;
+    pub const MAT2: usize = 46;
+    pub const VARS: usize = 47;
 }
 
 /// Offsets inside a layer header block.
@@ -59,7 +62,16 @@ pub struct Program {
     pub unsupported: Vec<String>,
     /// Start of the DOF parameter block in `prm` (if DOF is active).
     pub dof_base: Option<usize>,
+    /// Solid rendering: start of the light block in `prm` (13 floats per shadow map:
+    /// projection matrix rows, then the map frame).
+    pub solid_base: Option<usize>,
+    /// Shadow map index of every light (`None` = casts no shadow).
+    pub shadow_maps: Vec<Option<u32>>,
+    pub shadow_map_size: usize,
 }
+
+/// Floats per shadow map in the solid `prm` block.
+pub const SOLID_LIGHT_STRIDE: usize = 13;
 
 /// Offsets inside the DOF parameter block.
 mod dofo {
@@ -307,6 +319,11 @@ fn emit_xform(out: &mut String, fname: &str, xf: &PreparedXForm, base: usize, la
 
 impl Program {
     pub fn new(flame: &Flame, prepared: &PreparedFlame) -> Self {
+        Self::new_scaled(flame, prepared, 1.0)
+    }
+
+    /// `ppu_scale` = output size relative to the flame size (scales the shadow map size).
+    pub fn new_scaled(flame: &Flame, prepared: &PreparedFlame, ppu_scale: f64) -> Self {
         let mut sig = String::new();
         let mut unsupported: Vec<String> = prepared.missing_variations.clone();
         let mut used_vars: BTreeMap<&'static str, &'static VarDef> = BTreeMap::new();
@@ -315,6 +332,22 @@ impl Program {
         let mut next_len = 0usize;
 
         let _ = write!(sig, "pz{}|sym{:?}|3d{}|", prepared.preserve_z, flame.post_symmetry.kind, flame.is_3d_projection_required());
+        let solid = flame.solid.enabled;
+        let mut shadow_maps = Vec::new();
+        let mut map_count = 0u32;
+        if solid {
+            let lights = jwf_core::render::solid::LightViews::new(&flame.solid);
+            for m in &lights.proj {
+                shadow_maps.push(m.map(|_| {
+                    map_count += 1;
+                    map_count - 1
+                }));
+            }
+        }
+        let shadow_map_size = if map_count > 0 { jwf_core::render::solid::shadow_map_size(flame, ppu_scale) } else { 0 };
+        if solid {
+            let _ = write!(sig, "solid{map_count}x{shadow_map_size}|");
+        }
         if flame.post_blur_radius > 0 {
             let _ = write!(sig, "pb{}/{}/{}|", flame.post_blur_radius, flame.post_blur_fade, flame.post_blur_falloff);
         }
@@ -390,6 +423,13 @@ impl Program {
                 let _ = writeln!(w, "    case {k}u: {{ return xf_{li}_{k}(p); }}");
             }
             let _ = writeln!(w, "    default: {{ return p; }}\n  }}\n}}");
+            if solid {
+                let _ = writeln!(w, "fn mat_xf_{li}(idx: u32, m: f32) -> f32 {{\n  switch idx {{");
+                for k in 0..layer.xforms.len() {
+                    let _ = writeln!(w, "    case {k}u: {{ return m * prm[{b}u + {m1}u] + prm[{b}u + {m2}u]; }}", b = lay.xforms[k], m1 = xo::MAT1, m2 = xo::MAT2);
+                }
+                let _ = writeln!(w, "    default: {{ return m; }}\n  }}\n}}");
+            }
             // Visibility (draw mode)
             let _ = writeln!(w, "fn visible_{li}(idx: u32) -> bool {{\n  switch idx {{");
             for (k, xf) in layer.xforms.iter().enumerate() {
@@ -436,6 +476,14 @@ impl Program {
             }
             let _ = write!(sig, "dof{}{:?}{}|", d.legacy, d.mode, d.var.as_ref().map(|v| v.0.name).unwrap_or("-"));
             w.push_str(&dof_wgsl(d, base));
+        }
+        let mut solid_base = None;
+        if solid {
+            let base = param_len;
+            param_len += map_count as usize * SOLID_LIGHT_STRIDE;
+            solid_base = Some(base);
+            w.push_str(&solid_plot_wgsl(base, map_count, shadow_map_size, dof.is_some()));
+        } else if dof.is_some() {
             w.push_str(&PROJECT_FN.replace(
                 "        x = cx / zr;\n        y = cy / zr;",
                 "        let dd = dof_distance(vec3<f32>(cx, cy, cz));\n        if (dd >= 0.0) { let bp = dof_apply(cx, cy, dd); x = bp.x / zr; y = bp.y / zr; } else { x = cx / zr; y = cy / zr; }",
@@ -443,7 +491,9 @@ impl Program {
         } else {
             w.push_str(PROJECT_FN);
         }
-        if flame.post_blur_radius > 0 {
+        if solid {
+            // Post blur does not apply to the z-buffer.
+        } else if flame.post_blur_radius > 0 {
             w.push_str(
                 &SPLAT_POST_BLUR
                     .replace("PB_R", &format!("{}", flame.post_blur_radius.min(64) as i32))
@@ -466,7 +516,7 @@ impl Program {
             let lay = &layers[li];
             let _ = writeln!(
                 w,
-                "    case {li}u: {{\n      cmap_base = {cb}u;\n      let density = prm[{h}u + {d}u];\n      let weight = prm[{h}u + {wt}u];\n      for (var i = 0u; i < U.iters; i++) {{\n        if (density < 1.0 && rnd() > density * density) {{ continue; }}\n        if (!has_next_{li}(xf)) {{ break; }}\n        xf = nxt[{nb}u + xf * {ts}u + (rnd_u32() & {mask}u)];\n        p = apply_xf_{li}(xf, p);\n        if (bad(p)) {{ p = fresh_point(); skip = FUSE_ITERS; continue; }}\n        if (skip > 0u) {{ skip -= 1u; continue; }}\n        if (!visible_{li}(xf)) {{ continue; }}\n        let q = finals_{li}(p);\n        if (q.hide != 0.0) {{ continue; }}\n        plot_sym(q, vec3<f32>(q.r, q.g, q.b) * weight);\n      }}\n    }}",
+                "    case {li}u: {{\n      cmap_base = {cb}u;\n      let density = prm[{h}u + {d}u];\n      let weight = prm[{h}u + {wt}u];\n      for (var i = 0u; i < U.iters; i++) {{\n        if (density < 1.0 && rnd() > density * density) {{ continue; }}\n        if (!has_next_{li}(xf)) {{ break; }}\n        xf = nxt[{nb}u + xf * {ts}u + (rnd_u32() & {mask}u)];\n        p = apply_xf_{li}(xf, p);{mat_step}\n        if (bad(p)) {{ p = fresh_point(); skip = FUSE_ITERS;{mat_reset} continue; }}\n        if (skip > 0u) {{ skip -= 1u; continue; }}\n        if (!visible_{li}(xf)) {{ continue; }}\n        let q = finals_{li}(p);\n        if (q.hide != 0.0) {{ continue; }}{mat_plot}\n        plot_sym(q, vec3<f32>(q.r, q.g, q.b) * weight);\n      }}\n    }}",
                 h = lay.header,
                 d = lo::DENSITY,
                 wt = lo::WEIGHT,
@@ -474,11 +524,14 @@ impl Program {
                 ts = NEXT_XFORM_TABLE_SIZE,
                 mask = NEXT_XFORM_TABLE_SIZE - 1,
                 cb = lay.cmap_base,
+                mat_step = if solid { format!(" mat = mat_xf_{li}(xf, mat);") } else { String::new() },
+                mat_reset = if solid { " mat = rnd();" } else { "" },
+                mat_plot = if solid { " cur_mat = mat;" } else { "" },
             );
         }
         w.push_str(ITER_MAIN_TAIL);
 
-        Self { signature: sig, wgsl: w, layer_count: layers.len(), layers, param_len, next_len, unsupported, dof_base }
+        Self { signature: sig, wgsl: w, layer_count: layers.len(), layers, param_len, next_len, unsupported, dof_base, solid_base, shadow_maps, shadow_map_size }
     }
 
     /// Packs all numeric values into the `prm` buffer layout of this program.
@@ -523,6 +576,26 @@ impl Program {
             }
         }
         p
+    }
+
+    /// Writes the light projections and shadow map frames into `prm`.
+    pub fn pack_solid(&self, p: &mut [f32], flame: &Flame, frames: &[Option<jwf_core::render::solid::ShadowFrame>]) {
+        let Some(base) = self.solid_base else { return };
+        let lights = jwf_core::render::solid::LightViews::new(&flame.solid);
+        for (li, map) in self.shadow_maps.iter().enumerate() {
+            let (Some(k), Some(Some(m))) = (map, lights.proj.get(li)) else { continue };
+            let o = base + *k as usize * SOLID_LIGHT_STRIDE;
+            for r in 0..3 {
+                for c in 0..3 {
+                    p[o + r * 3 + c] = m[r][c] as f32;
+                }
+            }
+            let f = frames.get(li).copied().flatten().unwrap_or_default();
+            p[o + 9] = f.scale_x as f32;
+            p[o + 10] = f.scale_y as f32;
+            p[o + 11] = f.centre_x as f32;
+            p[o + 12] = f.centre_y as f32;
+        }
     }
 
     pub fn pack_next(&self, prepared: &PreparedFlame) -> Vec<u32> {
@@ -592,6 +665,8 @@ fn pack_xform(p: &mut [f32], base: usize, xf: &PreparedXForm) {
     }
     p[base + xo::DIST_MULT] = xf.dist_mult as f32;
     p[base + xo::COLOR] = xf.color as f32;
+    p[base + xo::MAT1] = xf.material.0 as f32;
+    p[base + xo::MAT2] = xf.material.1 as f32;
     let mut off = base + xo::VARS;
     for s in steps(xf) {
         p[off] = s.amount as f32;
@@ -600,6 +675,80 @@ fn pack_xform(p: &mut [f32], base: usize, xf: &PreparedXForm) {
         }
         off += 1 + s.data.len();
     }
+}
+
+/// Solid rendering plot: z-buffer + point attributes + shadow maps (atomic max of an
+/// order-preserving key).
+fn solid_plot_wgsl(base: usize, maps: u32, map_size: usize, dof: bool) -> String {
+    let mut w = String::from(
+        "var<private> cur_mat: f32;\n\
+@group(0) @binding(6) var<storage, read_write> zbuf: array<atomic<u32>>;\n\
+@group(0) @binding(7) var<storage, read_write> sattr: array<f32>;\n",
+    );
+    if maps > 0 {
+        w.push_str("@group(0) @binding(8) var<storage, read_write> smap: array<atomic<u32>>;\n");
+    }
+    w.push_str(
+        "fn zkey(f: f32) -> u32 { let b = bitcast<u32>(f); if ((b & 0x80000000u) != 0u) { return ~b; } return b | 0x80000000u; }\n\
+fn plot(px_in: f32, py_in: f32, pz: f32, col_in: vec3<f32>) {\n  let wp = vec3<f32>(px_in, py_in, pz);\n",
+    );
+    for k in 0..maps as usize {
+        let o = base + k * SOLID_LIGHT_STRIDE;
+        let _ = writeln!(
+            w,
+            "  {{ let lp = vec3<f32>(dot(vec3<f32>(prm[{o}u], prm[{o1}u], prm[{o2}u]), wp), dot(vec3<f32>(prm[{o3}u], prm[{o4}u], prm[{o5}u]), wp), dot(vec3<f32>(prm[{o6}u], prm[{o7}u], prm[{o8}u]), wp));\n    let mx = i32(prm[{o9}u] * lp.x + prm[{o11}u] + 0.5); let my = i32(prm[{o10}u] * lp.y + prm[{o12}u] + 0.5);\n    if (mx >= 0 && my >= 0 && mx < {ms} && my < {ms}) {{ atomicMax(&smap[{off}u + u32(mx) * {ms}u + u32(my)], zkey(lp.z)); }} }}",
+            o1 = o + 1,
+            o2 = o + 2,
+            o3 = o + 3,
+            o4 = o + 4,
+            o5 = o + 5,
+            o6 = o + 6,
+            o7 = o + 7,
+            o8 = o + 8,
+            o9 = o + 9,
+            o10 = o + 10,
+            o11 = o + 11,
+            o12 = o + 12,
+            ms = map_size,
+            off = k * map_size * map_size,
+        );
+    }
+    w.push_str(
+        "  let cx = U.m0.x * px_in + U.m1.x * py_in + U.m2.x * pz + U.cam_pos.x;\n\
+  let cy = U.m0.y * px_in + U.m1.y * py_in + U.m2.y * pz + U.cam_pos.y;\n\
+  let cz = U.m0.z * px_in + U.m1.z * py_in + U.m2.z * pz + U.cam_pos.z;\n\
+  let zr = 1.0 - U.cam_persp * cz + U.cam_pos.z;\n\
+  if (zr < EPSILON) { return; }\n\
+  var intensity = 1.0;\n\
+  if (U.dimish_z > EPSILON) { let zdist = U.dim_z_dist - cz; if (zdist > 0.0) { intensity = exp(-zdist * zdist * U.dimish_z); } }\n\
+  var dof = 0.0;\n",
+    );
+    if dof {
+        w.push_str("  let dd = dof_distance(vec3<f32>(cx, cy, cz)); if (dd >= 0.0) { dof = dd; }\n");
+    }
+    w.push_str(
+        "  let x = cx / zr; let y = cy / zr;\n\
+  let px = x * U.cosa + y * U.sina + U.rc_x;\n\
+  if (px < 0.0 || px > U.cam_w) { return; }\n\
+  let py = y * U.cosa - x * U.sina + U.rc_y;\n\
+  if (py < 0.0 || py > U.cam_h) { return; }\n\
+  let ix = i32(U.bws * px + 0.5);\n\
+  let iy = i32(U.bhs * py + 0.5);\n\
+  if (ix < 0 || iy < 0 || ix >= i32(U.raster_w) || iy >= i32(U.raster_h)) { return; }\n\
+  let idx = u32(iy) * U.raster_w + u32(ix);\n\
+  let key = zkey(cz * U.bws);\n\
+  let old = atomicMax(&zbuf[idx], key);\n\
+  if (key > old) {\n\
+    let col = col_in * intensity;\n\
+    let b = idx * 8u;\n\
+    sattr[b] = px_in; sattr[b + 1u] = py_in; sattr[b + 2u] = pz;\n\
+    sattr[b + 3u] = col.x; sattr[b + 4u] = col.y; sattr[b + 5u] = col.z;\n\
+    sattr[b + 6u] = cur_mat; sattr[b + 7u] = dof;\n\
+  }\n\
+}\n\
+fn splat(ix: i32, iy: i32, col: vec3<f32>) { }\n",
+    );
+    w
 }
 
 const ITER_BINDINGS: &str = r#"
@@ -616,7 +765,7 @@ struct IterUniforms {
     sym_rot_sin: f32, sym_rot_cos: f32, sym_do_rot: u32, _pad0: u32,
 }
 
-struct State { x: f32, y: f32, z: f32, color: f32, r: f32, g: f32, b: f32, xf: u32, rng: u32, skip: u32, hide: f32, _p1: u32 }
+struct State { x: f32, y: f32, z: f32, color: f32, r: f32, g: f32, b: f32, xf: u32, rng: u32, skip: u32, hide: f32, mat: f32 }
 
 @group(0) @binding(0) var<uniform> U: IterUniforms;
 @group(0) @binding(1) var<storage, read> prm: array<f32>;
@@ -748,6 +897,7 @@ fn iterate(@builtin(global_invocation_id) gid: vec3<u32>) {
     var p = Pt(s.x, s.y, s.z, s.color, s.r, s.g, s.b, 0.0, s.hide);
     var xf = s.xf;
     var skip = s.skip;
+    var mat = s.mat;
     let layer = tid % max(U.layer_count, 1u);
     switch layer {
 "#;
@@ -756,7 +906,7 @@ const ITER_MAIN_TAIL: &str = r#"
     default: {}
     }
     s.x = p.x; s.y = p.y; s.z = p.z; s.color = p.color; s.r = p.r; s.g = p.g; s.b = p.b;
-    s.xf = xf; s.skip = skip; s.rng = rng_state; s.hide = p.hide;
+    s.xf = xf; s.skip = skip; s.rng = rng_state; s.hide = p.hide; s.mat = mat;
     states[tid] = s;
 }
 "#;

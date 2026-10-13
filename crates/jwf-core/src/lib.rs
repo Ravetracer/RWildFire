@@ -9,6 +9,7 @@ pub mod model;
 pub mod random;
 pub mod render;
 pub mod rng;
+pub mod solid;
 pub mod variations;
 pub mod video;
 

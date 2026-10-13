@@ -7,6 +7,7 @@ pub mod denoise;
 pub mod dof;
 pub mod filter;
 pub mod prepared;
+pub mod solid;
 pub mod tonemap;
 pub mod view;
 
@@ -37,6 +38,30 @@ fn iteration_key(flame: &Flame) -> Flame {
     f.bg_transparency = false;
     f.extra_attrs.clear();
     f.animation = Default::default();
+    f.ai_post_denoiser = Default::default();
+    f.post_denoiser_blend = 0.0;
+    f.post_denoiser_only_for_cpu = false;
+    // Solid rendering: only the shadow map projection affects the iteration; materials,
+    // ambient occlusion, light colors and the bokeh are applied when shading.
+    let s = &mut f.solid;
+    let shadows = s.with_shadows();
+    s.materials.clear();
+    s.ao_enabled = false;
+    (s.ao_intensity, s.ao_search_radius, s.ao_blur_radius, s.ao_falloff, s.ao_affect_diffuse) = (0.0, 0.0, 0.0, 0.0, 0.0);
+    (s.ao_radius_samples, s.ao_azimuth_samples) = (0, 0);
+    (s.shadowmap_bias, s.shadow_smooth_radius) = (0.0, 0.0);
+    (s.post_bokeh_intensity, s.post_bokeh_brightness, s.post_bokeh_size, s.post_bokeh_activation) = (0.0, 0.0, 0.0, 0.0);
+    s.post_bokeh_filter_kernel = Default::default();
+    s.shadow_type = if shadows { crate::solid::ShadowType::Fast } else { crate::solid::ShadowType::Off };
+    for l in &mut s.lights {
+        (l.intensity, l.color, l.shadow_intensity) = (0.0, [0.0; 3], 0.0);
+        if !shadows || !l.cast_shadows {
+            (l.altitude, l.azimuth, l.cast_shadows) = (0.0, 0.0, false);
+        }
+    }
+    if !shadows {
+        s.shadowmap_size = 0;
+    }
     f
 }
 

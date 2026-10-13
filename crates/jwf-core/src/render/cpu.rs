@@ -1,10 +1,11 @@
 //! Multi-threaded, progressive CPU renderer.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
 use super::prepared::{NEXT_XFORM_TABLE_SIZE, PreparedFlame, PreparedLayer};
+use super::solid::{self, LightSample, LightViews, ShadowFrame, SolidAccum, SolidSample};
 use super::tonemap::{Raster, ToneMapper};
 use super::view::View;
 use crate::math::{EPSILON, M_2PI, M_PI, hsl_to_rgb, rgb_to_hsl, round_color};
@@ -91,6 +92,15 @@ struct Packet {
     antialias_radius: f64,
     symmetry: Symmetry,
     post_blur: Option<PostBlur>,
+    /// Solid rendering: light projections (`None` = classic flame rendering).
+    lights: Option<LightViews>,
+}
+
+/// Per-thread buffers of solid samples, flushed into [`SolidAccum`] in batches.
+#[derive(Default)]
+struct PlotOut {
+    samples: Vec<SolidSample>,
+    lights: Vec<LightSample>,
 }
 
 /// `PostBlurRenderIterationState`: splats samples over a radial kernel.
@@ -125,6 +135,7 @@ struct Shared {
     stop: AtomicBool,
     target_samples: u64,
     dimish_color: [f64; 3],
+    solid: Option<Mutex<SolidAccum>>,
 }
 
 #[derive(Clone)]
@@ -205,6 +216,7 @@ impl CpuRender {
                 antialias_radius: f.antialias_radius,
                 symmetry: Symmetry::new(f),
                 post_blur: PostBlur::new(f),
+                lights: f.solid.enabled.then(|| LightViews::new(&f.solid)),
             })
             .collect();
         let view = &packets[0].view;
@@ -213,12 +225,17 @@ impl CpuRender {
             Some(d) => ((d * raster_size as f64 / view.oversample as f64 + 0.5) as u64).saturating_mul(packets.len() as u64),
             None => u64::MAX,
         };
+        let solid = flame.solid.enabled.then(|| {
+            let frames = shadow_frames(&packets[0], flame);
+            Mutex::new(SolidAccum::new(view.raster_width, view.raster_height, &frames, solid::shadow_map_size(flame, view.ppu_scale)))
+        });
         let shared = Arc::new(Shared {
-            histogram: Histogram::new(view.raster_width, view.raster_height),
+            histogram: Histogram::new(if solid.is_some() { 0 } else { view.raster_width }, if solid.is_some() { 0 } else { view.raster_height }),
             samples: AtomicU64::new(0),
             stop: AtomicBool::new(false),
             target_samples,
             dimish_color: [0.0; 3],
+            solid,
             packets,
         });
         let n = opts.threads.max(1);
@@ -282,6 +299,9 @@ impl CpuRender {
 
     /// Tonemaps without density estimation (cheap, for progressive previews).
     pub fn image_fast(&self, with_alpha: bool) -> Vec<u8> {
+        if self.shared.solid.is_some() {
+            return self.solid_image(with_alpha, false);
+        }
         let v = &self.shared.packets[0].view;
         let tm = ToneMapper::new(&self.flame, v.image_width, v.image_height, v.ppu, self.density(), with_alpha).with_packets(self.shared.packets.len());
         tm.render(&self.flame, &self.shared.histogram, v.image_width, v.image_height)
@@ -289,6 +309,9 @@ impl CpuRender {
 
     /// Tonemaps the current state into an RGBA8 image (with density estimation if enabled).
     pub fn image(&self, with_alpha: bool) -> Vec<u8> {
+        if self.shared.solid.is_some() {
+            return self.solid_image(with_alpha, true);
+        }
         let v = &self.shared.packets[0].view;
         let tm = ToneMapper::new(&self.flame, v.image_width, v.image_height, v.ppu, self.density(), with_alpha).with_packets(self.shared.packets.len());
         match super::de::DeParams::new(&self.flame, v.ppu_scale) {
@@ -298,6 +321,23 @@ impl CpuRender {
             }
             None => tm.render(&self.flame, &self.shared.histogram, v.image_width, v.image_height),
         }
+    }
+}
+
+impl CpuRender {
+    /// Solid rendering: normals, AO, shadows, shading and (optionally) post DOF of the current
+    /// z-buffer.
+    fn solid_image(&self, with_alpha: bool, post_dof: bool) -> Vec<u8> {
+        let v = &self.shared.packets[0].view;
+        let acc = self.shared.solid.as_ref().expect("solid render").lock().expect("solid accum").clone();
+        let lights = LightViews::new(&self.flame.solid);
+        let raster = solid::finalize(&acc, &self.flame, &lights);
+        let shader = solid::SolidShader::new(&self.flame, &raster, &lights, v.border, with_alpha);
+        let (mut img, dof) = shader.render(v.image_width, v.image_height);
+        if post_dof && self.flame.cam_dof > EPSILON {
+            solid::post_dof(&self.flame, &mut img, &dof, v.image_width, v.image_height);
+        }
+        img
     }
 }
 
@@ -329,6 +369,7 @@ fn render_thread(sh: Arc<Shared>, seed: u64) {
     }
     let per_round: u64 = sh.packets.iter().map(|pk| pk.prepared.layers.len() as u64).sum();
     const BATCH: u64 = 4096;
+    let mut out = PlotOut::default();
     loop {
         if sh.stop.load(Ordering::Relaxed) {
             break;
@@ -346,9 +387,18 @@ fn render_thread(sh: Arc<Shared>, seed: u64) {
                     }
                 }
                 for _ in 0..BATCH {
-                    iterate(&sh, pk, l, st, &mut ctx);
+                    iterate(&sh, pk, l, st, &mut ctx, &mut out);
                 }
             }
+        }
+        if let Some(acc) = &sh.solid
+            && (!out.samples.is_empty() || !out.lights.is_empty())
+        {
+            let mut acc = acc.lock().expect("solid accum");
+            acc.add(&out.samples);
+            acc.add_light(&out.lights);
+            out.samples.clear();
+            out.lights.clear();
         }
         let total = sh.samples.fetch_add(BATCH * per_round, Ordering::Relaxed);
         if total >= sh.target_samples {
@@ -359,6 +409,7 @@ fn render_thread(sh: Arc<Shared>, seed: u64) {
 
 fn pre_fuse(layer: &PreparedLayer, st: &mut LayerState, ctx: &mut Ctx) {
     st.p = Pt { x: 2.0 * ctx.random() - 1.0, y: 2.0 * ctx.random() - 1.0, z: 0.0, color: ctx.random(), ..Pt::default() };
+    st.p.material = ctx.random();
     st.xf = 0;
     st.valid = false;
     if layer.xforms.is_empty() {
@@ -376,7 +427,7 @@ fn pre_fuse(layer: &PreparedLayer, st: &mut LayerState, ctx: &mut Ctx) {
 }
 
 #[inline]
-fn iterate(sh: &Shared, pk: &Packet, layer: &PreparedLayer, st: &mut LayerState, ctx: &mut Ctx) {
+fn iterate(sh: &Shared, pk: &Packet, layer: &PreparedLayer, st: &mut LayerState, ctx: &mut Ctx, out: &mut PlotOut) {
     if layer.density < 1.0 && ctx.random() > layer.density * layer.density {
         return;
     }
@@ -404,14 +455,14 @@ fn iterate(sh: &Shared, pk: &Packet, layer: &PreparedLayer, st: &mut LayerState,
     }
     let sym = &pk.symmetry;
     match sym.kind {
-        PostSymmetryType::None => plot(sh, pk, layer, &st.p, &q, q.x, q.y, ctx),
+        PostSymmetryType::None => plot(sh, pk, layer, &st.p, &q, q.x, q.y, ctx, out),
         PostSymmetryType::Point => {
             let (cx, cy) = sym.centre;
             let dx = q.x - cx;
             let dy = q.y - cy;
-            plot(sh, pk, layer, &st.p, &q, q.x, q.y, ctx);
+            plot(sh, pk, layer, &st.p, &q, q.x, q.y, ctx, out);
             for &(s, c) in &sym.rotations {
-                plot(sh, pk, layer, &st.p, &q, cx + dx * c + dy * s, cy + dy * c - dx * s, ctx);
+                plot(sh, pk, layer, &st.p, &q, cx + dx * c + dy * s, cy + dy * c - dx * s, ctx, out);
             }
         }
         PostSymmetryType::XAxis | PostSymmetryType::YAxis => {
@@ -434,14 +485,19 @@ fn iterate(sh: &Shared, pk: &Packet, layer: &PreparedLayer, st: &mut LayerState,
                 bx = cx + dx * c - dy * s;
                 by = cy + dy * c + dx * s;
             }
-            plot(sh, pk, layer, &st.p, &q, ax, ay, ctx);
-            plot(sh, pk, layer, &st.p, &q, bx, by, ctx);
+            plot(sh, pk, layer, &st.p, &q, ax, ay, ctx, out);
+            plot(sh, pk, layer, &st.p, &q, bx, by, ctx, out);
         }
     }
 }
 
 #[inline]
-fn plot(sh: &Shared, pk: &Packet, layer: &PreparedLayer, p: &Pt, q: &Pt, x: f64, y: f64, ctx: &mut Ctx) {
+#[allow(clippy::too_many_arguments)]
+fn plot(sh: &Shared, pk: &Packet, layer: &PreparedLayer, p: &Pt, q: &Pt, x: f64, y: f64, ctx: &mut Ctx, out: &mut PlotOut) {
+    if let Some(lights) = &pk.lights {
+        plot_solid(sh, pk, lights, layer, p, q, x, y, out);
+        return;
+    }
     let Some((mut raw_x, mut raw_y, dz)) = pk.view.project(x, y, q.z, ctx) else {
         return;
     };
@@ -486,6 +542,109 @@ fn plot(sh: &Shared, pk: &Packet, layer: &PreparedLayer, p: &Pt, q: &Pt, x: f64,
         }
         _ => sh.histogram.add(sx as u32, sy as u32, r, g, b),
     }
+}
+
+/// Solid rendering plot (`DefaultPointProjector` + `plotPoint` with a z-buffer).
+#[allow(clippy::too_many_arguments)]
+fn plot_solid(sh: &Shared, pk: &Packet, lights: &LightViews, layer: &PreparedLayer, p: &Pt, q: &Pt, x: f64, y: f64, out: &mut PlotOut) {
+    if !p.receive_only_shadows {
+        for (li, m) in lights.proj.iter().enumerate() {
+            if let Some(m) = m {
+                let lp = LightViews::project(m, x, y, q.z);
+                out.lights.push(LightSample { light: li as u32, p: [lp[0] as f32, lp[1] as f32, lp[2] as f32] });
+            }
+        }
+    }
+    if !(x.is_finite() && y.is_finite() && q.z.is_finite()) {
+        return;
+    }
+    let v = &pk.view;
+    let Some((raw_x, raw_y, dz, cz, dof)) = v.project_solid(x, y, q.z) else {
+        return;
+    };
+    let sx = (raw_x + 0.5) as i64;
+    let sy = (raw_y + 0.5) as i64;
+    if sx < 0 || sy < 0 || sx >= v.raster_width as i64 || sy >= v.raster_height as i64 {
+        return;
+    }
+    let d = sh.dimish_color;
+    let w = layer.weight;
+    let c = |i: usize, c: f64| ((d[i] + (c - d[i]) * dz) * w) as f32;
+    out.samples.push(SolidSample {
+        x: sx as u32,
+        y: sy as u32,
+        z: (cz * v.bws) as f32,
+        origin: [x as f32, y as f32, q.z as f32],
+        color: [c(0, q.red), c(1, q.green), c(2, q.blue)],
+        material: if p.receive_only_shadows { -1.0 } else { p.material as f32 },
+        dof: dof as f32,
+    });
+}
+
+/// Shadow map placement for solid rendering at `width`×`height` (also used by the GPU renderer).
+pub fn solid_shadow_frames(flame: &Flame, width: u32, height: u32) -> Vec<Option<ShadowFrame>> {
+    let filter_size = flame.filter_kernel.filter_size(flame.spatial_filter_radius, flame.spatial_oversampling.max(1));
+    let pk = Packet {
+        prepared: PreparedFlame::new(flame),
+        view: View::new(flame, width.max(1), height.max(1), filter_size),
+        antialias_amount: 0.0,
+        antialias_radius: 0.0,
+        symmetry: Symmetry::new(flame),
+        post_blur: None,
+        lights: flame.solid.enabled.then(|| LightViews::new(&flame.solid)),
+    };
+    shadow_frames(&pk, flame)
+}
+
+/// Places the shadow maps from the light-space bounds of the first samples
+/// (`ShadowCalculator.addShadowMapSamples`).
+fn shadow_frames(pk: &Packet, flame: &Flame) -> Vec<Option<ShadowFrame>> {
+    let Some(lights) = pk.lights.as_ref().filter(|l| l.proj.iter().any(Option::is_some)) else {
+        return vec![None; flame.solid.lights.len()];
+    };
+    let tmp = Shared {
+        packets: Vec::new(),
+        histogram: Histogram::new(0, 0),
+        samples: AtomicU64::new(0),
+        stop: AtomicBool::new(false),
+        target_samples: 0,
+        dimish_color: [0.0; 3],
+        solid: None,
+    };
+    let mut ctx = Ctx::new(solid::SHADOW_SEED ^ 0x5AD0_3D5E, pk.prepared.preserve_z);
+    let mut out = PlotOut::default();
+    let mut points: Vec<Vec<[f32; 3]>> = vec![Vec::new(); lights.proj.len()];
+    let enough = |points: &[Vec<[f32; 3]>]| lights.proj.iter().zip(points).all(|(m, p)| m.is_none() || p.len() >= solid::SHADOW_MAP_PRE_SAMPLES);
+    'outer: for _ in 0..64 {
+        for layer in &pk.prepared.layers {
+            ctx.palette.clone_from(&layer.palette);
+            let mut st = LayerState { p: Pt::default(), xf: 0, valid: false };
+            pre_fuse(layer, &mut st, &mut ctx);
+            if !st.valid {
+                continue;
+            }
+            for _ in 0..16384 {
+                if !st.valid || st.p.is_bad() {
+                    pre_fuse(layer, &mut st, &mut ctx);
+                    if !st.valid {
+                        break;
+                    }
+                }
+                iterate(&tmp, pk, layer, &mut st, &mut ctx, &mut out);
+            }
+            for s in out.lights.drain(..) {
+                if points[s.light as usize].len() < solid::SHADOW_MAP_PRE_SAMPLES {
+                    points[s.light as usize].push(s.p);
+                }
+            }
+            out.samples.clear();
+            if enough(&points) {
+                break 'outer;
+            }
+        }
+    }
+    let size = solid::shadow_map_size(flame, pk.view.ppu_scale);
+    lights.proj.iter().zip(&points).map(|(m, p)| m.map(|_| ShadowFrame::fit(p, size))).collect()
 }
 
 #[inline]
