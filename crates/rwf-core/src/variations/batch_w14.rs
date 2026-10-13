@@ -27,6 +27,7 @@ use super::{Ctx, ParamDef, Pt, VarDef, VarKind, simple};
 #[allow(unused_imports)]
 use crate::math::*;
 use super::complex::Complex;
+use super::glsl::{mat2, vec2};
 #[allow(unused_imports)]
 use crate::model::Affine;
 
@@ -420,6 +421,94 @@ fn juliac_period(re: f64) -> f64 {
             t != 0.0 && (t - t.round()).abs() < 1e-9
         })
         .map_or(0.0, |n| n as f64)
+}
+
+/// `JuliaScopePlusFunc.transformFunction`; d = [power, dist, cx, cy, mixPowerSign, colorMode,
+/// colorSpeed, thetaSignMode, angularOffset, swirlFactor, fixedBranch, radialOffset,
+/// altPowerScale, altPowerRotate, rndTermMode, mandelbrotLike, branches].
+fn juliascope_plus_apply(d: &[f64], ctx: &mut Ctx, a: &Pt, v: &mut Pt, amount: f64) {
+    let power = d[0] as i32;
+    let nb = d[16] as i32;
+    let sign = if power == 0 { 1 } else { power.signum() };
+    let (eff, alt, flipped);
+    if power != 0 && d[4] >= 0.5 {
+        if ctx.random_int(2) == 0 {
+            eff = nb * sign;
+            alt = false;
+        } else {
+            eff = -nb * sign;
+            alt = true;
+        }
+        flipped = eff < 0;
+    } else {
+        eff = power;
+        alt = false;
+        flipped = eff < 0;
+    }
+    let (add_x, add_y) = if d[15] >= 1.0 { (a.x, a.y) } else { (d[2], d[3]) };
+    if eff == 0 {
+        v.x += amount * (a.x + add_x);
+        v.y += amount * (a.y + add_y);
+        ctx.pass_z(a, v, amount);
+        return;
+    }
+    let cpower = d[1] / eff as f64 * 0.5;
+    let fixed = java_round(d[10]) as i32;
+    let num = if nb > 0 { nb } else { 1 };
+    let rnd = if fixed >= 0 && fixed < num { fixed } else { ctx.random_int(num as usize) as i32 };
+    let theta = a.y.atan2(a.x);
+    let tsign = match d[7] as i32 {
+        0 => if rnd & 1 != 0 { -1.0 } else { 1.0 },
+        2 => -1.0,
+        3 => if ctx.random_int(2) == 0 { 1.0 } else { -1.0 },
+        _ => 1.0,
+    };
+    let rsign = match d[14] as i32 {
+        1 => -1.0,
+        2 => if rnd & 1 != 0 { -1.0 } else { 1.0 },
+        3 => if ctx.random_int(2) == 0 { 1.0 } else { -1.0 },
+        _ => 1.0,
+    };
+    let mut ang = (rsign * 2.0 * M_PI * rnd as f64 + tsign * theta) / eff as f64;
+    if d[9] != 0.0 {
+        let r0 = (a.x * a.x + a.y * a.y).sqrt();
+        if r0 > 0.00001 {
+            ang += d[9] * (1.0 + r0).ln();
+        }
+    }
+    ang += d[8];
+    let rmag = java_max(0.0, a.x * a.x + a.y * a.y).powf(cpower) + d[11];
+    let (mut dx, mut dy) = (rmag * ang.cos(), rmag * ang.sin());
+    if alt {
+        dx *= d[12];
+        dy *= d[12];
+        if d[13] != 0.0 {
+            let (sr, cr) = d[13].sin_cos();
+            (dx, dy) = (dx * cr - dy * sr, dx * sr + dy * cr);
+        }
+    }
+    v.x += amount * (dx + add_x);
+    v.y += amount * (dy + add_y);
+    let cm = d[5] as i32;
+    if cm != 0 {
+        let val = match cm {
+            1 => ang / (2.0 * M_PI),
+            2 => (1.00001 + java_max(0.0, rmag)).ln(),
+            3 => (theta + M_PI) / (2.0 * M_PI),
+            4 => rnd as f64 / num as f64,
+            _ => {
+                if d[4] >= 0.5 && power != 0 {
+                    if flipped { 0.75 } else { 0.25 }
+                } else if power >= 0 {
+                    0.25
+                } else {
+                    0.75
+                }
+            }
+        };
+        v.color = frac(val * d[6]);
+    }
+    ctx.pass_z(a, v, amount);
 }
 
 pub static DEFS: &[VarDef] = &[
@@ -2812,6 +2901,243 @@ if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
 let r = AMOUNT * java_pow(a.x * a.x + a.y * a.y, D(2));
 v.x += r * cos(ang);
 v.y += r * sin(ang);
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "juliascope3Db",
+        // Default power: JWildfire picks a random one (+-2..7) for new instances
+        params: &[
+            ParamDef::new("power", 3.0),
+            ParamDef::new("dist", 1.0),
+            ParamDef::int("type", 0.0, 0.0, 1.0),
+            ParamDef::new("warp", 0.0),
+            ParamDef::new("za", 1.0),
+            ParamDef::new("zb", 1.0),
+            ParamDef::new("zamount", 1.0),
+            ParamDef::new("zdist", 1.0),
+            ParamDef::int("mode", 0.0, 0.0, 1.0),
+            ParamDef::new("wave1", 1.0),
+            ParamDef::new("wave2", 1.0),
+        ],
+        kind: VarKind::Normal,
+        is_3d: true,
+        // d = [<params>, abs_power, cpower]
+        apply: |d, ctx, a, v, amount| {
+            let (abs_power, cpower) = (d[11], d[12]);
+            let z = a.z / abs_power + d[3];
+            let r2d = a.x * a.x * d[4] + a.y * a.y * d[5];
+            let rz = amount * d[6] * (r2d + z * z).powf(cpower * d[7]);
+            let rnd = ctx.random_int(abs_power as usize) as i32;
+            let theta = a.y.atan2(a.x);
+            let ang = if rnd & 1 == 0 { (2.0 * M_PI * rnd as f64 + theta) / d[0] } else { (2.0 * M_PI * rnd as f64 - theta) / d[0] };
+            let rsq = if d[2] != 0.0 { a.x * a.x + a.y * a.y + a.z * a.z } else { a.x * a.x + a.y * a.y };
+            let r = amount * rsq.powf(cpower);
+            v.x += r * ang.cos();
+            v.y += r * ang.sin();
+            if d[8] != 0.0 {
+                v.z += rz * z * (d[9].sin() * d[10].cos());
+            } else {
+                v.z += rz * z;
+            }
+        },
+        prepare: Some(|p, _| {
+            let mut d = p.to_vec();
+            d[2] = limit_value(p[2], 0.0, 1.0).trunc();
+            d[8] = limit_value(p[8], 0.0, 1.0).trunc();
+            d.extend([ftoi(p[0]).abs() as f64, p[1] / p[0] * 0.5]);
+            d
+        }),
+        wgsl: "let ap = D(11);
+let cpower = D(12);
+let z = a.z / ap + D(3);
+let r2d = a.x * a.x * D(4) + a.y * a.y * D(5);
+let rz = AMOUNT * D(6) * java_pow(r2d + z * z, cpower * D(7));
+let rnd = i32(floor(rnd() * ap));
+let theta = atan2(a.y, a.x);
+var ang = (TWO_PI * f32(rnd) + theta) / D(0);
+if ((rnd & 1) != 0) { ang = (TWO_PI * f32(rnd) - theta) / D(0); }
+var rsq = a.x * a.x + a.y * a.y;
+if (D(2) != 0.0) { rsq += a.z * a.z; }
+let r = AMOUNT * java_pow(rsq, cpower);
+v.x += r * cos(ang);
+v.y += r * sin(ang);
+if (D(8) != 0.0) { v.z += rz * z * (sin(D(9)) * cos(D(10))); } else { v.z += rz * z; }",
+    },
+    VarDef {
+        name: "juliascopePlus",
+        // Default power: JWildfire picks a random one (+-2..5) for new instances
+        params: &[
+            ParamDef::int("power", 3.0, -10.0, 10.0),
+            ParamDef::new("dist", 1.0),
+            ParamDef::new("cx", 0.0),
+            ParamDef::new("cy", 0.0),
+            ParamDef::new("mixPowerSign", 0.0),
+            ParamDef::int("colorMode", 0.0, 0.0, 5.0),
+            ParamDef::new("colorSpeed", 1.0),
+            ParamDef::int("thetaSignMode", 0.0, 0.0, 3.0),
+            ParamDef::new("angularOffset", 0.0),
+            ParamDef::new("swirlFactor", 0.0),
+            ParamDef::new("fixedBranch", -1.0),
+            ParamDef::new("radialOffset", 0.0),
+            ParamDef::new("altPowerScale", 1.0),
+            ParamDef::new("altPowerRotate", 0.0),
+            ParamDef::int("rndTermMode", 0.0, 0.0, 3.0),
+            ParamDef::int("mandelbrotLike", 0.0, 0.0, 1.0)
+        ],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| juliascope_plus_apply(d, ctx, a, v, amount),
+        prepare: Some(|p, _| {
+            let mut d = p.to_vec();
+            let power = java_round(p[0]) as i32;
+            d[0] = power as f64;
+            d[5] = limit_value(ftoi(p[5]), 0, 5) as f64;
+            d[7] = limit_value(ftoi(p[7]), 0, 3) as f64;
+            d[14] = limit_value(ftoi(p[14]), 0, 3) as f64;
+            d[15] = limit_value(ftoi(p[15]), 0, 1) as f64;
+            d.push(if power == 0 { 2.0 } else { power.abs().max(1) as f64 });
+            d
+        }),
+        wgsl: "let power = i32(D(0));
+let nb = i32(D(16));
+var sgn = 1;
+if (power < 0) { sgn = -1; }
+var eff = power;
+var alt = false;
+if (power != 0 && D(4) >= 0.5) {
+  if (rnd() < 0.5) { eff = nb * sgn; } else { eff = -nb * sgn; alt = true; }
+}
+let flipped = eff < 0;
+var add = vec2<f32>(D(2), D(3));
+if (D(15) >= 1.0) { add = vec2<f32>(a.x, a.y); }
+if (eff == 0) {
+  v.x += AMOUNT * (a.x + add.x);
+  v.y += AMOUNT * (a.y + add.y);
+} else {
+  let cpower = D(1) / f32(eff) * 0.5;
+  let fixed = i32(java_round(D(10)));
+  let num = max(nb, 1);
+  var rnd_i = min(i32(rnd() * f32(num)), num - 1);
+  if (fixed >= 0 && fixed < num) { rnd_i = fixed; }
+  let theta = atan2(a.y, a.x);
+  let tm = i32(D(7));
+  var tsign = 1.0;
+  if (tm == 0) { if ((rnd_i & 1) != 0) { tsign = -1.0; } }
+  else if (tm == 2) { tsign = -1.0; }
+  else if (tm == 3) { tsign = select(-1.0, 1.0, rnd() < 0.5); }
+  let rm = i32(D(14));
+  var rsign = 1.0;
+  if (rm == 1) { rsign = -1.0; }
+  else if (rm == 2) { if ((rnd_i & 1) != 0) { rsign = -1.0; } }
+  else if (rm == 3) { rsign = select(-1.0, 1.0, rnd() < 0.5); }
+  var ang = (rsign * TWO_PI * f32(rnd_i) + tsign * theta) / f32(eff);
+  if (D(9) != 0.0) {
+    let r0 = sqrt(a.x * a.x + a.y * a.y);
+    if (r0 > 0.00001) { ang += D(9) * log(1.0 + r0); }
+  }
+  ang += D(8);
+  let rmag = java_pow(max(0.0, a.x * a.x + a.y * a.y), cpower) + D(11);
+  var dd = rmag * vec2<f32>(cos(ang), sin(ang));
+  if (alt) {
+    dd *= D(12);
+    if (D(13) != 0.0) {
+      let cr = cos(D(13));
+      let sr = sin(D(13));
+      dd = vec2<f32>(dd.x * cr - dd.y * sr, dd.x * sr + dd.y * cr);
+    }
+  }
+  v.x += AMOUNT * (dd.x + add.x);
+  v.y += AMOUNT * (dd.y + add.y);
+  let cm = i32(D(5));
+  if (cm != 0) {
+    var val = 0.25;
+    if (cm == 1) { val = ang / TWO_PI; }
+    else if (cm == 2) { val = log(1.00001 + max(0.0, rmag)); }
+    else if (cm == 3) { val = (theta + PI) / TWO_PI; }
+    else if (cm == 4) { val = f32(rnd_i) / f32(num); }
+    else if (D(4) >= 0.5 && power != 0) { val = select(0.25, 0.75, flipped); }
+    else { val = select(0.75, 0.25, power >= 0); }
+    let cv = val * D(6);
+    v.color = cv - trunc(cv);
+  }
+}
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "kaplan",
+        params: &[ParamDef::int("seed", 1000.0, 0.0, 100000.0), ParamDef::int("N", 800.0, 50.0, 1500.0), ParamDef::new("time", 10.0), ParamDef::int("invert", 0.0, 0.0, 1.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let n = d[1];
+            let (mut x, mut y) = ((n * ctx.random()) as i32, (n * ctx.random()) as i32);
+            let zoom = d[2].floor();
+            let (xv, yv) = (zoom * (x as f64 - n / 2.0), zoom * (y as f64 - n / 2.0));
+            let r0 = super::glsl::glsl_atan(xv, yv);
+            let uv = vec2(xv, yv) * mat2(r0.cos(), -r0.sin(), r0.sin(), r0.cos());
+            let value = uv.x * uv.x + uv.y * uv.y;
+            let exponent = (value.ln() / 2f64.ln()).floor();
+            let mantissa = value * 2f64.powf(-exponent) - 1.0;
+            let r = mantissa - (mantissa * 2f64.powf(16.0) + 0.5).floor() / 2f64.powf(16.0);
+            let hide = if d[3] == 0.0 { r > 0.0 } else { r <= 0.0 };
+            v.do_hide = hide;
+            if hide {
+                x = 0;
+                y = 0;
+            }
+            v.x = amount * (x as f64 / n - 0.5);
+            v.y = amount * (y as f64 / n - 0.5);
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: Some(|p, _| vec![p[0], limit_value(p[1], 50.0, 1500.0).trunc(), p[2], limit_value(p[3], 0.0, 1.0).trunc()]),
+        wgsl: "let n = D(1);
+var x = trunc(n * rnd());
+var y = trunc(n * rnd());
+let zoom = floor(D(2));
+let xv = zoom * (x - n / 2.0);
+let yv = zoom * (y - n / 2.0);
+let r0 = glsl_atan(xv, yv);
+let uv = vec2<f32>(xv, yv) * mat2x2<f32>(cos(r0), -sin(r0), sin(r0), cos(r0));
+let value = dot(uv, uv);
+let exponent = floor(log2(value));
+let mantissa = value * exp2(-exponent) - 1.0;
+let r = mantissa - floor(mantissa * 65536.0 + 0.5) / 65536.0;
+var hide = r <= 0.0;
+if (D(3) == 0.0) { hide = r > 0.0; }
+if (hide) { x = 0.0; y = 0.0; v.hide = 1.0; } else { v.hide = 0.0; }
+v.x = AMOUNT * (x / n - 0.5);
+v.y = AMOUNT * (y / n - 0.5);
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "karman_vortex",
+        params: &[ParamDef::new("freq", 2.0), ParamDef::new("strength", 0.3), ParamDef::new("sep", 0.5)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let freq = java_max(d[0].abs(), 0.01);
+            let xi = java_round(a.x * freq);
+            let mut parity = xi % 2.0;
+            if parity < 0.0 {
+                parity += 2.0;
+            }
+            let (vcx, vcy) = (xi / freq, d[2] * 0.5 * (2.0 * parity - 1.0));
+            let (dx, dy) = (a.x - vcx, a.y - vcy);
+            let spin = d[1] * (2.0 * parity - 1.0) / (dx * dx + dy * dy + 1e-4);
+            v.x += amount * (a.x + spin * (-dy));
+            v.y += amount * (a.y + spin * dx);
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "let freq = max(abs(D(0)), 0.01);
+let xi = java_round(a.x * freq);
+var parity = xi % 2.0;
+if (parity < 0.0) { parity += 2.0; }
+let dx = a.x - xi / freq;
+let dy = a.y - D(2) * 0.5 * (2.0 * parity - 1.0);
+let spin = D(1) * (2.0 * parity - 1.0) / (dx * dx + dy * dy + 1e-4);
+v.x += AMOUNT * (a.x + spin * (-dy));
+v.y += AMOUNT * (a.y + spin * dx);
 if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
     },
 ];
