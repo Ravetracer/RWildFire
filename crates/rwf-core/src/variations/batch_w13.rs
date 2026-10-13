@@ -2953,6 +2953,392 @@ if (hit) {
 v.x += (fx + fx_h) * AMOUNT;
 v.y += (fy + fy_h) * AMOUNT;",
     },
+    VarDef {
+        name: "truchet_hex_fill",
+        params: &[
+            ParamDef::int("n", 3.0, 1.0, 20.0),
+            ParamDef::int("flipx", 1.0, 0.0, 1.0),
+            ParamDef::int("flipy", 1.0, 0.0, 1.0),
+            ParamDef::new("spreadx", 1.0),
+            ParamDef::new("spready", 1.0),
+            ParamDef::int("seed", 13.0, 0.0, 100.0),
+        ],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            const SQRT3_2: f64 = 0.866_025_403_784_438_6;
+            const SQRT3: f64 = 1.732_050_807_568_877_2;
+            let (n, flipx, flipy, spreadx, spready, seed) = (d[0] as i32, d[1] as i32, d[2] as i32, d[3], d[4], d[5] as i32);
+            let l = ctx.random().ln();
+            let rx = (l * if ctx.random() < 0.5 { spreadx } else { -spreadx }).floor();
+            let l = ctx.random().ln();
+            let rz = (l * if ctx.random() < 0.5 { spready } else { -spready }).floor();
+            let fx_h = SQRT3 * rx + SQRT3_2 * if ctx.random() < 0.5 { rz } else { -rz };
+            let fy_h = 1.5 * rz;
+            let mut add = true;
+            if seed == 1 && fmod(rx, 2.0) == 0.0 && fmod(rz, 2.0) == 0.0 {
+                add = false;
+            }
+            if seed >= 2 {
+                let mut hash_f = (fx_h * 12.9898 + fy_h * 78.233 + seed as f64).sin() * 43758.5453;
+                hash_f -= hash_f.floor();
+                if hash_f < 0.5 {
+                    add = false;
+                }
+            }
+            let nnn = 3.0 * n as f64;
+            let nnnn = 1.0 / nnn;
+            let s1 = (M_PI * nnnn).exp();
+            let k_factor = 2.0 / (s1 + 1.0 / s1);
+            let rangle = (ctx.random() * nnn).floor() * M_2PI * nnnn;
+            let y_aux = if flipy == 0 && !add { -a.y } else { a.y };
+            let x_aux = if flipx == 0 && !add { -a.x } else { a.x };
+            let fy0 = y_aux * nnnn;
+            let fx0 = x_aux * nnnn;
+            let sn = (fy0 * M_PI + rangle).sin();
+            let cs = (fy0 * M_PI + rangle).cos();
+            let aa = k_factor * (fx0 * M_PI).exp();
+            let (fx, fy) = (aa * cs, aa * sn);
+            let mut ang_a = fy.atan2(fx);
+            if ang_a < 0.0 {
+                ang_a += M_2PI;
+            }
+            ang_a = (1.5 * ang_a * M_1_PI).floor();
+            let ang = (M_PI + ang_a * M_2PI) / 3.0;
+            let fx_new = fx - ang.cos() * 2.0;
+            let fy_new = fy - ang.sin() * 2.0;
+            let (fx, fy) = if add {
+                (SQRT3_2 * fx_new - 0.5 * fy_new, 0.5 * fx_new + SQRT3_2 * fy_new)
+            } else {
+                (SQRT3_2 * fx_new + 0.5 * fy_new, -0.5 * fx_new + SQRT3_2 * fy_new)
+            };
+            v.x += amount * (fx * 0.5 + fx_h);
+            v.y += amount * (fy * 0.5 + fy_h);
+        },
+        prepare: Some(|p, _| {
+            vec![p[0] as i32 as f64, limit_value(p[1], 0.0, 1.0) as i32 as f64, limit_value(p[2], 0.0, 1.0) as i32 as f64, p[3], p[4], p[5] as i32 as f64]
+        }),
+        wgsl: "let SQRT3_2 = 0.8660254037844386;
+let SQRT3 = 1.7320508075688772;
+let seed = i32(D(5));
+let l1 = log(rnd());
+let rx = floor(l1 * select(-D(3), D(3), rnd() < 0.5));
+let l2 = log(rnd());
+let rz = floor(l2 * select(-D(4), D(4), rnd() < 0.5));
+let fx_h = SQRT3 * rx + SQRT3_2 * select(-rz, rz, rnd() < 0.5);
+let fy_h = 1.5 * rz;
+var add = true;
+if (seed == 1 && fmod(rx, 2.0) == 0.0 && fmod(rz, 2.0) == 0.0) { add = false; }
+if (seed >= 2) {
+  let hash_f = fract(sin(fx_h * 12.9898 + fy_h * 78.233 + f32(seed)) * 43758.5453);
+  if (hash_f < 0.5) { add = false; }
+}
+let nnn = 3.0 * f32(i32(D(0)));
+let nnnn = 1.0 / nnn;
+let s1 = exp(PI * nnnn);
+let k_factor = 2.0 / (s1 + 1.0 / s1);
+let rangle = floor(rnd() * nnn) * TWO_PI * nnnn;
+var y_aux = a.y;
+if (i32(D(2)) == 0 && !add) { y_aux = -a.y; }
+var x_aux = a.x;
+if (i32(D(1)) == 0 && !add) { x_aux = -a.x; }
+let fy0 = y_aux * nnnn;
+let fx0 = x_aux * nnnn;
+let aa = k_factor * exp(fx0 * PI);
+let fx = aa * cos(fy0 * PI + rangle);
+let fy = aa * sin(fy0 * PI + rangle);
+var ang_a = atan2(fy, fx);
+if (ang_a < 0.0) { ang_a += TWO_PI; }
+ang_a = floor(1.5 * ang_a / PI);
+let ang = (PI + ang_a * TWO_PI) / 3.0;
+let fx_new = fx - cos(ang) * 2.0;
+let fy_new = fy - sin(ang) * 2.0;
+var ox = SQRT3_2 * fx_new + 0.5 * fy_new;
+var oy = -0.5 * fx_new + SQRT3_2 * fy_new;
+if (add) {
+  ox = SQRT3_2 * fx_new - 0.5 * fy_new;
+  oy = 0.5 * fx_new + SQRT3_2 * fy_new;
+}
+v.x += AMOUNT * (ox * 0.5 + fx_h);
+v.y += AMOUNT * (oy * 0.5 + fy_h);",
+    },
+    VarDef {
+        name: "tunnel",
+        params: &[ParamDef::new("Sx", 200.0), ParamDef::new("Sy", 50.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let (ux, uy) = (a.x + 0.5, a.y + 0.5);
+            let deform = 0.1;
+            let (dist_x, dist_y) = (0.5 - ux, 0.5 - uy);
+            let distortion = -(0.25 - (uy * deform - deform * 0.5).powf(2.0)).sqrt() * deform + deform * 0.5;
+            let shift_x = distortion * dist_x * d[0];
+            let deform_y_fixed = (deform - distortion) * deform;
+            let shift_y = d[1] * deform_y_fixed * dist_y;
+            v.x = amount * (v.x + shift_x);
+            v.y = amount * (v.y + shift_y);
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "let ux = a.x + 0.5;
+let uy = a.y + 0.5;
+let deform = 0.1;
+let distortion = -sqrt(0.25 - pow(uy * deform - deform * 0.5, 2.0)) * deform + deform * 0.5;
+let shift_x = distortion * (0.5 - ux) * D(0);
+let shift_y = D(1) * ((deform - distortion) * deform) * (0.5 - uy);
+v.x = AMOUNT * (v.x + shift_x);
+v.y = AMOUNT * (v.y + shift_y);
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "tunneling",
+        params: &[ParamDef::new("barrier", 0.5), ParamDef::new("decay", 3.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let qt_x = a.x - d[0];
+            let qt_prob = if qt_x > 0.0 { (-d[1] * qt_x).exp() } else { 1.0 };
+            v.x += amount * a.x * qt_prob;
+            v.y += amount * a.y * qt_prob;
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "let qt_x = a.x - D(0);
+var qt_prob = 1.0;
+if (qt_x > 0.0) { qt_prob = exp(-D(1) * qt_x); }
+v.x += AMOUNT * a.x * qt_prob;
+v.y += AMOUNT * a.y * qt_prob;
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "turbulence",
+        params: &[ParamDef::new("freq", 2.0), ParamDef::new("amp", 0.3)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let (f, am) = (d[0], d[1]);
+            let dx = am * ((f * a.x).sin() * (f * 0.7 * a.y).cos() + 0.5 * (2.0 * f * a.x).sin() * (1.4 * f * a.y).cos());
+            let dy = am * ((0.8 * f * a.x).cos() * (f * a.y).sin() + 0.5 * (1.6 * f * a.x).cos() * (2.0 * f * a.y).sin());
+            v.x += amount * (a.x + dx);
+            v.y += amount * (a.y + dy);
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "let f = D(0);
+let dx = D(1) * (sin(f * a.x) * cos(f * 0.7 * a.y) + 0.5 * sin(2.0 * f * a.x) * cos(1.4 * f * a.y));
+let dy = D(1) * (cos(0.8 * f * a.x) * sin(f * a.y) + 0.5 * cos(1.6 * f * a.x) * sin(2.0 * f * a.y));
+v.x += AMOUNT * (a.x + dx);
+v.y += AMOUNT * (a.y + dy);
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "tweed",
+        params: &[ParamDef::new("freq", 3.0), ParamDef::new("amp", 0.2)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let d1 = ((a.x + a.y) * d[0]) - ((a.x + a.y) * d[0]).floor();
+            let d2 = ((a.x - a.y) * d[0]) - ((a.x - a.y) * d[0]).floor();
+            let p = (d1 * M_PI).sin();
+            let c = (d2 * M_PI).sin();
+            let sgn = |t: f64| if t == 0.0 { 0.0 } else if t < 0.0 { -1.0 } else { 1.0 };
+            v.x += amount * (a.x + d[1] * p * sgn(c));
+            v.y += amount * (a.y - d[1] * c * sgn(p));
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "let d1 = fract((a.x + a.y) * D(0));
+let d2 = fract((a.x - a.y) * D(0));
+let p = sin(d1 * PI);
+let c = sin(d2 * PI);
+v.x += AMOUNT * (a.x + D(1) * p * sign(c));
+v.y += AMOUNT * (a.y - D(1) * c * sign(p));
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "twist_ribbon",
+        params: &[ParamDef::new("freq", 3.0), ParamDef::new("width", 0.5)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let (s, c) = (d[0] * a.x).sin_cos();
+            v.x += amount * (c * a.x - s * a.y * d[1]);
+            v.y += amount * (s * a.x + c * a.y * d[1]);
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "let s = sin(D(0) * a.x);
+let c = cos(D(0) * a.x);
+v.x += AMOUNT * (c * a.x - s * a.y * D(1));
+v.y += AMOUNT * (s * a.x + c * a.y * D(1));
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    simple(
+        "twoface",
+        false,
+        |_, ctx, a, v, amount| {
+            let mut r = amount;
+            if a.x > 0.0 {
+                r /= sqr(a.x) + sqr(a.y);
+            }
+            v.x += r * a.x;
+            v.y += r * a.y;
+            ctx.pass_z(a, v, amount);
+        },
+        "var r = AMOUNT;
+if (a.x > 0.0) { r = r / (sqr(a.x) + sqr(a.y)); }
+v.x += r * a.x;
+v.y += r * a.y;
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    ),
+    simple(
+        "unpolar",
+        false,
+        |_, ctx, a, v, amount| {
+            let vvar_2 = amount / M_PI * 0.5;
+            let r = a.y.exp();
+            v.y += vvar_2 * r * a.x.cos();
+            v.x += vvar_2 * r * a.x.sin();
+            ctx.pass_z(a, v, amount);
+        },
+        "let vvar_2 = AMOUNT / PI * 0.5;
+let r = exp(a.y);
+v.y += vvar_2 * r * cos(a.x);
+v.x += vvar_2 * r * sin(a.x);
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    ),
+    VarDef {
+        name: "vibration2",
+        params: &[
+            ParamDef::new("dir", 0.0),
+            ParamDef::new("angle", 1.5708),
+            ParamDef::new("freq", 1.0),
+            ParamDef::new("amp", 0.25),
+            ParamDef::new("phase", 0.0),
+            ParamDef::new("dir2", 1.5708),
+            ParamDef::new("angle2", 1.5708),
+            ParamDef::new("freq2", 1.0),
+            ParamDef::new("amp2", 0.25),
+            ParamDef::new("phase2", 0.0),
+            ParamDef::new("dm", 0.0),
+            ParamDef::new("dmfreq", 0.1),
+            ParamDef::new("tm", 0.0),
+            ParamDef::new("tmfreq", 0.1),
+            ParamDef::new("fm", 0.0),
+            ParamDef::new("fmfreq", 0.1),
+            ParamDef::new("am", 0.0),
+            ParamDef::new("amfreq", 0.1),
+            ParamDef::new("d2m", 0.0),
+            ParamDef::new("d2mfreq", 0.1),
+            ParamDef::new("t2m", 0.0),
+            ParamDef::new("t2mfreq", 0.1),
+            ParamDef::new("f2m", 0.0),
+            ParamDef::new("f2mfreq", 0.1),
+            ParamDef::new("a2m", 0.0),
+            ParamDef::new("a2mfreq", 0.1),
+        ],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            // wave k: (dir, angle, freq, amp, phase) at 5k, modulations (amp, freq) x 4 at 10 + 8k
+            let wave = |w: &[f64], m: &[f64]| {
+                let modulate = |amp: f64, freq: f64, x: f64| amp * (x * freq * M_2PI).cos();
+                let (dir, angle, freq, amp, phase) = (w[0], w[1], w[2], w[3], w[4]);
+                let mut dd = a.x * dir.cos() + a.y * dir.sin();
+                let dir_l = dir + modulate(m[0], m[1], dd);
+                let angle_l = angle + modulate(m[2], m[3], dd);
+                let freq_l = modulate(m[4], m[5], dd) / freq;
+                let amp_l = amp + amp * modulate(m[6], m[7], dd);
+                let total = angle_l + dir_l;
+                dd = a.x * dir_l.cos() + a.y * dir_l.sin();
+                let local_amp = amp_l * ((dd * (freq * M_2PI)) + freq_l + M_2PI * phase / freq).sin();
+                (local_amp * total.cos(), local_amp * total.sin())
+            };
+            let (dx1, dy1) = wave(&d[0..5], &d[10..18]);
+            let (dx2, dy2) = wave(&d[5..10], &d[18..26]);
+            let mut x = a.x + dx1;
+            let mut y = a.y + dy1;
+            x += dx2;
+            y += dy2;
+            v.x += amount * x;
+            v.y += amount * y;
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "fn vibration2_wave(base: u32, w: u32, m: u32, ax: f32, ay: f32) -> vec2<f32> {
+  let dir = prm[base + w];
+  let angle = prm[base + w + 1u];
+  let freq = prm[base + w + 2u];
+  let amp = prm[base + w + 3u];
+  let phase = prm[base + w + 4u];
+  var dd = ax * cos(dir) + ay * sin(dir);
+  let dir_l = dir + prm[base + m] * cos(dd * prm[base + m + 1u] * TWO_PI);
+  let angle_l = angle + prm[base + m + 2u] * cos(dd * prm[base + m + 3u] * TWO_PI);
+  let freq_l = prm[base + m + 4u] * cos(dd * prm[base + m + 5u] * TWO_PI) / freq;
+  let amp_l = amp + amp * prm[base + m + 6u] * cos(dd * prm[base + m + 7u] * TWO_PI);
+  let total = angle_l + dir_l;
+  dd = ax * cos(dir_l) + ay * sin(dir_l);
+  let local_amp = amp_l * sin((dd * (freq * TWO_PI)) + freq_l + TWO_PI * phase / freq);
+  return local_amp * vec2<f32>(cos(total), sin(total));
+}
+@body
+let w1 = vibration2_wave(base, 0u, 10u, a.x, a.y);
+let w2 = vibration2_wave(base, 5u, 18u, a.x, a.y);
+v.x += AMOUNT * (a.x + w1.x + w2.x);
+v.y += AMOUNT * (a.y + w1.y + w2.y);
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "vine",
+        params: &[ParamDef::new("density", 1.0), ParamDef::new("scale", 0.5)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let density = java_max(d[0].abs(), 0.01);
+            let scale = java_max(d[1].abs(), 0.01);
+            let r = (a.x * a.x + a.y * a.y).sqrt();
+            let theta = a.y.atan2(a.x);
+            let n = r * density;
+            let spiral = theta + n * 2.39996323;
+            let new_r = n.sqrt() * scale;
+            v.x += amount * new_r * spiral.cos();
+            v.y += amount * new_r * spiral.sin();
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "let n = sqrt(a.x * a.x + a.y * a.y) * max(abs(D(0)), 0.01);
+let spiral = atan2(a.y, a.x) + n * 2.39996323;
+let new_r = sqrt(n) * max(abs(D(1)), 0.01);
+v.x += AMOUNT * new_r * cos(spiral);
+v.y += AMOUNT * new_r * sin(spiral);
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "virus",
+        params: &[ParamDef::new("spread", 2.0), ParamDef::new("mut", 0.3)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let s = (a.x * d[0]).sin() * (a.y * d[0]).cos();
+            let sgn = |t: f64| if t == 0.0 { 0.0 } else if t < 0.0 { -1.0 } else { 1.0 };
+            let nx = a.x + d[1] * s * sgn(a.x);
+            let ny = a.y - d[1] * s * sgn(a.y);
+            let r = (a.x * a.x + a.y * a.y).sqrt();
+            let nr = (nx * nx + ny * ny).sqrt();
+            let scale = r / (nr + 1e-6);
+            v.x += amount * nx * scale;
+            v.y += amount * ny * scale;
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "let s = sin(a.x * D(0)) * cos(a.y * D(0));
+let nx = a.x + D(1) * s * sign(a.x);
+let ny = a.y - D(1) * s * sign(a.y);
+let scale = sqrt(a.x * a.x + a.y * a.y) / (sqrt(nx * nx + ny * ny) + 1e-6);
+v.x += AMOUNT * nx * scale;
+v.y += AMOUNT * ny * scale;
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
     // @@NEXT@@
 ];
 
