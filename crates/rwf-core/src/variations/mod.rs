@@ -175,11 +175,14 @@ pub struct Ctx {
     uv_idx_cache: HashMap<(i32, i32, i32, bool), f64>,
     /// Chaos-game states of `subflame_wf` sub-flames in this thread.
     pub(crate) subflames: subflame::SubStates,
+    /// Orbit points of variations that follow one orbit across calls in JWildfire, by prepared
+    /// data address (CPU only).
+    pub(crate) orbits: HashMap<usize, [f64; 2]>,
 }
 
 impl Ctx {
     pub fn new(seed: u64, preserve_z: bool) -> Self {
-        Self { rng: Rng::new(seed), preserve_z, palette: vec![[0, 0, 0]; 256], uv_idx_cache: HashMap::new(), subflames: HashMap::new() }
+        Self { rng: Rng::new(seed), preserve_z, palette: vec![[0, 0, 0]; 256], uv_idx_cache: HashMap::new(), subflames: HashMap::new(), orbits: HashMap::new() }
     }
     pub fn set_palette(&mut self, palette: &[[u8; 3]]) {
         self.palette.clear();

@@ -993,6 +993,25 @@ fn grid3d_cell_rnd(x: i32, y: i32, z: i32, k: u32) -> f64 {
     h as f64 / 4294967296.0
 }
 
+/// `GridoutFunc` / `Gridout2Func` / `Gridout3DFunc` quadrant selection: 0..7 = cases a..h.
+fn gridout_case(x: f64, y: f64) -> usize {
+    if y <= 0.0 {
+        if x > 0.0 {
+            if -y >= x { 0 } else { 1 }
+        } else if y <= x {
+            2
+        } else {
+            3
+        }
+    } else if x > 0.0 {
+        if y >= x { 4 } else { 5 }
+    } else if y > -x {
+        6
+    } else {
+        7
+    }
+}
+
 pub static DEFS: &[VarDef] = &[
     VarDef {
         name: "barycentroid",
@@ -4432,5 +4451,186 @@ if (D(15) != 0.0) {
 v.x += f32(c.x) * size + dd.x;
 v.y += f32(c.y) * size + dd.y;
 v.z += f32(c.z) * size + dd.z;",
+    },
+    VarDef {
+        name: "gridout",
+        params: &[],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |_, ctx, a, v, amount| {
+            // cases a..h: (dx, dy)
+            const OFF: [(f64, f64); 8] = [(1.0, 0.0), (0.0, 1.0), (1.0, 0.0), (0.0, -1.0), (-1.0, 0.0), (0.0, 1.0), (-1.0, 0.0), (0.0, -1.0)];
+            let (dx, dy) = OFF[gridout_case(a.x.round_ties_even(), a.y.round_ties_even())];
+            v.x += amount * (a.x + dx);
+            v.y += amount * (a.y + dy);
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "fn gridout_case(x: f32, y: f32) -> i32 {
+  if (y <= 0.0) {
+    if (x > 0.0) { return select(1, 0, -y >= x); }
+    return select(3, 2, y <= x);
+  }
+  if (x > 0.0) { return select(5, 4, y >= x); }
+  return select(7, 6, y > -x);
+}
+@body
+let k = gridout_case(round(a.x), round(a.y));
+var off = vec2<f32>(0.0, -1.0);
+switch (k) {
+  case 0, 2: { off = vec2<f32>(1.0, 0.0); }
+  case 1, 5: { off = vec2<f32>(0.0, 1.0); }
+  case 4, 6: { off = vec2<f32>(-1.0, 0.0); }
+  default: {}
+}
+v.x += AMOUNT * (a.x + off.x);
+v.y += AMOUNT * (a.y + off.y);
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "gridout2",
+        params: &[ParamDef::new("a", 1.0), ParamDef::new("b", 1.0), ParamDef::new("c", 1.0), ParamDef::new("d", 1.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let (pa, pb) = (d[0], d[1]);
+            let off = [(pa, 0.0), (0.0, pb), (pa, 0.0), (0.0, -pb), (-pa, 0.0), (0.0, pb), (-pa, 0.0), (0.0, -pb)];
+            let (dx, dy) = off[gridout_case(a.x.round_ties_even() * d[2], a.y.round_ties_even() * d[3])];
+            v.x += amount * (a.x + dx);
+            v.y += amount * (a.y + dy);
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "fn gridout2_case(x: f32, y: f32) -> i32 {
+  if (y <= 0.0) {
+    if (x > 0.0) { return select(1, 0, -y >= x); }
+    return select(3, 2, y <= x);
+  }
+  if (x > 0.0) { return select(5, 4, y >= x); }
+  return select(7, 6, y > -x);
+}
+@body
+let k = gridout2_case(round(a.x) * D(2), round(a.y) * D(3));
+var off = vec2<f32>(0.0, -D(1));
+switch (k) {
+  case 0, 2: { off = vec2<f32>(D(0), 0.0); }
+  case 1, 5: { off = vec2<f32>(0.0, D(1)); }
+  case 4, 6: { off = vec2<f32>(-D(0), 0.0); }
+  default: {}
+}
+v.x += AMOUNT * (a.x + off.x);
+v.y += AMOUNT * (a.y + off.y);
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "gridout3D",
+        params: &[
+            ParamDef::new("xx", 1.0),
+            ParamDef::new("yy", 1.0),
+            ParamDef::new("xa", 1.0),
+            ParamDef::new("xb", 0.0),
+            ParamDef::new("xc", 1.0),
+            ParamDef::new("xd", 0.0),
+            ParamDef::new("xe", 1.0),
+            ParamDef::new("xf", 0.0),
+            ParamDef::new("xg", 1.0),
+            ParamDef::new("xh", 0.0),
+            ParamDef::new("ya", 0.0),
+            ParamDef::new("yb", 1.0),
+            ParamDef::new("yc", 0.0),
+            ParamDef::new("yd", 1.0),
+            ParamDef::new("ye", 0.0),
+            ParamDef::new("yf", 1.0),
+            ParamDef::new("yg", 0.0),
+            ParamDef::new("yh", 1.0),
+            ParamDef::new("za", 0.0),
+            ParamDef::new("zb", 0.0),
+            ParamDef::new("zc", 0.0),
+            ParamDef::new("zd", 0.0),
+            ParamDef::new("ze", 1.0),
+            ParamDef::new("zf", 1.0),
+            ParamDef::new("zg", 1.0),
+            ParamDef::new("zh", 1.0),
+        ],
+        kind: VarKind::Normal,
+        is_3d: true,
+        apply: |d, _, a, v, amount| {
+            let k = gridout_case(a.x.round_ties_even() * d[0], a.y.round_ties_even() * d[1]);
+            // x: +xa +xb +xc +xd -xe +xf -xg +xh; y: +ya +yb +yc -yd +ye +yf +yg -yh;
+            // z: + for cases a..d, * for e..h
+            let sx = [1.0, 1.0, 1.0, 1.0, -1.0, 1.0, -1.0, 1.0][k];
+            let sy = [1.0, 1.0, 1.0, -1.0, 1.0, 1.0, 1.0, -1.0][k];
+            v.x += amount * (a.x + sx * d[2 + k]);
+            v.y += amount * (a.y + sy * d[10 + k]);
+            v.z += amount * if k < 4 { a.z + d[18 + k] } else { a.z * d[18 + k] };
+        },
+        prepare: None,
+        wgsl: "fn gridout3D_case(x: f32, y: f32) -> i32 {
+  if (y <= 0.0) {
+    if (x > 0.0) { return select(1, 0, -y >= x); }
+    return select(3, 2, y <= x);
+  }
+  if (x > 0.0) { return select(5, 4, y >= x); }
+  return select(7, 6, y > -x);
+}
+@body
+let k = u32(gridout3D_case(round(a.x) * D(0), round(a.y) * D(1)));
+var sx = 1.0;
+if (k == 4u || k == 6u) { sx = -1.0; }
+var sy = 1.0;
+if (k == 3u || k == 7u) { sy = -1.0; }
+v.x += AMOUNT * (a.x + sx * prm[base + 2u + k]);
+v.y += AMOUNT * (a.y + sy * prm[base + 10u + k]);
+if (k < 4u) { v.z += AMOUNT * (a.z + prm[base + 18u + k]); } else { v.z += AMOUNT * (a.z * prm[base + 18u + k]); }",
+    },
+    VarDef {
+        name: "gumowski_mira",
+        params: &[ParamDef::int("random", 1.0, 0.0, 10000000.0), ParamDef::range("step", 0.001, 0.0, 1.0), ParamDef::new("a", 0.000001), ParamDef::new("b", 0.05)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        // d = [random, step, a, b, m, a_eff]
+        apply: |d, ctx, a, v, amount| {
+            // Java follows one endless orbit from (5, 5) per instance; here one per render thread.
+            let (m, aa, b) = (d[4], d[5], d[3]);
+            let mira = |x: f64| m * x + (2.0 * (1.0 - m) * x * x) / (1.0 + x * x);
+            let p = ctx.orbits.entry(d.as_ptr() as usize).or_insert([5.0, 5.0]);
+            let (x, y) = (p[0], p[1]);
+            let x0 = y + (aa * (1.0 - (b * y * y)) * y) + mira(x);
+            let y0 = -x + mira(x0);
+            *p = [x0, y0];
+            v.x = x0 * amount;
+            v.y = y0 * amount;
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: Some(|p, _| {
+            // Effect of setting the parameters in order on a new JWildfire instance (as when a
+            // flame is loaded): "random" and "step" shift m, "a" draws a from the seed.
+            let mut d = p.to_vec();
+            let seed = limit_value(p[0], 0.0, 10000000.0) as i32;
+            let step = limit_value(p[1], 0.0, 1.0);
+            let m = -0.080 + if seed > 1 { 0.001 * 2.0 } else { 0.001 / 2.0 } + step;
+            let aa = 1.0e-6 + (1e-6 - 1.0e-8) * crate::rng::JavaRandom::new(seed as i64).next_double();
+            d[0] = seed as f64;
+            d[1] = step;
+            d.extend([m, aa]);
+            d
+        }),
+        // GPU: no state across calls, every call iterates a slightly perturbed start point.
+        wgsl: "let m = D(4);
+let aa = D(5);
+let b = D(3);
+var x0 = 5.0 + 1.0e-2 * (rnd() - 0.5);
+var y0 = 5.0 + 1.0e-2 * (rnd() - 0.5);
+let n = 32 + min(i32(rnd() * 1024.0), 1023);
+for (var i = 0; i < n; i++) {
+  let mx = m * x0 + (2.0 * (1.0 - m) * x0 * x0) / (1.0 + x0 * x0);
+  let xn = y0 + (aa * (1.0 - (b * y0 * y0)) * y0) + mx;
+  let yn = -x0 + m * xn + (2.0 * (1.0 - m) * xn * xn) / (1.0 + xn * xn);
+  x0 = xn;
+  y0 = yn;
+}
+v.x = x0 * AMOUNT;
+v.y = y0 * AMOUNT;
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
     },
 ];
