@@ -149,14 +149,20 @@ pub fn check_formula(variation: &str, src: &str) -> Result<(), String> {
         "yplot2d_wf" => &YPLOT2D,
         "yplot3d_wf" => &YPLOT3D,
         "isosfplot3d_wf" => &ISOSF,
+        "knots3D" => return check(src, &["t"]),
+        "sattractor3D" => return check(src, &["x", "y", "z", "delta_t"]),
         _ => return Ok(()),
     };
+    check(src, spec.vars)
+}
+
+fn check(src: &str, vars: &[&str]) -> Result<(), String> {
     let mut consts = HashMap::new();
     consts.insert("pi".to_string(), M_PI);
-    for name in super::presets::param_names() {
+    for name in ["param_a", "param_b", "param_c", "param_d", "param_e", "param_f", "param_g", "param_h"] {
         consts.insert(name.to_string(), 0.0);
     }
-    formula::compile(src, spec.vars, &consts).map(|_| ())
+    formula::compile(src, vars, &consts).map(|_| ())
 }
 
 /// `VectorD.cross` + `normalize`

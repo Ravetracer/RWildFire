@@ -228,6 +228,11 @@ fn mesh_load(d: &mut Vec<f64>, p: usize, src: Option<MeshSource>, colormap: &[u8
     load_image(d, o + M_DISPL, displ_map);
     let r = Refinement { level: d[p + 6] as i32, smooth_passes: d[p + 7] as i32, lambda: d[p + 8], mu: d[p + 9] };
     let m = src.and_then(|s| mesh::load(&s, r)).unwrap_or_else(default_mesh);
+    pack_mesh(d, o, &m);
+}
+
+/// Appends a mesh and fills the mesh header at `o + M_NV`.
+fn pack_mesh(d: &mut Vec<f64>, o: usize, m: &Mesh) {
     d[o + M_NV] = m.vertices.len() as f64;
     d[o + M_NF] = m.faces.len() as f64;
     d[o + M_TOTAL] = m.face_count() as f64;
@@ -1086,6 +1091,113 @@ fn kaleido_apply(d: &[f64], ctx: &mut Ctx, a: &Pt, v: &mut Pt, amount: f64) {
 }
 
 // ---------------------------------------------------------------------------------------------
+// knots3D (Knots3DFunc), sattractor3D (Strange3DFunc): tubes around formula curves, sampled like
+// the OBJ meshes
+
+const fn curve_params<const H: usize, const N: usize>(head: [ParamDef; H], scale: f64) -> [ParamDef; N] {
+    let mut out = [ParamDef::new("", 0.0); N];
+    let mut i = 0;
+    while i < H {
+        out[i] = head[i];
+        i += 1;
+    }
+    let names = ["param_a", "param_b", "param_c", "param_d", "param_e", "param_f", "param_g", "param_h"];
+    let mut k = 0;
+    while k < 8 {
+        out[i] = ParamDef::new(names[k], 1.0);
+        i += 1;
+        k += 1;
+    }
+    let mut k = 0;
+    while k < MESH_PARAMS.len() {
+        out[i] = MESH_PARAMS[k];
+        if k < 3 {
+            out[i].default = scale;
+        }
+        i += 1;
+        k += 1;
+    }
+    out
+}
+
+static KNOTS_PARAMS: [ParamDef; 26] = curve_params(
+    [
+        ParamDef::int("presetId", 0.0, -1.0, 200.0),
+        ParamDef::int("steps", 1500.0, 3.0, 20000.0),
+        ParamDef::range("radius", 2.0, 0.0, 50.0),
+        ParamDef::int("facets", 4.0, 2.0, 24.0),
+    ],
+    0.02,
+);
+
+static SATTRACTOR_PARAMS: [ParamDef; 31] = curve_params(
+    [
+        ParamDef::int("presetId", 0.0, -1.0, 200.0),
+        ParamDef::int("steps", 1.0, 1.0, 50.0),
+        ParamDef::range("radius", 0.005, 0.0, 0.1),
+        ParamDef::range("stepTime", 0.05, 0.0, 0.5),
+        ParamDef::int("facets", 3.0, 1.0, 24.0),
+        ParamDef::new("start_x", 0.1),
+        ParamDef::new("start_y", 1.0),
+        ParamDef::new("start_z", 1.0),
+        ParamDef::int("warmup", 1000.0, 0.0, 100000.0),
+    ],
+    1.0,
+);
+
+/// Compiles the three curve formulas (`param_a` .. `param_h` from `d[pa..]`).
+fn curve_formulas(res: &[Vec<u8>], vars: &[&str], d: &[f64], pa: usize) -> Option<[crate::formula::Program; 3]> {
+    let mut consts = std::collections::HashMap::new();
+    consts.insert("pi".to_string(), M_PI);
+    for (k, name) in ["param_a", "param_b", "param_c", "param_d", "param_e", "param_f", "param_g", "param_h"].iter().enumerate() {
+        consts.insert(name.to_string(), d[pa + k]);
+    }
+    let f = |i: usize| crate::formula::compile(&text(&res[i]), vars, &consts).ok();
+    Some([f(0)?, f(1)?, f(2)?])
+}
+
+fn curve_key(name: &str, res: &[Vec<u8>], d: &[f64], n: usize) -> String {
+    format!("{name}#{}#{}#{}#{:?}", text(&res[0]), text(&res[1]), text(&res[2]), &d[1..n])
+}
+
+fn knots_load(d: &mut Vec<f64>, res: &[Vec<u8>], _: &LoadEnv) {
+    let p = 12;
+    let o = p + MESH_PARAMS.len();
+    let mesh = match curve_formulas(res, &["t"], d, 4) {
+        Some(f) => {
+            let (steps, radius, facets) = (d[1] as i32, d[2], d[3] as i32);
+            mesh::cached(curve_key("knots3D", res, d, p), || {
+                let pt = |step: i32| {
+                    let t = 2.0 * M_PI * step as f64 / steps as f64;
+                    [0, 1, 2].map(|k| crate::formula::eval(&f[k].code, &[t]))
+                };
+                crate::curves::knot(pt, steps, radius, facets)
+            })
+        }
+        None => Arc::new(Mesh::default()),
+    };
+    pack_mesh(d, o, &mesh);
+}
+
+fn sattractor_load(d: &mut Vec<f64>, res: &[Vec<u8>], _: &LoadEnv) {
+    let p = 17;
+    let o = p + MESH_PARAMS.len();
+    let mesh = match curve_formulas(res, &["x", "y", "z", "delta_t"], d, 9) {
+        Some(f) => {
+            let count = (d[1] as i32).wrapping_mul(1000);
+            let (radius, step_time, facets) = (d[2], d[3], d[4] as i32);
+            let (start, warmup) = ([d[5], d[6], d[7]], d[8] as i32);
+            mesh::cached(curve_key("sattractor3D", res, d, p), || {
+                let eval = |k: usize, q: [f64; 3], dt: f64| q[k] + crate::formula::eval(&f[k].code, &[q[0], q[1], q[2], dt]) * dt;
+                crate::curves::attractor(eval, start, count, warmup, step_time, radius, facets)
+            })
+        }
+        None => Arc::new(Mesh::default()),
+    };
+    pack_mesh(d, o, &mesh);
+}
+
+// ---------------------------------------------------------------------------------------------
 
 pub static DEFS: &[VarDef] = &[
     VarDef {
@@ -1511,6 +1623,37 @@ if (i32(D(3)) == 0) {
   v.color = res_uv_color_idx(pixel);
 }",
     },
+    VarDef {
+        name: "knots3D",
+        params: &KNOTS_PARAMS,
+        kind: VarKind::Normal,
+        is_3d: true,
+        apply: |d, ctx, _, v, amount| mesh_apply(d, 12, ctx, v, amount),
+        prepare: Some(|p, _| {
+            let mut d = mesh_prepare(p, 12);
+            d[0] = ftoi(p[0]) as f64;
+            d[1] = p[1].trunc();
+            d[3] = p[3].trunc();
+            d
+        }),
+        wgsl: "v = res_mesh(base, 12u, v, AMOUNT);",
+    },
+    VarDef {
+        name: "sattractor3D",
+        params: &SATTRACTOR_PARAMS,
+        kind: VarKind::Normal,
+        is_3d: true,
+        apply: |d, ctx, _, v, amount| mesh_apply(d, 17, ctx, v, amount),
+        prepare: Some(|p, _| {
+            let mut d = mesh_prepare(p, 17);
+            d[0] = ftoi(p[0]) as f64;
+            for i in [1, 4, 8] {
+                d[i] = p[i].trunc();
+            }
+            d
+        }),
+        wgsl: "v = res_mesh(base, 17u, v, AMOUNT);",
+    },
 ];
 
 const COLORMAP_RESOURCES: [ResDef; 4] = [
@@ -1533,6 +1676,12 @@ const BRUSH_RESOURCES: [ResDef; 7] = [
     ResDef { name: "image_filename6", kind: ResKind::ImageFile, default: "" },
 ];
 
+const CURVE_RESOURCES: [ResDef; 3] = [
+    ResDef { name: "xformula", kind: ResKind::Formula, default: "" },
+    ResDef { name: "yformula", kind: ResKind::Formula, default: "" },
+    ResDef { name: "zformula", kind: ResKind::Formula, default: "" },
+];
+
 const IMAGE_RESOURCES: [ResDef; 2] =
     [ResDef { name: "colormap_filename", kind: ResKind::ImageFile, default: "" }, ResDef { name: "displ_map_filename", kind: ResKind::ImageFile, default: "" }];
 
@@ -1552,6 +1701,8 @@ pub static RESOURCES: &[ResourceVar] = &[
         resources: &COLORMAP_RESOURCES,
         load: |d, res, _| push_image(d, KI_IMG, &source_image(&res[0], &res[1], None, 1)),
     },
+    ResourceVar { name: "knots3D", resources: &CURVE_RESOURCES, load: knots_load },
+    ResourceVar { name: "sattractor3D", resources: &CURVE_RESOURCES, load: sattractor_load },
     ResourceVar { name: "brush_stroke_wf", resources: &BRUSH_RESOURCES, load: brush_load },
     ResourceVar { name: "post_brush_stroke_wf", resources: &BRUSH_RESOURCES, load: brush_load },
     ResourceVar { name: "plane_wf", resources: &IMAGE_RESOURCES, load: plane_wf_load },

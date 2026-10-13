@@ -42,52 +42,107 @@ struct PresetSet {
     text: &'static str,
     /// Formula keys (also the resource names).
     formulas: &'static [&'static str],
-    /// Numeric keys (also the parameter names); missing values are 0.0 as in JWildfire.
-    values: &'static [&'static str],
+    /// Numeric keys and the parameters they set; missing values are 0.0 as in JWildfire.
+    values: &'static [(&'static str, &'static str)],
+    /// Parameter holding the preset id.
+    id_param: &'static str,
 }
 
 const P6: [&str; 6] = ["param_a", "param_b", "param_c", "param_d", "param_e", "param_f"];
 
 macro_rules! keys {
-    ($($k:literal),* ; params) => { &[$($k),*, "param_a", "param_b", "param_c", "param_d", "param_e", "param_f"] };
+    ($($k:literal),* ; params) => { &[$(($k, $k)),*, ("param_a", "param_a"), ("param_b", "param_b"), ("param_c", "param_c"), ("param_d", "param_d"), ("param_e", "param_e"), ("param_f", "param_f")] };
 }
+
+const PARAMS_AH: [(&str, &str); 8] = [
+    ("param_a", "param_a"),
+    ("param_b", "param_b"),
+    ("param_c", "param_c"),
+    ("param_d", "param_d"),
+    ("param_e", "param_e"),
+    ("param_f", "param_f"),
+    ("param_g", "param_g"),
+    ("param_h", "param_h"),
+];
+const fn with_ah<const N: usize, const M: usize>(head: [(&'static str, &'static str); N]) -> [(&'static str, &'static str); M] {
+    let mut out = [("", ""); M];
+    let mut i = 0;
+    while i < N {
+        out[i] = head[i];
+        i += 1;
+    }
+    while i < M {
+        out[i] = PARAMS_AH[i - N];
+        i += 1;
+    }
+    out
+}
+static KNOTS_VALUES: [(&str, &str); 11] = with_ah([("steps", "steps"), ("radius", "radius"), ("facets", "facets")]);
+static SATTRACTOR_VALUES: [(&str, &str); 14] = with_ah([
+    ("startx", "start_x"),
+    ("starty", "start_y"),
+    ("startz", "start_z"),
+    ("steps", "steps"),
+    ("radius", "radius"),
+    ("steptime", "stepTime"),
+]);
 
 static SETS: &[PresetSet] = &[
     PresetSet {
         variation: "parplot2d_wf",
         text: include_str!("../../assets/presets/parplot2d_wf_presets.txt"),
         formulas: &["xformula", "yformula", "zformula"],
+        id_param: "preset_id",
         values: keys!("umin", "umax", "vmin", "vmax"; params),
     },
     PresetSet {
         variation: "polarplot2d_wf",
         text: include_str!("../../assets/presets/polarplot2d_wf_presets.txt"),
         formulas: &["formula"],
+        id_param: "preset_id",
         values: keys!("tmin", "tmax"; params),
     },
     PresetSet {
         variation: "polarplot3d_wf",
         text: include_str!("../../assets/presets/polarplot3d_wf_presets.txt"),
         formulas: &["formula"],
+        id_param: "preset_id",
         values: keys!("tmin", "tmax", "umin", "umax", "cylindrical"; params),
     },
     PresetSet {
         variation: "yplot2d_wf",
         text: include_str!("../../assets/presets/yplot2d_wf_presets.txt"),
         formulas: &["formula"],
+        id_param: "preset_id",
         values: keys!("xmin", "xmax"; params),
     },
     PresetSet {
         variation: "yplot3d_wf",
         text: include_str!("../../assets/presets/yplot3d_wf_presets.txt"),
         formulas: &["formula"],
+        id_param: "preset_id",
         values: keys!("xmin", "xmax", "zmin", "zmax"; params),
     },
     PresetSet {
         variation: "isosfplot3d_wf",
         text: include_str!("../../assets/presets/isosfplot3d_wf_presets.txt"),
         formulas: &["formula"],
+        id_param: "preset_id",
         values: keys!("xmin", "xmax", "ymin", "ymax", "zmin", "zmax"; params),
+    },
+    PresetSet {
+        variation: "knots3D",
+        text: include_str!("../../assets/presets/knots3d_wf_presets.txt"),
+        formulas: &["xformula", "yformula", "zformula"],
+        id_param: "presetId",
+        values: &KNOTS_VALUES,
+    },
+    PresetSet {
+        variation: "sattractor3D",
+        text: include_str!("../../assets/presets/sattractor3d_wf_presets.txt"),
+        formulas: &["xformula", "yformula", "zformula"],
+        id_param: "presetId",
+        values: &SATTRACTOR_VALUES,
     },
 ];
 
@@ -121,7 +176,7 @@ fn parse(set: &PresetSet) -> Vec<Preset> {
         }
         let name = lines.next().unwrap_or("").trim().to_string();
         let formulas = set.formulas.iter().map(|f| token(block, f).unwrap_or_default()).collect();
-        let values = set.values.iter().map(|v| token(block, v).and_then(|s| crate::formula::eval_constant(&s)).unwrap_or(0.0)).collect();
+        let values = set.values.iter().map(|(k, _)| token(block, k).and_then(|s| crate::formula::eval_constant(&s)).unwrap_or(0.0)).collect();
         out.push(Preset { id, name, formulas, values });
     }
     out
@@ -159,11 +214,16 @@ pub fn apply(inst: &mut VariationInstance, id: i32) -> bool {
     for (k, f) in set.formulas.iter().zip(&p.formulas) {
         inst.set_resource(k, f);
     }
-    for (k, v) in set.values.iter().zip(&p.values) {
-        inst.set_param(k, *v);
+    for ((_, param), v) in set.values.iter().zip(&p.values) {
+        inst.set_param(param, *v);
     }
-    inst.set_param("preset_id", id as f64);
+    inst.set_param(set.id_param, id as f64);
     true
+}
+
+/// Name of the parameter holding the preset id of a variation with presets.
+pub fn id_param(variation: &str) -> Option<&'static str> {
+    set_of(variation).map(|(_, s)| s.id_param)
 }
 
 /// Parameter names of the `param_*` group (for UIs).
@@ -180,11 +240,11 @@ mod tests {
         for set in SETS {
             let ps = presets(set.variation).unwrap();
             assert!(ps.len() >= 3, "{}", set.variation);
-            let vars = ["u", "v", "t", "x", "y", "z"];
+            let vars = ["u", "v", "t", "x", "y", "z", "delta_t"];
             for p in ps {
                 let mut consts = std::collections::HashMap::new();
                 consts.insert("pi".to_string(), std::f64::consts::PI);
-                for (k, v) in set.values.iter().zip(&p.values) {
+                for ((k, _), v) in set.values.iter().zip(&p.values) {
                     consts.insert(k.to_string(), *v);
                 }
                 for f in &p.formulas {

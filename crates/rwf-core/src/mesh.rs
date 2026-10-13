@@ -401,6 +401,23 @@ pub fn load(src: &MeshSource, r: Refinement) -> Option<Arc<Mesh>> {
     Some(mesh)
 }
 
+/// Mesh built by a variation (e.g. from formulas), cached by a key describing all inputs.
+pub fn cached(key: String, build: impl FnOnce() -> Mesh) -> Arc<Mesh> {
+    type Entry = (String, Arc<Mesh>);
+    static CACHE: OnceLock<Mutex<Vec<Entry>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(Default::default);
+    if let Some((_, m)) = cache.lock().unwrap().iter().find(|(k, _)| *k == key) {
+        return m.clone();
+    }
+    let m = Arc::new(build());
+    let mut c = cache.lock().unwrap();
+    if c.len() >= 16 {
+        c.remove(0);
+    }
+    c.push((key, m.clone()));
+    m
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -22,6 +22,7 @@
 pub mod animation;
 pub mod formula;
 pub mod brush;
+pub mod curves;
 pub mod gradient;
 pub mod gradient_io;
 pub mod io;

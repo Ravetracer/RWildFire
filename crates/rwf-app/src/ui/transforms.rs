@@ -386,7 +386,7 @@ fn variations_editor(ui: &mut Ui, doc: &mut Document, st: &mut TransformsState) 
                             let v = &mut var.params[pi];
                             if def.name == "obj_mesh_primitive_wf" && p.name == "primitive" {
                                 primitive_combo(ui, vi, v);
-                            } else if p.name == "preset_id"
+                            } else if variations::presets::id_param(def.name) == Some(p.name)
                                 && let Some(presets) = variations::presets::presets(def.name)
                             {
                                 chosen_preset = preset_combo(ui, vi, *v as i32, presets);
@@ -512,7 +512,9 @@ fn resource_picker(ui: &mut Ui, var: &mut VariationInstance, r: &variations::Res
                 if ui.add(edit).changed() {
                     var.set_resource(r.name, &value);
                     // an edited formula no longer matches its preset (`validatePresetId`)
-                    var.set_param("preset_id", -1.0);
+                    if let Some(id) = variations::presets::id_param(&var.name) {
+                        var.set_param(id, -1.0);
+                    }
                 }
                 if let Err(e) = variations::check_formula(&var.name, &value) {
                     ui.label(RichText::new(e).small().color(theme::WARN));
