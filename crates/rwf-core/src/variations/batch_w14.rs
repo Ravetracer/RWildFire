@@ -6715,6 +6715,549 @@ v.x += AMOUNT * prm[base + 3u + 2u * k];
 v.y += AMOUNT * prm[base + 4u + 2u * k];
 if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
     },
+    VarDef {
+        name: "maurer_lines",
+        params: &MAURER_LINES_PARAMS,
+        kind: VarKind::Normal,
+        is_3d: true,
+        apply: |d, ctx, a, v, amount| maurer_lines_apply(d, ctx, a, v, amount),
+        prepare: Some(|p, _| maurer_lines_prepare(p)),
+        wgsl: "fn maurer_lines_curve(mode: i32, k0: vec4<f32>, k1: vec4<f32>, t: f32) -> vec2<f32> {
+  let a = k0.x;
+  let b = k0.y;
+  let c = k0.z;
+  let d = k0.w;
+  var r = a;
+  switch (mode) {
+    case 1: {
+      let n = floor(a);
+      let theta = abs(t % (2.0 * PI));
+      let rr = cos(PI / n) / cos(theta % (2.0 * PI / n) - PI / n);
+      return vec2<f32>(rr * cos(theta), rr * sin(theta));
+    }
+    case 2: { return vec2<f32>(a * cos(t), b * sin(t)); }
+    case 3: { r = cos(a / b * t) + c; }
+    case 4: { return vec2<f32>((a + b) * cos(t) - c * cos((a + b) / b * t), (a + b) * sin(t) - c * sin((a + b) / b * t)); }
+    case 5: { return vec2<f32>((a - b) * cos(t) + c * cos((a - b) / b * t), (a - b) * sin(t) - c * sin((a - b) / b * t)); }
+    case 6: { return vec2<f32>(sin(a * t + c), sin(b * t)); }
+    case 7: { r = 1.0 / cos(a / b * t) + c; }
+    case 8: { r = pow(pow(abs(cos(a * t / 4.0)), c) + pow(abs(sin(a * t / 4.0)), d), -1.0 / b); }
+    case 9: {
+      let rr = 2.0 + sin(a * t) / 2.0;
+      let t2 = t + sin(b * t) / c;
+      return vec2<f32>(rr * cos(t2), rr * sin(t2));
+    }
+    case 10: { return vec2<f32>(cos(t) / a + cos(6.0 * t) / b + sin(14.0 * t) / c, sin(t) / a + sin(6.0 * t) / b + cos(14.0 * t) / c); }
+    case 11: { return vec2<f32>(sin(a * t) * cos(c * t), sin(b * t) * sin(c * t)); }
+    case 12: {
+      let rr = 0.5 * (exp(cos(t)) - 2.0 * cos(4.0 * t) - java_pow(sin(t / 12.0), 5.0));
+      return vec2<f32>(rr * sin(t), rr * cos(t));
+    }
+    case 13: { r = (1.0 - cos(a * t)) + (1.0 - cos(a * b * t)); }
+    case 14: { r = (1.0 - cos(a * t)) - (1.0 - cos(a * b * t)); }
+    case 15: { r = (cos(a / b * t) + cos(c * (a / b) * t)) / 2.0; }
+    case 16: { r = (cos(a / b * t) - cos(c * (a / b) * t)) / 2.0; }
+    case 17: { return vec2<f32>(pow(abs(cos(t)), 2.0 / c) * a * sign(cos(t)), pow(abs(sin(t)), 2.0 / d) * b * sign(sin(t))); }
+    case 18: {
+      let shape = pow(abs(cos(c * t / 4.0) / k1.z), k1.x) + pow(abs(sin(c * t / 4.0) / k1.w), k1.y);
+      r = cos(a / b * t) * pow(shape, -1.0 / d);
+    }
+    default: {}
+  }
+  return vec2<f32>(r * cos(t), r * sin(t));
+}
+// first derivative (rhodonea only); w = 0 if undefined
+fn maurer_lines_deriv(mode: i32, k0: vec4<f32>, t: f32) -> vec3<f32> {
+  if (mode != 3) { return vec3<f32>(0.0); }
+  let kk = k0.x / k0.y;
+  return vec3<f32>(-kk * sin(kk * t) * cos(t) - (cos(kk * t) + k0.z) * sin(t), -kk * sin(kk * t) * sin(t) + (cos(kk * t) + k0.z) * cos(t), 1.0);
+}
+fn maurer_lines_reflect(p1: vec2<f32>, p2: vec2<f32>, p: vec2<f32>) -> vec2<f32> {
+  let dd = p2 - p1;
+  let bc = dot(dd, p - p1) / dot(dd, dd);
+  return 2.0 * (p1 + dd * bc) - p;
+}
+fn maurer_lines_point_angle(p1: vec2<f32>, p2: vec2<f32>) -> f32 {
+  var a1 = glsl_atan2(p1.y, p1.x);
+  var a2 = glsl_atan2(p2.y, p2.x);
+  if (a1 < 0.0) { a1 += 2.0 * PI; }
+  if (a2 < 0.0) { a2 += 2.0 * PI; }
+  let pa = abs(a2 - a1);
+  return select(pa, 2.0 * PI - pa, pa > PI);
+}
+fn maurer_lines_sample(pb: u32, m: u32, i: u32) -> f32 {
+  return prm[pb + 98u + m * 1000u + i];
+}
+@body
+// setValues
+let mode = i32(D(0));
+var k0 = vec4<f32>(D(1), D(2), D(3), D(4));
+var k1 = vec4<f32>(D(33), D(34), D(35), D(36));
+var tstep = D(64);
+var cycles = D(66);
+var init = D(65);
+var rm = vec3<f32>(D(12), D(13), D(14));
+var meta_step = 0.0;
+let cosets = i32(D(15));
+if (cosets != 0) {
+  tstep = D(69);
+  cycles = D(70);
+  if (D(67) == 1.0) {
+    init = 0.0;
+  } else if (cosets == 1) {
+    init = 2.0 * PI * (floor(rnd() * D(67)) / D(68));
+  } else if (cosets == 2 || cosets == 3) {
+    init = D(71) * 2.0 * PI * (floor(rnd() * D(67)) / D(68));
+  }
+}
+let meta_mode = i32(D(24));
+if (meta_mode != 0) {
+  meta_step = trunc(rnd() * D(72));
+  let value = D(25) + meta_step * D(27);
+  switch (meta_mode) {
+    case 1: {
+      var offset = value;
+      if (D(8) != 0.0) { offset += D(8) * 0.01 * 2.718281828459045; }
+      tstep = 2.0 * PI * (offset / 360.0);
+      cycles = (D(7) * tstep) / (2.0 * PI);
+    }
+    case 2: { k0.x = value; }
+    case 3: { k0.y = value; }
+    case 4: { k0.z = value; }
+    case 5: { k0.w = value; }
+    case 6: { k1.x = value; }
+    case 7: { k1.y = value; }
+    case 8: { init = 2.0 * PI * (value / 360.0); }
+    case 9: { k0.x = value; k0.y = D(2) + meta_step * D(27); }
+    case 10: { rm.x = value; }
+    case 11: { rm.y = value; }
+    case 12: { rm.z = value; }
+    default: {}
+  }
+}
+let render_mode = i32(D(9));
+let submode = i32(D(10));
+let tangent = i32(D(11));
+var tin = glsl_atan2(a.y, a.x);
+if (D(22) != 0.0) { tin = rnd() * 2.0 * PI; }
+let t = cycles * tin;
+let cp = maurer_lines_curve(mode, k0, k1, t);
+let step_number = floor(t / tstep);
+let theta1 = step_number * tstep + init;
+let theta2 = theta1 + tstep;
+let p1 = maurer_lines_curve(mode, k0, k1, theta1);
+let p2 = maurer_lines_curve(mode, k0, k1, theta2);
+let x1 = p1.x;
+let y1 = p1.y;
+let x2 = p2.x;
+let y2 = p2.y;
+let xdiff = x2 - x1;
+let ydiff = y2 - y1;
+let slope = ydiff / xdiff;
+let intercept = y1 - slope * x1;
+let point_angle = maurer_lines_point_angle(p1, p2);
+let raw_angle = glsl_atan2(ydiff, xdiff);
+let line_angle = abs(abs(raw_angle) - PI / 2.0) / (PI / 2.0);
+let line_length = sqrt(xdiff * xdiff + ydiff * ydiff);
+var line_delta = 0.0;
+let midlength = line_length / 2.0;
+let pmid = (p1 + p2) / 2.0;
+var o = vec2<f32>(0.0);
+var zout = 0.0;
+let show_points = D(28);
+let show_curve = D(29);
+var use_render_mode = true;
+if (show_points > 0.0 || show_curve > 0.0) {
+  let r0 = rnd();
+  let rand2 = rnd();
+  if (rand2 <= show_points) {
+    use_render_mode = false;
+    var off = vec2<f32>(0.0);
+    if (D(62) != 0.0) {
+      let ro = rnd() * D(62);
+      let ra = rnd() * 2.0 * PI;
+      off = vec2<f32>(ro * cos(ra), ro * sin(ra));
+    }
+    o = select(p2, p1, r0 <= show_points / 2.0) + off;
+  } else if (rand2 <= show_points + show_curve) {
+    use_render_mode = false;
+    o = cp;
+    if (D(63) != 0.0) {
+      o.x += (rnd() - 0.5) * D(63);
+      o.y += (rnd() - 0.5) * D(63);
+    }
+  }
+}
+var mpoint = vec2<f32>(0.0);
+if (use_render_mode) {
+  let t1 = rnd();
+  mpoint = p1 * (1.0 - t1) + p2 * t1;
+  line_delta = t1 * line_length;
+  // outer end points, swizzled for the *_SWIZZLE modes
+  var p0 = maurer_lines_curve(mode, k0, k1, theta1 - tstep);
+  var p3 = maurer_lines_curve(mode, k0, k1, theta2 + tstep);
+  if (render_mode == 7 || render_mode == 8 || render_mode == 23 || render_mode == 24) {
+    let tmp = p0;
+    p0 = p3;
+    p3 = tmp;
+  }
+  if (render_mode == 6 || render_mode == 8 || render_mode == 22 || render_mode == 24) {
+    p0 = p0.yx;
+    p3 = p3.yx;
+  }
+  let tt2 = t1 * t1;
+  let tt3 = t1 * t1 * t1;
+  let h = vec4<f32>(2.0 * tt3 - 3.0 * tt2 + 1.0, tt3 - 2.0 * tt2 + t1, -2.0 * tt3 + 3.0 * tt2, tt3 - tt2);
+  switch (render_mode) {
+    case 2: {
+      let ang = t1 * 2.0 * PI;
+      if (submode == 15) {
+        let mid_delta = midlength * cos(ang);
+        zout = midlength * sin(ang);
+        o = pmid + mid_delta * vec2<f32>(cos(raw_angle), sin(raw_angle));
+      } else {
+        o = pmid + midlength * vec2<f32>(sin(ang), cos(ang));
+      }
+      line_delta = length(p1 - o);
+    }
+    case 5: {
+      let bt = t1;
+      var ap = (1.0 - bt) * (1.0 - bt) * p1 + bt * bt * p2;
+      if (rm.x != 1.0 || rm.y != 1.0) {
+        let cr = (1.0 - rm.x) * length(pmid);
+        let ca = glsl_atan2(pmid.y, pmid.x) + (2.0 * PI - rm.y * 2.0 * PI);
+        ap = (1.0 - bt) * (1.0 - bt) * p1 + 2.0 * (1.0 - bt) * bt * vec2<f32>(cr * cos(ca), cr * sin(ca)) + bt * bt * p2;
+      }
+      if (submode == 15) {
+        zout = ap.y;
+        var xo = line_delta / sqrt(1.0 + slope * slope);
+        if (x2 < x1) { xo = -xo; }
+        var yo = abs(slope * xo);
+        if (y2 < y1) { yo = -yo; }
+        o = p1 + vec2<f32>(xo, yo);
+      } else if (submode == 17) {
+        o = vec2<f32>(ap.x, slope * ap.x + intercept);
+        zout = (ap.x - x1) * sin(-raw_angle) + (ap.y - y1) * cos(-raw_angle);
+      } else {
+        o = ap;
+      }
+    }
+    case 3: {
+      let ang = t1 * 2.0 * PI;
+      let cs = vec2<f32>(cos(raw_angle + PI), sin(raw_angle + PI));
+      if (submode == 15) {
+        let delta_mid = (midlength * rm.x) * cos(ang);
+        line_delta = midlength - delta_mid;
+        let line_offset = delta_mid + x1 - midlength;
+        o = p1 + (line_offset - x1) * cs;
+        zout = (midlength * (rm.y / 2.0)) * sin(ang);
+      } else {
+        line_delta = midlength * cos(ang);
+        let line_offset = (midlength * rm.x) * cos(ang) + x1 - midlength;
+        let perp_offset = (midlength * (rm.y / 2.0)) * sin(ang) + y1;
+        o = vec2<f32>(x1 + (line_offset - x1) * cs.x - (perp_offset - y1) * cs.y, y1 + (line_offset - x1) * cs.y + (perp_offset - y1) * cs.x);
+      }
+    }
+    case 4: {
+      let amplitude = (line_length / 4.0) * rm.x;
+      let ang = t1 * 2.0 * PI;
+      let rel = ang * (line_length / (2.0 * PI));
+      line_delta = rel;
+      let perp_rel = amplitude * cos((ang - PI) * rm.y) - amplitude * cos(PI * rm.y);
+      let line_offset = rel + x1;
+      let perp_offset = perp_rel + y1;
+      let cs = vec2<f32>(cos(raw_angle), sin(raw_angle));
+      if (submode == 15 || submode == 17) {
+        o.x = x1 + rel * cs.x;
+        o.y = slope * o.x + intercept;
+        zout = perp_rel;
+        if (submode == 17 && rnd() >= 0.5) { zout = -perp_rel; }
+      } else {
+        o = vec2<f32>(x1 + (line_offset - x1) * cs.x - (perp_offset - y1) * cs.y, y1 + (line_offset - x1) * cs.y + (perp_offset - y1) * cs.x);
+      }
+    }
+    case 9: {
+      let n21 = length(p2 - p1);
+      let va = normalize(p1 - p0);
+      let vc = normalize(p2 - p0);
+      let vd = normalize(p3 - p2);
+      let ve = normalize(p3 - p1);
+      let a1 = acos(dot(va, vc));
+      let a2 = acos(dot(ve, vd));
+      let u = t1;
+      let cu = cos(u * PI / 2.0);
+      let su = sin(u * PI / 2.0);
+      let au = a1 * cu * cu + a2 * su * su;
+      let pd = n21 * sin(u * au) / sin(au);
+      let pa = -((1.0 - u) * au);
+      let lp = p1 + (p2 - p1) * pd / n21;
+      o = vec2<f32>(x1 + (lp.x - x1) * cos(pa) - (lp.y - y1) * sin(pa), y1 + (lp.x - x1) * sin(pa) + (lp.y - y1) * cos(pa));
+    }
+    case 6, 7, 8, 11, 12: {
+      var ts = 1.0 - rm.x;
+      if (render_mode == 12) { ts = 1.0; }
+      let m1 = 0.5 * (p2 - p0) * ts;
+      let m2 = 0.5 * (p3 - p1) * ts;
+      o = h.x * p1 + h.y * m1 + h.z * p2 + h.w * m2;
+    }
+    case 13, 14, 15: {
+      var alpha = rm.y;
+      if (render_mode == 15) { alpha = 0.5; } else if (render_mode == 14) { alpha = 1.0; }
+      let dt0 = pow(dot(p1 - p0, p1 - p0), alpha / 2.0);
+      let dt1 = pow(dot(p2 - p1, p2 - p1), alpha / 2.0);
+      let dt2 = pow(dot(p3 - p2, p3 - p2), alpha / 2.0);
+      let ts = dt1 * (1.0 - rm.x);
+      let m1 = ((p1 - p0) / dt0 - (p2 - p0) / (dt0 + dt1) + (p2 - p1) / dt1) * ts;
+      let m2 = ((p2 - p1) / dt1 - (p3 - p1) / (dt1 + dt2) + (p3 - p2) / dt2) * ts;
+      o = h.x * p1 + h.y * m1 + h.z * p2 + h.w * m2;
+    }
+    case 16, 22, 23, 24: {
+      let c110 = (1.0 - rm.x) * (1.0 + rm.z) * (1.0 + rm.y) / 2.0;
+      let c121 = (1.0 - rm.x) * (1.0 - rm.z) * (1.0 - rm.y) / 2.0;
+      let c221 = (1.0 - rm.x) * (1.0 + rm.z) * (1.0 - rm.y) / 2.0;
+      let c232 = (1.0 - rm.x) * (1.0 - rm.z) * (1.0 + rm.y) / 2.0;
+      let m1 = c110 * (p1 - p0) + c121 * (p2 - p1);
+      let m2 = c221 * (p2 - p1) + c232 * (p3 - p2);
+      o = h.x * p1 + h.y * m1 + h.z * p2 + h.w * m2;
+    }
+    case 10, 17, 18, 19, 20, 21: {
+      var dt1 = theta1;
+      var dt2 = theta2;
+      if (tangent == 10) {
+        dt1 = theta1 - (rm.y / 360.0) * 2.0 * PI;
+        dt2 = theta2 + (rm.y / 360.0) * 2.0 * PI;
+      } else if (tangent == 11) {
+        dt1 = theta1 - rm.y * tstep;
+        dt2 = theta2 + rm.y * tstep;
+      }
+      var tan1 = maurer_lines_deriv(mode, k0, dt1);
+      var tan2 = maurer_lines_deriv(mode, k0, dt2);
+      if (render_mode >= 17) {
+        let kk = k0.x / k0.y;
+        tan1 = vec3<f32>(-(cos(kk * dt1) + k0.z) * sin(dt1), (cos(kk * dt1) + k0.z) * cos(dt1), 1.0);
+        tan2 = vec3<f32>(-(cos(kk * dt2) + k0.z) * sin(dt2), (cos(kk * dt2) + k0.z) * cos(dt2), 1.0);
+        if (render_mode == 18 || render_mode == 20) { tan1.x = -tan1.x; tan2.x = -tan2.x; }
+        if (render_mode == 19 || render_mode == 20) { tan1.y = -tan1.y; tan2.y = -tan2.y; }
+        if (render_mode == 21) { let tmp = tan1; tan1 = tan2; tan2 = tmp; }
+      }
+      if (tan1.z == 0.0 || tan2.z == 0.0) {
+        o = vec2<f32>(a.x, a.y);
+      } else {
+        var ts = theta2 - theta1;
+        if (tangent == 3 || tangent == 4 || tangent == 7 || tangent == 8) { ts = 1.0; }
+        var d1 = tan1.xy;
+        var d2 = tan2.xy;
+        var r1 = 0.0;
+        var r2 = 0.0;
+        var rotate = false;
+        if (tangent >= 5 && tangent <= 8) {
+          r1 = -PI / 2.0;
+          r2 = -PI / 2.0;
+          rotate = true;
+        } else if (tangent == 9) {
+          r1 = (rm.y / 360.0) * 2.0 * PI;
+          r2 = (rm.z / 360.0) * 2.0 * PI;
+          rotate = true;
+        } else if (tangent == 12) {
+          d1 = d1 * rm.yz;
+          d2 = d2 * rm.yz;
+        }
+        if (rotate) {
+          d1 = vec2<f32>(x1 + (tan1.x - x1) * cos(r1) - (tan1.y - y1) * sin(r1), y1 + (tan1.x - x1) * sin(r1) + (tan1.y - y1) * cos(r1));
+          d2 = vec2<f32>(x2 + (tan2.x - x2) * cos(r2) - (tan2.y - y2) * sin(r2), y2 + (tan2.x - x2) * sin(r2) + (tan2.y - y2) * cos(r2));
+        }
+        if (tangent == 2 || tangent == 4 || tangent == 6 || tangent == 8) {
+          d1 = d1 / length(d1);
+          d2 = d2 / length(d2);
+        }
+        ts *= 1.0 - rm.x;
+        o = h.x * p1 + h.y * d1 * ts + h.z * p2 + h.w * d2 * ts;
+      }
+    }
+    case 25: {
+      let f0 = maurer_lines_deriv(mode, k0, theta1);
+      let f1 = maurer_lines_deriv(mode, k0, theta2);
+      if (f0.z == 0.0 || f1.z == 0.0) {
+        o = vec2<f32>(a.x, a.y);
+      } else {
+        let w0 = theta1;
+        let w1 = theta2;
+        let w = theta1 + t1 * (theta2 - theta1);
+        let tw = (w - w0) / (w1 - w0);
+        let tw1 = (w1 - w) / (w1 - w0);
+        let tw0 = (w0 - w) / (w0 - w1);
+        o = (1.0 + 2.0 * tw) * tw1 * tw1 * p1 + (w - w0) * tw1 * tw1 * f0.xy + (1.0 + 2.0 * tw1) * tw0 * tw0 * p2 + (w - w1) * tw0 * tw0 * f1.xy;
+      }
+    }
+    default: { o = mpoint; }
+  }
+  let odd_step = step_number % 2.0 != 0.0;
+  var fill_target = mpoint;
+  if (submode >= 9 && submode <= 12) { fill_target = cp; }
+  switch (submode) {
+    case 2: { o = maurer_lines_reflect(p1, p2, o); }
+    case 3: { if (rnd() < 0.5) { o = maurer_lines_reflect(p1, p2, o); } }
+    case 4: { if (odd_step) { o = maurer_lines_reflect(p1, p2, o); } }
+    case 5, 6, 7, 8, 9, 10, 11, 12: {
+      var flip = submode == 6 || submode == 10;
+      if (submode == 7 || submode == 11) { flip = rnd() < 0.5; }
+      if (submode == 8 || submode == 12) { flip = odd_step; }
+      if (flip) { o = maurer_lines_reflect(p1, p2, o); }
+      let rfill = rnd();
+      o = o * (1.0 - rfill) + fill_target * rfill;
+    }
+    case 13: {
+      let rfill = rnd();
+      o = mpoint * (1.0 - rfill) + cp * rfill;
+    }
+    case 14: {
+      let rfill = rnd();
+      o = mpoint * (1.0 - rfill) + cp.yx * rfill;
+    }
+    default: {}
+  }
+  if (D(61) != 0.0) {
+    o.x += (rnd() - 0.5) * D(61);
+    o.y += (rnd() - 0.5) * D(61);
+  }
+}
+// filters
+var passed = true;
+let nf = u32(clamp(i32(D(21)), 0, 5));
+for (var fi = 0u; fi < nf; fi++) {
+  let fb = base + 73u + 5u * fi;
+  let fmode = i32(prm[fb]);
+  let measure = i32(prm[fb + 1u]);
+  let op = i32(prm[fb + 2u]);
+  if (fmode == 0) { continue; }
+  var val = line_length;
+  var sm = 0u;
+  switch (measure) {
+    case 2: { val = line_angle; sm = 1u; }
+    case 3: { val = point_angle; sm = 2u; }
+    case 7: { val = line_delta; }
+    case 8: { val = abs(line_delta - midlength); }
+    case 9: { val = min(line_delta, line_length - line_delta); }
+    case 5: { val = zout + line_length / 2.0; }
+    case 6: { val = abs(zout) * 2.0; }
+    default: {}
+  }
+  var lo = prm[fb + 3u];
+  var hi = prm[fb + 4u];
+  if (fmode == 3 || fmode == 4) {
+    if (measure == 7) {
+      lo *= line_length;
+      hi *= line_length;
+    } else if (measure == 8 || measure == 9) {
+      lo *= midlength;
+      hi *= midlength;
+    } else {
+      var li = u32(lo * 1000.0);
+      if (lo <= 0.0 || lo >= 1.0) { li = 0u; }
+      var hix = u32(hi * 1000.0);
+      if (hi >= 1.0 || hi <= 0.0) { hix = 999u; }
+      lo = maurer_lines_sample(base, sm, li);
+      hi = maurer_lines_sample(base, sm, hix);
+    }
+  }
+  let inband = val >= lo && val <= hi;
+  let cur = select(inband, !inband, fmode == 2 || fmode == 4);
+  if (fi == 0u) {
+    passed = cur;
+  } else {
+    switch (op) {
+      case 1: { passed = passed || cur; }
+      case 2: { passed = passed != cur; }
+      case 3: { passed = passed && !cur; }
+      case 4: { passed = !passed && cur; }
+      default: { passed = passed && cur; }
+    }
+  }
+}
+v.hide = select(1.0, 0.0, passed);
+if (D(23) != 0.0) {
+  v.x = a.x + AMOUNT * (o.x - a.x);
+  v.y = a.y + AMOUNT * (o.y - a.y);
+  v.z = a.z + AMOUNT * (zout - a.z);
+} else {
+  v.x += AMOUNT * o.x;
+  v.y += AMOUNT * o.y;
+  v.z += AMOUNT * zout;
+}
+let cmeasure = i32(D(16));
+let gradient = i32(D(17));
+if (cmeasure != 0 && gradient != 0) {
+  let meta_on = meta_mode != 0;
+  var val = line_length;
+  var sm = 0u;
+  switch (cmeasure) {
+    case 10: {
+      let dv = maurer_lines_deriv(mode, k0, theta1);
+      val = select(0.0, length(dv.xy), dv.z != 0.0);
+      sm = 3u;
+    }
+    case 11: { val = theta1 / (2.0 * PI); sm = 4u; }
+    case 2: { val = line_angle; sm = 1u; }
+    case 3: { val = point_angle; sm = 2u; }
+    case 7: { val = line_delta; }
+    case 8: { val = abs(line_delta - midlength); }
+    case 4: { if (meta_on) { val = meta_step; } }
+    case 5: { val = zout + line_length / 2.0; }
+    case 6: { val = abs(zout) * 2.0; }
+    case 9: { val = min(line_delta, line_length - line_delta); }
+    default: {}
+  }
+  var lo = 0.0;
+  var hi = D(72);
+  if (!(cmeasure == 4 && meta_on)) {
+    let cl = D(19);
+    let ch = D(20);
+    lo = cl;
+    hi = ch;
+    if (i32(D(18)) == 0) {
+      if (cmeasure == 7) {
+        lo = cl * line_length;
+        hi = ch * line_length;
+      } else if (cmeasure == 8 || cmeasure == 9) {
+        lo = cl * midlength;
+        hi = ch * midlength;
+      } else {
+        var li = u32(cl * 1000.0);
+        if (cl < 0.0 || cl >= 1.0) { li = 0u; }
+        var hix = u32(ch * 999.0);
+        if (ch >= 1.0 || ch < 0.0) { hix = 999u; }
+        lo = maurer_lines_sample(base, sm, li);
+        hi = maurer_lines_sample(base, sm, hix);
+      }
+    }
+    if (lo > hi) {
+      let tmp = lo;
+      lo = hi;
+      hi = tmp;
+    }
+  }
+  var bc = (val - lo) / (hi - lo) * 255.0;
+  if (val < lo) { bc = 0.0; } else if (val >= hi) { bc = 255.0; }
+  if (gradient == 1 || gradient == 2) {
+    if (gradient == 2) {
+      if (val < lo) {
+        val = hi - (lo - val) % (hi - lo);
+      } else if (val > hi) {
+        val = lo + (val - lo) % (hi - lo);
+      }
+      bc = (val - lo) / (hi - lo) * 255.0;
+    }
+    v.rgbc = 0.0;
+    v.color = clamp(bc / 255.0, 0.0, 1.0);
+  } else if (gradient == 3) {
+    v.rgbc = 1.0; v.r = bc; v.g = 255.0 - bc; v.b = 0.0;
+  } else if (gradient == 4) {
+    v.rgbc = 1.0; v.r = bc; v.g = 0.0; v.b = 255.0 - bc;
+  } else if (gradient == 5) {
+    v.rgbc = 1.0; v.r = 0.0; v.g = 255.0 - bc; v.b = bc;
+  }
+}",
+    },
 ];
 
 fn mandelbox2d_apply(d: &[f64], ctx: &mut Ctx, a: &Pt, v: &mut Pt, amount: f64) {
@@ -7530,4 +8073,804 @@ fn curliecue2_prepare(p: &[f64]) -> Vec<f64> {
     let mut d = vec![seed as f64, s, CURLIECUE2_GPU_STEPS as f64];
     d.extend_from_slice(&pts);
     d
+}
+
+// ---------------------------------------------------------------------------------------------
+// maurer_lines (MaurerLinesFunc)
+
+/// Index of the derived values in the prepared data of `maurer_lines` (after 61 parameters):
+/// line, point and curve thickness, theta step, initial theta, cycles, coset gcd, coset z,
+/// coset step size, cycles to close the polyline, cycles to close the curve, meta steps.
+const ML_D: usize = 61;
+/// Filters `[mode, measure, operator, low, high]` (at most `ML_FILTERS`).
+const ML_F: usize = ML_D + 12;
+const ML_FILTERS: usize = 5;
+/// Sorted samples (line lengths, line angles, point angles, speeds, thetas) of `ML_N` lines.
+const ML_S: usize = ML_F + 5 * ML_FILTERS;
+const ML_N: usize = 1000;
+
+const fn maurer_lines_params() -> [ParamDef; 61] {
+    let mut p = [ParamDef::new("a", 2.0); 61];
+    p[0] = ParamDef::int("curve_mode", 3.0, 0.0, 18.0);
+    p[1] = ParamDef::new("a", 2.0);
+    p[2] = ParamDef::new("b", 1.0);
+    p[3] = ParamDef::new("c", 0.0);
+    p[4] = ParamDef::new("d", 1.0);
+    p[5] = ParamDef::new("theta_step_size", 71.0);
+    p[6] = ParamDef::new("initial_theta", 0.0);
+    p[7] = ParamDef::new("line_count", 360.0);
+    p[8] = ParamDef::new("irrationalize", 0.0);
+    p[9] = ParamDef::int("render_mode", 0.0, 0.0, 25.0);
+    p[10] = ParamDef::int("render_submode", 0.0, 0.0, 18.0);
+    p[11] = ParamDef::int("tangent_submode", 0.0, 0.0, 12.0);
+    p[12] = ParamDef::new("render_modifier1", 1.0);
+    p[13] = ParamDef::new("render_modifier2", 1.0);
+    p[14] = ParamDef::new("render_modifier3", 1.0);
+    p[15] = ParamDef::int("cosets_mode", 0.0, 0.0, 3.0);
+    p[16] = ParamDef::int("direct_color_measure", 1.0, 0.0, 11.0);
+    p[17] = ParamDef::int("direct_color_gradient", 0.0, 0.0, 5.0);
+    p[18] = ParamDef::int("direct_color_thresholding", 0.0, 0.0, 1.0);
+    p[19] = ParamDef::new("color_low_threshold", 0.3);
+    p[20] = ParamDef::new("color_high_threshold", 2.0);
+    p[21] = ParamDef::int("number_of_filters", 0.0, 0.0, ML_FILTERS as f64);
+    p[22] = ParamDef::int("randomize", 0.0, 0.0, 1.0);
+    p[23] = ParamDef::int("diff_mode", 0.0, 0.0, 1.0);
+    p[24] = ParamDef::int("meta_mode", 0.0, 0.0, 12.0);
+    p[25] = ParamDef::new("meta_min_step", 30.0);
+    p[26] = ParamDef::new("meta_max_step", 45.0);
+    p[27] = ParamDef::new("meta_step_diff", 1.0);
+    p[28] = ParamDef::new("show_points", 0.0);
+    p[29] = ParamDef::new("show_curve", 0.0);
+    p[30] = ParamDef::new("line_thickness", 0.1);
+    p[31] = ParamDef::new("point_thickness", 1.0);
+    p[32] = ParamDef::new("curve_thickness", 0.5);
+    p[33] = ParamDef::new("e", 1.0);
+    p[34] = ParamDef::new("f", 1.0);
+    p[35] = ParamDef::new("g", 1.0);
+    p[36] = ParamDef::new("h", 1.0);
+    // JWildfire adds filterN_* parameters dynamically (filter 1 has no operator).
+    p[37] = ParamDef::int("filter1_mode", 1.0, 0.0, 4.0);
+    p[38] = ParamDef::int("filter1_measure", 1.0, 0.0, 11.0);
+    p[39] = ParamDef::new("filter1_low_threshold", 0.0);
+    p[40] = ParamDef::new("filter1_high_threshold", 1.0);
+    p[41] = ParamDef::int("filter2_operator", 0.0, 0.0, 4.0);
+    p[42] = ParamDef::int("filter2_mode", 1.0, 0.0, 4.0);
+    p[43] = ParamDef::int("filter2_measure", 1.0, 0.0, 11.0);
+    p[44] = ParamDef::new("filter2_low_threshold", 0.0);
+    p[45] = ParamDef::new("filter2_high_threshold", 1.0);
+    p[46] = ParamDef::int("filter3_operator", 0.0, 0.0, 4.0);
+    p[47] = ParamDef::int("filter3_mode", 1.0, 0.0, 4.0);
+    p[48] = ParamDef::int("filter3_measure", 1.0, 0.0, 11.0);
+    p[49] = ParamDef::new("filter3_low_threshold", 0.0);
+    p[50] = ParamDef::new("filter3_high_threshold", 1.0);
+    p[51] = ParamDef::int("filter4_operator", 0.0, 0.0, 4.0);
+    p[52] = ParamDef::int("filter4_mode", 1.0, 0.0, 4.0);
+    p[53] = ParamDef::int("filter4_measure", 1.0, 0.0, 11.0);
+    p[54] = ParamDef::new("filter4_low_threshold", 0.0);
+    p[55] = ParamDef::new("filter4_high_threshold", 1.0);
+    p[56] = ParamDef::int("filter5_operator", 0.0, 0.0, 4.0);
+    p[57] = ParamDef::int("filter5_mode", 1.0, 0.0, 4.0);
+    p[58] = ParamDef::int("filter5_measure", 1.0, 0.0, 11.0);
+    p[59] = ParamDef::new("filter5_low_threshold", 0.0);
+    p[60] = ParamDef::new("filter5_high_threshold", 1.0);
+    p
+}
+
+static MAURER_LINES_PARAMS: [ParamDef; 61] = maurer_lines_params();
+
+/// `MaurerLinesFunc` curves: point at `t` for the curve parameters `k` = a..h.
+fn ml_curve(mode: i32, k: &[f64; 8], t: f64) -> (f64, f64) {
+    let [a, b, c, d, e, f, g, h] = *k;
+    let polar = |r: f64| (r * t.cos(), r * t.sin());
+    match mode {
+        1 => {
+            let n = a.floor();
+            let theta = (t % (2.0 * PI)).abs();
+            let r = (PI / n).cos() / (theta % (2.0 * PI / n) - PI / n).cos();
+            (r * theta.cos(), r * theta.sin())
+        }
+        2 => (a * t.cos(), b * t.sin()),
+        3 => polar((a / b * t).cos() + c),
+        4 => ((a + b) * t.cos() - c * ((a + b) / b * t).cos(), (a + b) * t.sin() - c * ((a + b) / b * t).sin()),
+        5 => ((a - b) * t.cos() + c * ((a - b) / b * t).cos(), (a - b) * t.sin() - c * ((a - b) / b * t).sin()),
+        6 => ((a * t + c).sin(), (b * t).sin()),
+        7 => polar(1.0 / (a / b * t).cos() + c),
+        8 => polar(((a * t / 4.0).cos().abs().powf(c) + (a * t / 4.0).sin().abs().powf(d)).powf(-1.0 / b)),
+        9 => {
+            let r = 2.0 + (a * t).sin() / 2.0;
+            let t2 = t + (b * t).sin() / c;
+            (r * t2.cos(), r * t2.sin())
+        }
+        10 => (t.cos() / a + (6.0 * t).cos() / b + (14.0 * t).sin() / c, t.sin() / a + (6.0 * t).sin() / b + (14.0 * t).cos() / c),
+        11 => ((a * t).sin() * (c * t).cos(), (b * t).sin() * (c * t).sin()),
+        12 => {
+            let r = 0.5 * (t.cos().exp() - 2.0 * (4.0 * t).cos() - (t / 12.0).sin().powf(5.0));
+            (r * t.sin(), r * t.cos())
+        }
+        13 => polar((1.0 - (a * t).cos()) + (1.0 - (a * b * t).cos())),
+        14 => polar((1.0 - (a * t).cos()) - (1.0 - (a * b * t).cos())),
+        15 => polar(((a / b * t).cos() + (c * (a / b) * t).cos()) / 2.0),
+        16 => polar(((a / b * t).cos() - (c * (a / b) * t).cos()) / 2.0),
+        17 => (t.cos().abs().powf(2.0 / c) * a * java_signum(t.cos()), t.sin().abs().powf(2.0 / d) * b * java_signum(t.sin())),
+        18 => {
+            let shape = ((c * t / 4.0).cos() / g).abs().powf(e) + ((c * t / 4.0).sin() / h).abs().powf(f);
+            polar((a / b * t).cos() * shape.powf(-1.0 / d))
+        }
+        _ => polar(a),
+    }
+}
+
+/// `Math.signum`.
+fn java_signum(x: f64) -> f64 {
+    if x > 0.0 {
+        1.0
+    } else if x < 0.0 {
+        -1.0
+    } else {
+        x
+    }
+}
+
+/// First derivative (only the rhodonea defines one; NaN otherwise).
+fn ml_derivative(mode: i32, k: &[f64; 8], t: f64) -> (f64, f64) {
+    if mode != 3 {
+        return (f64::NAN, f64::NAN);
+    }
+    let kk = k[0] / k[1];
+    let c = k[2];
+    (-kk * (kk * t).sin() * t.cos() - ((kk * t).cos() + c) * t.sin(), -kk * (kk * t).sin() * t.sin() + ((kk * t).cos() + c) * t.cos())
+}
+
+fn ml_speed(mode: i32, k: &[f64; 8], t: f64) -> f64 {
+    let (dx, dy) = ml_derivative(mode, k, t);
+    if dx.is_nan() || dy.is_nan() { 0.0 } else { (dx * dx + dy * dy).sqrt() }
+}
+
+/// `getCyclesToClose` (NaN if unknown).
+fn ml_cycles_to_close(mode: i32, k: &[f64; 8]) -> f64 {
+    match mode {
+        3 => {
+            let (a, b, c) = (k[0], k[1], k[2]);
+            let kk = a / b;
+            if kk % 1.0 == 0.0 {
+                if kk % 2.0 == 0.0 || c != 0.0 { 1.0 } else { 0.5 }
+            } else if a % 1.0 == 0.0 && b % 1.0 == 0.0 {
+                let (mut kn, mut kd) = (a, b);
+                let g = java_gcd(kn as i64, kd as i32 as i64) as i32;
+                if g != 1 {
+                    kn /= g as f64;
+                    kd /= g as f64;
+                }
+                if kn % 2.0 == 0.0 || kd % 2.0 == 0.0 { kd } else { kd / 2.0 }
+            } else {
+                f64::NAN
+            }
+        }
+        12 => 2.0 * PI * PI * PI / (2.0 * PI),
+        _ => f64::NAN,
+    }
+}
+
+/// `BigInteger.gcd` (non-negative).
+fn java_gcd(a: i64, b: i64) -> i64 {
+    let (mut a, mut b) = (a.unsigned_abs(), b.unsigned_abs());
+    while b != 0 {
+        (a, b) = (b, a % b);
+    }
+    a as i64
+}
+
+fn ml_point_angle(p1: (f64, f64), p2: (f64, f64)) -> f64 {
+    let mut a1 = p1.1.atan2(p1.0);
+    let mut a2 = p2.1.atan2(p2.0);
+    if a1 < 0.0 {
+        a1 += 2.0 * PI;
+    }
+    if a2 < 0.0 {
+        a2 += 2.0 * PI;
+    }
+    let pa = (a2 - a1).abs();
+    if pa > PI { 2.0 * PI - pa } else { pa }
+}
+
+/// Values `setValues` derives per call: curve parameters, theta step, cycles, initial theta,
+/// render modifiers, meta step.
+struct MlVals {
+    k: [f64; 8],
+    step: f64,
+    cycles: f64,
+    init: f64,
+    rm: [f64; 3],
+    meta_step: f64,
+}
+
+/// `MaurerLinesFunc.setValues`.
+fn ml_set_values(d: &[f64], rnd: &mut dyn FnMut() -> f64) -> MlVals {
+    let mut v = MlVals {
+        k: [d[1], d[2], d[3], d[4], d[33], d[34], d[35], d[36]],
+        step: d[ML_D + 3],
+        cycles: d[ML_D + 5],
+        init: d[ML_D + 4],
+        rm: [d[12], d[13], d[14]],
+        meta_step: 0.0,
+    };
+    let cosets = d[15] as i32;
+    let (gcd, coset_z) = (d[ML_D + 6], d[ML_D + 7]);
+    if cosets != 0 {
+        v.step = d[ML_D + 8];
+        v.cycles = d[ML_D + 9];
+        if gcd == 1.0 {
+            v.init = 0.0;
+        } else if cosets == 1 {
+            let id = (rnd() * gcd).floor() as i32;
+            v.init = 2.0 * PI * (id as f64 / coset_z);
+        } else if cosets == 2 || cosets == 3 {
+            let id = (rnd() * gcd).floor() as i32;
+            v.init = d[ML_D + 10] * 2.0 * PI * (id as f64 / coset_z);
+        }
+    }
+    let meta = d[24] as i32;
+    if meta != 0 {
+        v.meta_step = ((rnd() * d[ML_D + 11]) as i32) as f64;
+        let value = d[25] + v.meta_step * d[27];
+        match meta {
+            1 => {
+                let mut offset = value;
+                if d[8] != 0.0 {
+                    offset += d[8] * 0.01 * std::f64::consts::E;
+                }
+                v.step = 2.0 * PI * (offset / 360.0);
+                v.cycles = (d[7] * v.step) / (2.0 * PI);
+            }
+            2..=7 => v.k[meta as usize - 2] = value,
+            8 => v.init = 2.0 * PI * (value / 360.0),
+            9 => {
+                v.k[0] = value;
+                v.k[1] = d[2] + v.meta_step * d[27];
+            }
+            10..=12 => v.rm[meta as usize - 10] = value,
+            _ => {}
+        }
+    }
+    v
+}
+
+/// `MaurerLinesFunc.init`: derived values, filters and the sorted line samples (drawn with a
+/// fixed seed; JWildfire uses `Math.random()`).
+fn maurer_lines_prepare(p: &[f64]) -> Vec<f64> {
+    let mut d = p.to_vec();
+    for i in [0, 9, 10, 11, 15, 16, 17, 18, 21, 24] {
+        d[i] = (p[i] as i32) as f64;
+    }
+    for i in [22, 23] {
+        d[i] = if p[i] >= 1.0 { 1.0 } else { 0.0 };
+    }
+    let mode = d[0] as i32;
+    let k = [p[1], p[2], p[3], p[4], p[33], p[34], p[35], p[36]];
+    let mut step = 2.0 * PI * (p[5] / 360.0);
+    if p[8] != 0.0 {
+        step += (p[8] * 0.01 * std::f64::consts::E) / 360.0;
+    }
+    let init = 2.0 * PI * (p[6] / 360.0);
+    let cycles = (p[7] * step) / (2.0 * PI);
+    let coset_d = p[5].floor() as i32;
+    let mut coset_z = p[7].floor() as i32;
+    let mut close_curve = ml_cycles_to_close(mode, &k);
+    if close_curve.is_nan() {
+        close_curve = 1.0;
+    }
+    let cosets = d[15] as i32;
+    if cosets == 3 {
+        coset_z = (coset_z as f64 * close_curve) as i32;
+    }
+    let gcd = java_gcd(coset_d as i64, coset_z as i64) as i32;
+    let lcm = if gcd == 0 { 0 } else { coset_d.wrapping_abs().wrapping_mul(coset_z.wrapping_abs() / gcd) };
+    let lcm_z = if coset_z == 0 { 0 } else { lcm / coset_z };
+    let (mut close_poly, mut coset_step) = (0.0, 0.0);
+    if cosets == 1 {
+        close_poly = lcm_z as f64;
+        coset_step = 2.0 * PI * (coset_d as f64 / coset_z as f64);
+    } else if cosets == 2 || cosets == 3 {
+        close_poly = close_curve * lcm_z as f64;
+        coset_step = close_curve * 2.0 * PI * (coset_d as f64 / coset_z as f64);
+    }
+    let meta_steps = (((p[26] - p[25]) / p[27]) as i32) as f64;
+    d.extend([p[30] / 100.0, p[31] / 100.0, p[32] / 100.0, step, init, cycles, gcd as f64, coset_z as f64, coset_step, close_poly, close_curve, meta_steps]);
+    for f in 0..ML_FILTERS {
+        let [op, md, ms, lo, hi] = if f == 0 { [0.0, p[37], p[38], p[39], p[40]] } else { std::array::from_fn(|i| p[41 + 5 * (f - 1) + i]) };
+        d.extend([(md as i32) as f64, (ms as i32) as f64, (op as i32) as f64, lo, hi]);
+    }
+    let mut rng = crate::rng::Rng::new(1);
+    let mut samples: Vec<Vec<f64>> = (0..5).map(|_| Vec::with_capacity(ML_N)).collect();
+    for _ in 0..ML_N {
+        let v = ml_set_values(&d, &mut || rng.random());
+        let theta1 = rng.random() * v.cycles * 2.0 * PI;
+        let (x1, y1) = ml_curve(mode, &v.k, theta1);
+        let p2 = ml_curve(mode, &v.k, theta1 + v.step);
+        // getSpeed stores the derivative in the first end point (used by the point angle)
+        let deriv = ml_derivative(mode, &v.k, theta1);
+        let speed = ml_speed(mode, &v.k, theta1);
+        let (xdiff, ydiff) = (p2.0 - x1, p2.1 - y1);
+        let raw = ydiff.atan2(xdiff);
+        samples[0].push((xdiff * xdiff + ydiff * ydiff).sqrt());
+        samples[1].push((raw.abs() - PI / 2.0).abs() / (PI / 2.0));
+        samples[2].push(ml_point_angle(deriv, p2));
+        samples[3].push(speed);
+        samples[4].push(theta1 / (2.0 * PI));
+    }
+    for s in &mut samples {
+        // Arrays.sort: NaN last
+        s.sort_by(|a, b| a.partial_cmp(b).unwrap_or_else(|| a.is_nan().cmp(&b.is_nan())));
+        d.extend_from_slice(s);
+    }
+    d
+}
+
+/// Reflects `(x, y)` at the line through `(x1, y1)` and `(x2, y2)`.
+fn ml_reflect(x1: f64, y1: f64, x2: f64, y2: f64, x: f64, y: f64) -> (f64, f64) {
+    let bc = ((x2 - x1) * (x - x1) + (y2 - y1) * (y - y1)) / ((x2 - x1) * (x2 - x1) + (y2 - y1) * (y2 - y1));
+    (2.0 * (x1 + (x2 - x1) * bc) - x, 2.0 * (y1 + (y2 - y1) * bc) - y)
+}
+
+/// `MaurerLinesFunc.transform`; JWildfire's `Math.random()` calls use the render generator.
+fn maurer_lines_apply(d: &[f64], ctx: &mut Ctx, a: &Pt, v: &mut Pt, amount: f64) {
+    let vals = ml_set_values(d, &mut || ctx.random());
+    let (mode, k) = (d[0] as i32, &vals.k);
+    let (render_mode, submode, tangent) = (d[9] as i32, d[10] as i32, d[11] as i32);
+    let [rm1, rm2, rm3] = vals.rm;
+    let step = vals.step;
+    let (xin, yin) = (a.x, a.y);
+    let tin = if d[22] != 0.0 { ctx.random() * 2.0 * PI } else { yin.atan2(xin) };
+    let t = vals.cycles * tin;
+    let (x, y) = ml_curve(mode, k, t);
+    let step_number = (t / step).floor();
+    let theta1 = step_number * step + vals.init;
+    let theta2 = theta1 + step;
+    let (x1, y1) = ml_curve(mode, k, theta1);
+    let (x2, y2) = ml_curve(mode, k, theta2);
+    let (xdiff, ydiff) = (x2 - x1, y2 - y1);
+    let slope = ydiff / xdiff;
+    let intercept = if slope.is_nan() { f64::NAN } else { y1 - slope * x1 };
+    let point_angle = ml_point_angle((x1, y1), (x2, y2));
+    let raw_angle = ydiff.atan2(xdiff);
+    let line_angle = (raw_angle.abs() - PI / 2.0).abs() / (PI / 2.0);
+    let line_length = (xdiff * xdiff + ydiff * ydiff).sqrt();
+    let mut line_delta = 0.0;
+    let midlength = line_length / 2.0;
+    let (xmid, ymid) = ((x1 + x2) / 2.0, (y1 + y2) / 2.0);
+    let (mut xout, mut yout, mut zout) = (0.0, 0.0, 0.0);
+    let (lt, pt, ct) = (d[ML_D], d[ML_D + 1], d[ML_D + 2]);
+    let (show_points, show_curve) = (d[28], d[29]);
+    let mut use_render_mode = true;
+    if show_points > 0.0 || show_curve > 0.0 {
+        let rnd = ctx.random();
+        let rand2 = ctx.random();
+        if rand2 <= show_points {
+            use_render_mode = false;
+            let (mut xo, mut yo) = (0.0, 0.0);
+            if pt != 0.0 {
+                let ro = ctx.random() * pt;
+                let ra = ctx.random() * 2.0 * PI;
+                (xo, yo) = (ro * ra.cos(), ro * ra.sin());
+            }
+            (xout, yout) = if rnd <= show_points / 2.0 { (x1 + xo, y1 + yo) } else { (x2 + xo, y2 + yo) };
+        } else if rand2 <= show_points + show_curve {
+            use_render_mode = false;
+            (xout, yout) = if ct != 0.0 { (x + (ctx.random() - 0.5) * ct, y + (ctx.random() - 0.5) * ct) } else { (x, y) };
+        }
+    }
+    if use_render_mode {
+        let t1 = ctx.random();
+        let mpoint = (x1 * (1.0 - t1) + x2 * t1, y1 * (1.0 - t1) + y2 * t1);
+        line_delta = t1 * line_length;
+        // end points one step before and after the line
+        let outer = |swap_xy: bool, swap_ends: bool| {
+            let p0 = ml_curve(mode, k, theta1 - step);
+            let p3 = ml_curve(mode, k, theta2 + step);
+            let (p0, p3) = if swap_ends { (p3, p0) } else { (p0, p3) };
+            if swap_xy { ((p0.1, p0.0), (p3.1, p3.0)) } else { (p0, p3) }
+        };
+        let hermite = |t1: f64| {
+            let (t2, t3) = (t1 * t1, t1 * t1 * t1);
+            [2.0 * t3 - 3.0 * t2 + 1.0, t3 - 2.0 * t2 + t1, -2.0 * t3 + 3.0 * t2, t3 - t2]
+        };
+        match render_mode {
+            0 | 1 => (xout, yout) = mpoint,
+            2 => {
+                let ang = t1 * 2.0 * PI;
+                if submode == 15 {
+                    let mid_delta = midlength * ang.cos();
+                    zout = midlength * ang.sin();
+                    xout = xmid + mid_delta * raw_angle.cos();
+                    yout = ymid + mid_delta * raw_angle.sin();
+                } else {
+                    xout = xmid + midlength * ang.sin();
+                    yout = ymid + midlength * ang.cos();
+                }
+                line_delta = ((x1 - xout) * (x1 - xout) + (y1 - yout) * (y1 - yout)).sqrt();
+            }
+            5 => {
+                let bt = t1;
+                let (ax, ay) = if rm1 != 1.0 || rm2 != 1.0 {
+                    let mr = (xmid * xmid + ymid * ymid).sqrt();
+                    let ma = ymid.atan2(xmid);
+                    let cr = (1.0 - rm1) * mr;
+                    let ca = ma + (2.0 * PI - rm2 * 2.0 * PI);
+                    let (cx, cy) = (cr * ca.cos(), cr * ca.sin());
+                    (
+                        (1.0 - bt) * (1.0 - bt) * x1 + 2.0 * (1.0 - bt) * bt * cx + bt * bt * x2,
+                        (1.0 - bt) * (1.0 - bt) * y1 + 2.0 * (1.0 - bt) * bt * cy + bt * bt * y2,
+                    )
+                } else {
+                    ((1.0 - bt) * (1.0 - bt) * x1 + bt * bt * x2, (1.0 - bt) * (1.0 - bt) * y1 + bt * bt * y2)
+                };
+                if submode == 15 {
+                    zout = ay;
+                    let mut xo = line_delta / (1.0 + slope * slope).sqrt();
+                    if x2 < x1 {
+                        xo = -xo;
+                    }
+                    let mut yo = (slope * xo).abs();
+                    if y2 < y1 {
+                        yo = -yo;
+                    }
+                    (xout, yout) = (x1 + xo, y1 + yo);
+                } else if submode == 17 {
+                    xout = ax;
+                    yout = slope * xout + intercept;
+                    zout = (ax - x1) * (-raw_angle).sin() + (ay - y1) * (-raw_angle).cos();
+                } else {
+                    (xout, yout) = (ax, ay);
+                }
+            }
+            3 => {
+                let ang = t1 * 2.0 * PI;
+                let (c, s) = ((raw_angle + PI).cos(), (raw_angle + PI).sin());
+                if submode == 15 {
+                    let delta_mid = (midlength * rm1) * ang.cos();
+                    line_delta = midlength - delta_mid;
+                    let perp = (midlength * (rm2 / 2.0)) * ang.sin();
+                    let line_offset = delta_mid + x1 - midlength;
+                    xout = x1 + (line_offset - x1) * c;
+                    yout = y1 + (line_offset - x1) * s;
+                    zout = perp;
+                } else {
+                    let rel = (midlength * rm1) * ang.cos();
+                    line_delta = midlength * ang.cos();
+                    let perp_rel = (midlength * (rm2 / 2.0)) * ang.sin();
+                    let line_offset = rel + x1 - midlength;
+                    let perp_offset = perp_rel + y1;
+                    xout = x1 + (line_offset - x1) * c - (perp_offset - y1) * s;
+                    yout = y1 + (line_offset - x1) * s + (perp_offset - y1) * c;
+                }
+            }
+            4 => {
+                let amplitude = (line_length / 4.0) * rm1;
+                let ang = t1 * 2.0 * PI;
+                let rel = ang * (line_length / (2.0 * PI));
+                line_delta = rel;
+                let end_perp = amplitude * (PI * rm2).cos();
+                let perp_rel = amplitude * ((ang - PI) * rm2).cos() - end_perp;
+                let line_offset = rel + x1;
+                let perp_offset = perp_rel + y1;
+                let (c, s) = (raw_angle.cos(), raw_angle.sin());
+                if submode == 15 || submode == 17 {
+                    xout = x1 + rel * c;
+                    yout = slope * xout + intercept;
+                    zout = if submode == 15 || ctx.random() < 0.5 { perp_rel } else { -perp_rel };
+                } else {
+                    xout = x1 + (line_offset - x1) * c - (perp_offset - y1) * s;
+                    yout = y1 + (line_offset - x1) * s + (perp_offset - y1) * c;
+                }
+            }
+            9 => {
+                let ((x0, y0), (x3, y3)) = outer(false, false);
+                let n10 = ((x1 - x0) * (x1 - x0) + (y1 - y0) * (y1 - y0)).sqrt();
+                let n21 = ((x2 - x1) * (x2 - x1) + (y2 - y1) * (y2 - y1)).sqrt();
+                let n20 = ((x2 - x0) * (x2 - x0) + (y2 - y0) * (y2 - y0)).sqrt();
+                let n32 = ((x3 - x2) * (x3 - x2) + (y3 - y2) * (y3 - y2)).sqrt();
+                let n31 = ((x3 - x1) * (x3 - x1) + (y3 - y1) * (y3 - y1)).sqrt();
+                let va = ((x1 - x0) / n10, (y1 - y0) / n10);
+                let vc = ((x2 - x0) / n20, (y2 - y0) / n20);
+                let vd = ((x3 - x2) / n32, (y3 - y2) / n32);
+                let ve = ((x3 - x1) / n31, (y3 - y1) / n31);
+                let a1 = (va.0 * vc.0 + va.1 * vc.1).acos();
+                let a2 = (ve.0 * vd.0 + ve.1 * vd.1).acos();
+                let u = t1;
+                let (cu, su) = ((u * PI / 2.0).cos(), (u * PI / 2.0).sin());
+                let au = a1 * cu * cu + a2 * su * su;
+                let pd = n21 * (u * au).sin() / au.sin();
+                let pa = -((1.0 - u) * au);
+                let linex = x1 + (x2 - x1) * pd / n21;
+                let liney = y1 + (y2 - y1) * pd / n21;
+                xout = x1 + (linex - x1) * pa.cos() - (liney - y1) * pa.sin();
+                yout = y1 + (linex - x1) * pa.sin() + (liney - y1) * pa.cos();
+            }
+            6..=8 | 11 | 12 => {
+                let h = hermite(t1);
+                let ((x0, y0), (x3, y3)) = match render_mode {
+                    6 => outer(true, false),
+                    7 => outer(false, true),
+                    8 => outer(true, true),
+                    _ => outer(false, false),
+                };
+                let tanscale = if render_mode == 12 { 1.0 } else { 1.0 - rm1 };
+                let (m1x, m2x) = (0.5 * (x2 - x0) * tanscale, 0.5 * (x3 - x1) * tanscale);
+                let (m1y, m2y) = (0.5 * (y2 - y0) * tanscale, 0.5 * (y3 - y1) * tanscale);
+                xout = h[0] * x1 + h[1] * m1x + h[2] * x2 + h[3] * m2x;
+                yout = h[0] * y1 + h[1] * m1y + h[2] * y2 + h[3] * m2y;
+            }
+            13..=15 => {
+                let h = hermite(t1);
+                let ((x0, y0), (x3, y3)) = outer(false, false);
+                let alpha = match render_mode {
+                    15 => 0.5,
+                    14 => 1.0,
+                    _ => rm2,
+                };
+                let dt0 = ((x1 - x0) * (x1 - x0) + (y1 - y0) * (y1 - y0)).powf(alpha / 2.0);
+                let dt1 = ((x2 - x1) * (x2 - x1) + (y2 - y1) * (y2 - y1)).powf(alpha / 2.0);
+                let dt2 = ((x3 - x2) * (x3 - x2) + (y3 - y2) * (y3 - y2)).powf(alpha / 2.0);
+                let tanscale = dt1 * (1.0 - rm1);
+                let m1x = ((x1 - x0) / dt0 - (x2 - x0) / (dt0 + dt1) + (x2 - x1) / dt1) * tanscale;
+                let m1y = ((y1 - y0) / dt0 - (y2 - y0) / (dt0 + dt1) + (y2 - y1) / dt1) * tanscale;
+                let m2x = ((x2 - x1) / dt1 - (x3 - x1) / (dt1 + dt2) + (x3 - x2) / dt2) * tanscale;
+                let m2y = ((y2 - y1) / dt1 - (y3 - y1) / (dt1 + dt2) + (y3 - y2) / dt2) * tanscale;
+                xout = h[0] * x1 + h[1] * m1x + h[2] * x2 + h[3] * m2x;
+                yout = h[0] * y1 + h[1] * m1y + h[2] * y2 + h[3] * m2y;
+            }
+            16 | 22..=24 => {
+                let h = hermite(t1);
+                let ((x0, y0), (x3, y3)) = match render_mode {
+                    22 => outer(true, false),
+                    23 => outer(false, true),
+                    24 => outer(true, true),
+                    _ => outer(false, false),
+                };
+                let (tension, continuity, bias) = (rm1, rm2, rm3);
+                let c110 = (1.0 - tension) * (1.0 + bias) * (1.0 + continuity) / 2.0;
+                let c121 = (1.0 - tension) * (1.0 - bias) * (1.0 - continuity) / 2.0;
+                let c221 = (1.0 - tension) * (1.0 + bias) * (1.0 - continuity) / 2.0;
+                let c232 = (1.0 - tension) * (1.0 - bias) * (1.0 + continuity) / 2.0;
+                let m1x = c110 * (x1 - x0) + c121 * (x2 - x1);
+                let m2x = c221 * (x2 - x1) + c232 * (x3 - x2);
+                let m1y = c110 * (y1 - y0) + c121 * (y2 - y1);
+                let m2y = c221 * (y2 - y1) + c232 * (y3 - y2);
+                xout = h[0] * x1 + h[1] * m1x + h[2] * x2 + h[3] * m2x;
+                yout = h[0] * y1 + h[1] * m1y + h[2] * y2 + h[3] * m2y;
+            }
+            10 | 17..=21 => {
+                let h = hermite(t1);
+                let (dt1, dt2) = match tangent {
+                    10 => (theta1 - (rm2 / 360.0) * 2.0 * PI, theta2 + (rm2 / 360.0) * 2.0 * PI),
+                    11 => (theta1 - rm2 * step, theta2 + rm2 * step),
+                    _ => (theta1, theta2),
+                };
+                let (mut tan1, mut tan2) = if render_mode >= 17 {
+                    let kk = k[0] / k[1];
+                    let fd = |w: f64| (-((kk * w).cos() + k[2]) * w.sin(), ((kk * w).cos() + k[2]) * w.cos());
+                    (fd(dt1), fd(dt2))
+                } else {
+                    (ml_derivative(mode, k, dt1), ml_derivative(mode, k, dt2))
+                };
+                match render_mode {
+                    18 => {
+                        tan1.0 = -tan1.0;
+                        tan2.0 = -tan2.0;
+                    }
+                    19 => {
+                        tan1.1 = -tan1.1;
+                        tan2.1 = -tan2.1;
+                    }
+                    20 => {
+                        tan1 = (-tan1.0, -tan1.1);
+                        tan2 = (-tan2.0, -tan2.1);
+                    }
+                    21 => (tan1, tan2) = (tan2, tan1),
+                    _ => {}
+                }
+                if tan1.0.is_nan() || tan1.1.is_nan() || tan2.0.is_nan() || tan2.1.is_nan() {
+                    (xout, yout) = (xin, yin);
+                } else {
+                    let mut tanscale = if (3..=4).contains(&tangent) || (7..=8).contains(&tangent) { 1.0 } else { theta2 - theta1 };
+                    let rot = |px: f64, py: f64, tx: f64, ty: f64, r: f64| (px + (tx - px) * r.cos() - (ty - py) * r.sin(), py + (tx - px) * r.sin() + (ty - py) * r.cos());
+                    let ((mut dx1, mut dy1), (mut dx2, mut dy2)) = if (5..=8).contains(&tangent) {
+                        (rot(x1, y1, tan1.0, tan1.1, -PI / 2.0), rot(x2, y2, tan2.0, tan2.1, -PI / 2.0))
+                    } else if tangent == 9 {
+                        (rot(x1, y1, tan1.0, tan1.1, (rm2 / 360.0) * 2.0 * PI), rot(x2, y2, tan2.0, tan2.1, (rm3 / 360.0) * 2.0 * PI))
+                    } else if tangent == 12 {
+                        ((tan1.0 * rm2, tan1.1 * rm3), (tan2.0 * rm2, tan2.1 * rm3))
+                    } else {
+                        (tan1, tan2)
+                    };
+                    if matches!(tangent, 2 | 6 | 4 | 8) {
+                        let sr1 = (dx1 * dx1 + dy1 * dy1).sqrt();
+                        let sr2 = (dx2 * dx2 + dy2 * dy2).sqrt();
+                        (dx1, dy1, dx2, dy2) = (dx1 / sr1, dy1 / sr1, dx2 / sr2, dy2 / sr2);
+                    }
+                    tanscale *= 1.0 - rm1;
+                    xout = h[0] * x1 + h[1] * dx1 * tanscale + h[2] * x2 + h[3] * dx2 * tanscale;
+                    yout = h[0] * y1 + h[1] * dy1 * tanscale + h[2] * y2 + h[3] * dy2 * tanscale;
+                }
+            }
+            25 => {
+                let (w0, w1) = (theta1, theta2);
+                let (ffw0, ggw0) = ml_derivative(mode, k, w0);
+                let (ffw1, ggw1) = ml_derivative(mode, k, w1);
+                if ffw0.is_nan() || ggw0.is_nan() || ffw1.is_nan() || ggw1.is_nan() {
+                    (xout, yout) = (xin, yin);
+                } else {
+                    let w = theta1 + t1 * (theta2 - theta1);
+                    let tw = (w - w0) / (w1 - w0);
+                    let tw1 = (w1 - w) / (w1 - w0);
+                    let tw0 = (w0 - w) / (w0 - w1);
+                    xout = (1.0 + 2.0 * tw) * tw1 * tw1 * x1 + (w - w0) * tw1 * tw1 * ffw0 + (1.0 + 2.0 * tw1) * tw0 * tw0 * x2 + (w - w1) * tw0 * tw0 * ffw1;
+                    yout = (1.0 + 2.0 * tw) * tw1 * tw1 * y1 + (w - w0) * tw1 * tw1 * ggw0 + (1.0 + 2.0 * tw1) * tw0 * tw0 * y2 + (w - w1) * tw0 * tw0 * ggw1;
+                }
+            }
+            _ => (xout, yout) = mpoint,
+        }
+        let reflect = |xo: f64, yo: f64| ml_reflect(x1, y1, x2, y2, xo, yo);
+        let odd_step = step_number % 2.0 != 0.0;
+        // fill target: the curve point for the *_TO_CURVE submodes, else the line point
+        let target = if matches!(submode, 9..=12) { (x, y) } else { mpoint };
+        match submode {
+            2 => (xout, yout) = reflect(xout, yout),
+            3 => {
+                if ctx.random() < 0.5 {
+                    (xout, yout) = reflect(xout, yout);
+                }
+            }
+            4 => {
+                if odd_step {
+                    (xout, yout) = reflect(xout, yout);
+                }
+            }
+            5..=12 => {
+                let flip = match submode {
+                    6 | 10 => true,
+                    7 | 11 => ctx.random() < 0.5,
+                    8 | 12 => odd_step,
+                    _ => false,
+                };
+                if flip {
+                    (xout, yout) = reflect(xout, yout);
+                }
+                let rfill = ctx.random();
+                xout = xout * (1.0 - rfill) + target.0 * rfill;
+                yout = yout * (1.0 - rfill) + target.1 * rfill;
+            }
+            13 => {
+                let rfill = ctx.random();
+                xout = mpoint.0 * (1.0 - rfill) + x * rfill;
+                yout = mpoint.1 * (1.0 - rfill) + y * rfill;
+            }
+            14 => {
+                let rfill = ctx.random();
+                xout = mpoint.0 * (1.0 - rfill) + y * rfill;
+                yout = mpoint.1 * (1.0 - rfill) + x * rfill;
+            }
+            _ => {}
+        }
+        if lt != 0.0 {
+            xout += (ctx.random() - 0.5) * lt;
+            yout += (ctx.random() - 0.5) * lt;
+        }
+    }
+    let samples = |m: usize| &d[ML_S + m * ML_N..ML_S + (m + 1) * ML_N];
+    let mut pass = true;
+    for fi in 0..(d[21] as i32).clamp(0, ML_FILTERS as i32) as usize {
+        let f = &d[ML_F + 5 * fi..ML_F + 5 * fi + 5];
+        let (fmode, measure, op) = (f[0] as i32, f[1] as i32, f[2] as i32);
+        if fmode == 0 {
+            continue;
+        }
+        let (val, sm) = match measure {
+            2 => (line_angle, 1),
+            3 => (point_angle, 2),
+            7 => (line_delta, 9),
+            8 => ((line_delta - midlength).abs(), 9),
+            9 => (line_delta.min(line_length - line_delta), 9),
+            5 => (zout + line_length / 2.0, 0),
+            6 => (zout.abs() * 2.0, 0),
+            _ => (line_length, 0),
+        };
+        let (lo, hi) = if fmode == 3 || fmode == 4 {
+            match measure {
+                7 => (f[3] * line_length, f[4] * line_length),
+                8 | 9 => (f[3] * midlength, f[4] * midlength),
+                _ => {
+                    let li = if f[3] <= 0.0 || f[3] >= 1.0 { 0 } else { (f[3] * ML_N as f64) as usize };
+                    let hi = if f[4] >= 1.0 || f[4] <= 0.0 { ML_N - 1 } else { (f[4] * ML_N as f64) as usize };
+                    (samples(sm)[li], samples(sm)[hi])
+                }
+            }
+        } else {
+            (f[3], f[4])
+        };
+        let inband = val >= lo && val <= hi;
+        let cur = if fmode == 2 || fmode == 4 { !inband } else { inband };
+        pass = if fi == 0 {
+            cur
+        } else {
+            match op {
+                1 => pass || cur,
+                2 => pass != cur,
+                3 => pass && !cur,
+                4 => !pass && cur,
+                _ => pass && cur,
+            }
+        };
+    }
+    v.do_hide = !pass;
+    if d[23] != 0.0 {
+        v.x = a.x + amount * (xout - a.x);
+        v.y = a.y + amount * (yout - a.y);
+        v.z = a.z + amount * (zout - a.z);
+    } else {
+        v.x += amount * xout;
+        v.y += amount * yout;
+        v.z += amount * zout;
+    }
+    let (measure, gradient) = (d[16] as i32, d[17] as i32);
+    if measure != 0 && gradient != 0 {
+        let meta_on = d[24] as i32 != 0;
+        let (mut val, sm) = match measure {
+            10 => (ml_speed(mode, k, theta1), 3),
+            11 => (theta1 / (2.0 * PI), 4),
+            2 => (line_angle, 1),
+            3 => (point_angle, 2),
+            7 => (line_delta, 9),
+            8 => ((line_delta - midlength).abs(), 9),
+            4 if meta_on => (vals.meta_step, 9),
+            5 => (zout + line_length / 2.0, 0),
+            6 => (zout.abs() * 2.0, 0),
+            9 => (line_delta.min(line_length - line_delta), 9),
+            _ => (line_length, 0),
+        };
+        let (lo, hi) = if measure == 4 && meta_on {
+            (0.0, d[ML_D + 11])
+        } else {
+            let (cl, ch) = (d[19], d[20]);
+            let (lo, hi) = if d[18] as i32 == 0 {
+                match measure {
+                    7 => (cl * line_length, ch * line_length),
+                    8 | 9 => (cl * midlength, ch * midlength),
+                    _ => {
+                        let li = if !(0.0..1.0).contains(&cl) { 0 } else { (cl * ML_N as f64) as usize };
+                        let hi = if !(0.0..1.0).contains(&ch) { ML_N - 1 } else { (ch * (ML_N - 1) as f64) as usize };
+                        (samples(sm)[li], samples(sm)[hi])
+                    }
+                }
+            } else {
+                (cl, ch)
+            };
+            if lo > hi { (hi, lo) } else { (lo, hi) }
+        };
+        let mut base = if val < lo {
+            0.0
+        } else if val >= hi {
+            255.0
+        } else {
+            (val - lo) / (hi - lo) * 255.0
+        };
+        match gradient {
+            1 | 2 => {
+                if gradient == 2 {
+                    if val < lo {
+                        val = hi - (lo - val) % (hi - lo);
+                    } else if val > hi {
+                        val = lo + (val - lo) % (hi - lo);
+                    }
+                    base = (val - lo) / (hi - lo) * 255.0;
+                }
+                v.rgb_color = false;
+                v.color = (base / 255.0).clamp(0.0, 1.0);
+            }
+            3 => (v.rgb_color, v.red, v.green, v.blue) = (true, base, 255.0 - base, 0.0),
+            4 => (v.rgb_color, v.red, v.green, v.blue) = (true, base, 0.0, 255.0 - base),
+            5 => (v.rgb_color, v.red, v.green, v.blue) = (true, 0.0, 255.0 - base, base),
+            _ => {}
+        }
+    }
 }
