@@ -627,4 +627,191 @@ v.x += r * cos(alpha);
 v.y += r * sin(alpha);
 if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
     },
+    VarDef {
+        name: "hole2",
+        params: &[
+            ParamDef::new("a", 1.0),
+            ParamDef::new("b", 2.0),
+            ParamDef::new("c", 1.0),
+            ParamDef::new("d", 1.0),
+            ParamDef::int("inside", 0.0, 0.0, 1.0),
+            ParamDef::int("shape", 0.0, 0.0, 9.0),
+        ],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let rhosq = a.sumsq();
+            let theta = a.atan_yx() * d[3];
+            let delta = (theta / M_PI + 1.0).powf(d[0]) * d[2];
+            let b = d[1];
+            let r1 = match d[5] as i32 {
+                0 => rhosq.sqrt() + delta,
+                1 => (rhosq + delta).sqrt(),
+                2 => (rhosq + (b * theta).sin() + delta).sqrt(),
+                3 => (rhosq + theta.sin() + delta).sqrt(),
+                4 => (rhosq + theta * theta - delta + 1.0).sqrt(),
+                5 => (rhosq + theta.tan().abs() + delta).sqrt(),
+                6 => (rhosq * (1.0 + (b * theta).sin()) + delta).sqrt(),
+                7 => (rhosq + (0.5 * b * theta).sin().abs() + delta).sqrt(),
+                8 => (rhosq + (M_PI * (b * theta).sin()).sin() + delta).sqrt(),
+                _ => (rhosq + ((b * theta).sin() + (2.0 * b * theta + M_PI_2).sin()) / 2.0 + delta).sqrt(),
+            };
+            let r1 = if d[4] != 0.0 { amount / r1 } else { amount * r1 };
+            v.x += r1 * theta.cos();
+            v.y += r1 * theta.sin();
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: Some(|p, _| {
+            let mut d = p.to_vec();
+            d[4] = limit_value(ftoi(p[4]), 0, 1) as f64;
+            d[5] = limit_value(ftoi(p[5]), 0, 9) as f64;
+            d
+        }),
+        wgsl: "let rhosq = sumsq(a);
+let theta = atan_yx(a) * D(3);
+let delta = java_pow(theta / PI + 1.0, D(0)) * D(2);
+let b = D(1);
+var r1 = 1.0;
+switch (i32(D(5))) {
+  case 0: { r1 = sqrt(rhosq) + delta; }
+  case 1: { r1 = sqrt(rhosq + delta); }
+  case 2: { r1 = sqrt(rhosq + sin(b * theta) + delta); }
+  case 3: { r1 = sqrt(rhosq + sin(theta) + delta); }
+  case 4: { r1 = sqrt(rhosq + theta * theta - delta + 1.0); }
+  case 5: { r1 = sqrt(rhosq + abs(tan(theta)) + delta); }
+  case 6: { r1 = sqrt(rhosq * (1.0 + sin(b * theta)) + delta); }
+  case 7: { r1 = sqrt(rhosq + abs(sin(0.5 * b * theta)) + delta); }
+  case 8: { r1 = sqrt(rhosq + sin(PI * sin(b * theta)) + delta); }
+  default: { r1 = sqrt(rhosq + (sin(b * theta) + sin(2.0 * b * theta + HALF_PI)) / 2.0 + delta); }
+}
+if (D(4) != 0.0) { r1 = AMOUNT / r1; } else { r1 = AMOUNT * r1; }
+v.x += r1 * cos(theta);
+v.y += r1 * sin(theta);
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "holesq",
+        params: &[],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |_, ctx, a, v, amount| {
+            let (x, y) = (amount * a.x, amount * a.y);
+            let (fax, fay) = (x.abs(), y.abs());
+            if fax + fay > 1.0 {
+                v.x += x;
+                v.y += y;
+            } else if fax > fay {
+                v.x += if x < 0.0 { (x + fay - 1.0) * 0.5 } else { (x - fay + 1.0) * 0.5 };
+                v.y += y;
+            } else {
+                v.x += x;
+                v.y += if y < 0.0 { (y + fax - 1.0) * 0.5 } else { (y - fax + 1.0) * 0.5 };
+            }
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "let x = AMOUNT * a.x;
+let y = AMOUNT * a.y;
+let fax = abs(x);
+let fay = abs(y);
+if (fax + fay > 1.0) {
+  v.x += x;
+  v.y += y;
+} else if (fax > fay) {
+  var t = (x - fay + 1.0) * 0.5;
+  if (x < 0.0) { t = (x + fay - 1.0) * 0.5; }
+  v.x += t;
+  v.y += y;
+} else {
+  var t = (y - fax + 1.0) * 0.5;
+  if (y < 0.0) { t = (y + fax - 1.0) * 0.5; }
+  v.x += x;
+  v.y += t;
+}
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "honeycomb",
+        params: &[ParamDef::new("scale", 1.0), ParamDef::new("pull", 0.7)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let sc = java_max(d[0].abs(), 0.01);
+            let pull = java_max(0.0, java_min(1.0, d[1]));
+            let q = (2.0 / 3.0) * a.x / sc;
+            let r2 = (-1.0 / 3.0) * a.x / sc + 0.5773502691896257 * a.y / sc;
+            let (mut rq, mut rr, rs) = (java_round(q), java_round(r2), java_round(-q - r2));
+            let (dq, dr, ds) = ((rq - q).abs(), (rr - r2).abs(), (rs - (-q - r2)).abs());
+            if dq > dr && dq > ds {
+                rq = -rr - rs;
+            } else if dr > ds {
+                rr = -rq - rs;
+            }
+            let cx = sc * (rq + 0.5 * rr);
+            let cy = sc * 0.8660254037844386 * rr;
+            v.x += amount * (cx + (a.x - cx) * pull);
+            v.y += amount * (cy + (a.y - cy) * pull);
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "let sc = max(abs(D(0)), 0.01);
+let pull = clamp(D(1), 0.0, 1.0);
+let q = (2.0 / 3.0) * a.x / sc;
+let r2 = (-1.0 / 3.0) * a.x / sc + 0.5773502691896257 * a.y / sc;
+var rq = java_round(q);
+var rr = java_round(r2);
+let rs = java_round(-q - r2);
+let dq = abs(rq - q);
+let dr = abs(rr - r2);
+let ds = abs(rs - (-q - r2));
+if (dq > dr && dq > ds) { rq = -rr - rs; } else if (dr > ds) { rr = -rq - rs; }
+let cx = sc * (rq + 0.5 * rr);
+let cy = sc * 0.8660254037844386 * rr;
+v.x += AMOUNT * (cx + (a.x - cx) * pull);
+v.y += AMOUNT * (cy + (a.y - cy) * pull);
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "hopalong",
+        params: &[
+            ParamDef::int("random", 1.0, 0.0, 10000000.0),
+            ParamDef::range("a", 0.75, -1.0, 1.0),
+            ParamDef::range("b", 0.5, -1.0, 1.0),
+            ParamDef::range("c", 0.25, -1.0, 1.0),
+            ParamDef::new("startx", 0.0),
+            ParamDef::new("starty", 0.0),
+        ],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, _, v, amount| {
+            // Java follows one endless orbit per instance; here one per render thread.
+            let p = ctx.orbits.entry(d.as_ptr() as usize).or_insert([d[4], d[5]]);
+            let (x0, y0) = (p[0], p[1]);
+            // Math.signum
+            let sg = if x0 > 0.0 { 1.0 } else if x0 < 0.0 { -1.0 } else { x0 };
+            let x1 = y0 - sg * (d[2] * x0 - d[3]).abs().sqrt();
+            let y1 = d[1] - x0;
+            *p = [x1, y1];
+            v.x += amount * x1;
+            v.y += amount * y1;
+        },
+        prepare: Some(|p, _| {
+            let mut d = p.to_vec();
+            for i in 1..4 {
+                d[i] = limit_value(p[i], -1.0, 1.0);
+            }
+            d
+        }),
+        // GPU: no state across calls, every call iterates a slightly perturbed start point.
+        wgsl: "var x0 = D(4) + 1.0e-2 * (rnd() - 0.5);
+var y0 = D(5) + 1.0e-2 * (rnd() - 0.5);
+let n = 32 + min(i32(rnd() * 1024.0), 1023);
+for (var i = 0; i < n; i++) {
+  let x1 = y0 - sign(x0) * sqrt(abs(D(2) * x0 - D(3)));
+  y0 = D(1) - x0;
+  x0 = x1;
+}
+v.x += AMOUNT * x0;
+v.y += AMOUNT * y0;",
+    },
 ];
