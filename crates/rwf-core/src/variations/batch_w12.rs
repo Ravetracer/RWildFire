@@ -5258,6 +5258,390 @@ v.y += AMOUNT * lat * (1.0 + 0.12 * t) / D(0);
 if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
     },
     VarDef {
+        name: "romanesco",
+        params: &[
+            ParamDef::new("size", 0.5),
+            ParamDef::int("recursion_depth", 7.0, 0.0, 20.0),
+            ParamDef::int("num_arms", 1.0, 1.0, 12.0),
+            ParamDef::new("arm_spread", 1.0),
+            ParamDef::range("arm_elevation", 45.0, -90.0, 90.0),
+            ParamDef::new("arm_twist", 0.0),
+            ParamDef::int("floret_count", 100.0, 1.0, 1000.0),
+            ParamDef::new("floret_scale", 0.28),
+            ParamDef::new("pattern_spread", 0.4),
+            ParamDef::new("spiral_twist", 1.0),
+            ParamDef::new("cone_steepness", 1.0),
+            ParamDef::new("floret_detail_size", 0.1),
+            ParamDef::int("floret_shape", 0.0, 0.0, 3.0),
+            ParamDef::range("pitch", 180.0, -180.0, 180.0),
+            ParamDef::range("yaw", 0.0, -180.0, 180.0),
+            ParamDef::range("roll", 0.0, -180.0, 180.0),
+            ParamDef::int("color_mode", 0.0, 0.0, 3.0),
+            ParamDef::range("solid_color_idx", 0.5, 0.0, 1.0),
+            ParamDef::new("color_range_min", 0.0),
+            ParamDef::new("color_range_max", 9.0),
+        ],
+        kind: VarKind::Normal,
+        is_3d: true,
+        apply: |d, ctx, _a, v, amount| {
+            // d = [size, recursion_depth, num_arms, arm_spread, arm_elevation, arm_twist, floret_count,
+            //      floret_scale, pattern_spread, spiral_twist, cone_steepness, floret_detail_size,
+            //      floret_shape, pitch, yaw, roll, color_mode, solid_color_idx, color_range_min, color_range_max]
+            type V3 = [f64; 3];
+            let cross = |a: V3, b: V3| -> V3 { [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]] };
+            let normalize = |v: V3| -> V3 {
+                let len = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+                if len > 1e-9 { [v[0] / len, v[1] / len, v[2] / len] } else { v }
+            };
+            let golden = M_PI * (3.0 - 5.0f64.sqrt());
+            let mut scale = d[0];
+            let mut pos = [0.0; 3];
+            let (mut ax, mut ay, mut az) = ([1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]);
+            let arms = d[2] as i32;
+            if arms > 1 {
+                let idx = (ctx.random() * arms as f64) as i32;
+                let base_angle = idx as f64 / arms as f64 * 2.0 * M_PI;
+                pos = [d[3] * base_angle.cos(), d[3] * base_angle.sin(), 0.0];
+                let elev = d[4] * M_PI / 180.0;
+                let arm_angle = base_angle + pos[1] * d[5];
+                az = [arm_angle.cos() * elev.cos(), arm_angle.sin() * elev.cos(), elev.sin()];
+                let up = if az[2].abs() > 0.999 { [1.0, 0.0, 0.0] } else { [0.0, 0.0, 1.0] };
+                ax = normalize(cross(az, up));
+                ay = cross(az, ax);
+            }
+            for _ in 0..d[1] as i32 {
+                let fi = (ctx.random().powf(1.5) * d[6]) as i32;
+                let sa = fi as f64 * golden * d[9];
+                let r = d[8] * (fi as f64).sqrt();
+                let (lx, ly, lz) = (r * sa.cos(), r * sa.sin(), r * d[10]);
+                for k in 0..3 {
+                    pos[k] += (ax[k] * lx + ay[k] * ly + az[k] * lz) * scale;
+                }
+                let n = normalize([-d[10] * sa.cos(), -d[10] * sa.sin(), 1.0]);
+                az = normalize([
+                    ax[0] * n[0] + ay[0] * n[1] + az[0] * n[2],
+                    ax[1] * n[0] + ay[1] * n[1] + az[1] * n[2],
+                    ax[2] * n[0] + ay[2] * n[1] + az[2] * n[2],
+                ]);
+                let up = if az[1].abs() > 0.999 { [1.0, 0.0, 0.0] } else { [0.0, 1.0, 0.0] };
+                ax = normalize(cross(up, az));
+                ay = cross(az, ax);
+                scale *= d[7];
+            }
+            let ss = d[11] * scale;
+            let mut l = [0.0; 3];
+            match d[12] as i32 {
+                0 => {
+                    let r = [ctx.random() - 0.5, ctx.random() - 0.5, ctx.random() - 0.5];
+                    let rl = (r[0] * r[0] + r[1] * r[1] + r[2] * r[2]).sqrt();
+                    if rl > 1e-6 {
+                        let br = ss * ctx.random();
+                        l = [(r[0] / rl) * br, (r[1] / rl) * br, (r[2] / rl) * br];
+                    }
+                }
+                1 => l = [(ctx.random() - 0.5) * ss, (ctx.random() - 0.5) * ss, (ctx.random() - 0.5) * ss],
+                2 => l[2] = ss * ctx.random(),
+                3 => {
+                    let ra = ctx.random() * 2.0 * M_PI;
+                    l = [ss * ra.cos(), ss * ra.sin(), 0.0];
+                }
+                _ => {}
+            }
+            let mut f = [0.0; 3];
+            for k in 0..3 {
+                f[k] = pos[k] + (ax[k] * l[0] + ay[k] * l[1] + az[k] * l[2]);
+            }
+            if d[13] != 0.0 || d[14] != 0.0 || d[15] != 0.0 {
+                let (sp, cp) = (d[13].to_radians().sin(), d[13].to_radians().cos());
+                let (sy, cy) = (d[14].to_radians().sin(), d[14].to_radians().cos());
+                let (sr, cr) = (d[15].to_radians().sin(), d[15].to_radians().cos());
+                (f[0], f[2]) = (f[0] * cy - f[2] * sy, f[0] * sy + f[2] * cy);
+                (f[1], f[2]) = (f[1] * cp - f[2] * sp, f[1] * sp + f[2] * cp);
+                (f[0], f[1]) = (f[0] * cr - f[1] * sr, f[0] * sr + f[1] * cr);
+            }
+            let range = d[19] - d[18];
+            let mut ci = 0.5;
+            match d[16] as i32 {
+                0 => ci = d[17],
+                1 if range > 1e-6 => ci = ((f[0] * f[0] + f[1] * f[1] + f[2] * f[2]).sqrt() - d[18]) / range,
+                2 if range > 1e-6 => ci = ((f[0] * f[0] + f[1] * f[1]).sqrt() - d[18]) / range,
+                3 if range > 1e-6 => ci = (f[2] - d[18]) / range,
+                _ => {}
+            }
+            v.color = java_max(0.0, java_min(1.0, ci));
+            v.x += f[0] * amount;
+            v.y += f[1] * amount;
+            v.z += f[2] * amount;
+        },
+        prepare: Some(|p, _| {
+            let mut d = p.to_vec();
+            for k in [1, 2, 6] {
+                d[k] = (p[k] as i32) as f64;
+            }
+            d[12] = limit_value(ftoi(p[12]), 0, 3) as f64;
+            d[16] = limit_value(ftoi(p[16]), 0, 3) as f64;
+            d
+        }),
+        wgsl: "fn romanesco_norm(v: vec3<f32>) -> vec3<f32> {
+  let len = length(v);
+  if (len > 1e-9) { return v / len; }
+  return v;
+}
+@body
+let golden = PI * (3.0 - sqrt(5.0));
+var scale = D(0);
+var pos = vec3<f32>(0.0);
+var ax = vec3<f32>(1.0, 0.0, 0.0);
+var ay = vec3<f32>(0.0, 1.0, 0.0);
+var az = vec3<f32>(0.0, 0.0, 1.0);
+let arms = i32(D(2));
+if (arms > 1) {
+  let idx = i32(rnd() * f32(arms));
+  let base_angle = f32(idx) / f32(arms) * 2.0 * PI;
+  pos = vec3<f32>(D(3) * cos(base_angle), D(3) * sin(base_angle), 0.0);
+  let elev = D(4) * PI / 180.0;
+  let arm_angle = base_angle + pos.y * D(5);
+  az = vec3<f32>(cos(arm_angle) * cos(elev), sin(arm_angle) * cos(elev), sin(elev));
+  var up = vec3<f32>(0.0, 0.0, 1.0);
+  if (abs(az.z) > 0.999) { up = vec3<f32>(1.0, 0.0, 0.0); }
+  ax = romanesco_norm(cross(az, up));
+  ay = cross(az, ax);
+}
+let depth = i32(D(1));
+for (var i = 0; i < depth; i++) {
+  let fi = f32(i32(pow(rnd(), 1.5) * D(6)));
+  let sa = fi * golden * D(9);
+  let r = D(8) * sqrt(fi);
+  pos += (ax * (r * cos(sa)) + ay * (r * sin(sa)) + az * (r * D(10))) * scale;
+  let n = romanesco_norm(vec3<f32>(-D(10) * cos(sa), -D(10) * sin(sa), 1.0));
+  az = romanesco_norm(ax * n.x + ay * n.y + az * n.z);
+  var up = vec3<f32>(0.0, 1.0, 0.0);
+  if (abs(az.y) > 0.999) { up = vec3<f32>(1.0, 0.0, 0.0); }
+  ax = romanesco_norm(cross(up, az));
+  ay = cross(az, ax);
+  scale *= D(7);
+}
+let ss = D(11) * scale;
+var l = vec3<f32>(0.0);
+let shape = i32(D(12));
+if (shape == 0) {
+  let r = vec3<f32>(rnd() - 0.5, rnd() - 0.5, rnd() - 0.5);
+  let rl = length(r);
+  if (rl > 1e-6) { l = r / rl * (ss * rnd()); }
+} else if (shape == 1) {
+  l = vec3<f32>(rnd() - 0.5, rnd() - 0.5, rnd() - 0.5) * ss;
+} else if (shape == 2) {
+  l.z = ss * rnd();
+} else if (shape == 3) {
+  let ra = rnd() * 2.0 * PI;
+  l = vec3<f32>(ss * cos(ra), ss * sin(ra), 0.0);
+}
+var f = pos + ax * l.x + ay * l.y + az * l.z;
+if (D(13) != 0.0 || D(14) != 0.0 || D(15) != 0.0) {
+  let p = radians(D(13));
+  let yw = radians(D(14));
+  let rl = radians(D(15));
+  f = vec3<f32>(f.x * cos(yw) - f.z * sin(yw), f.y, f.x * sin(yw) + f.z * cos(yw));
+  f = vec3<f32>(f.x, f.y * cos(p) - f.z * sin(p), f.y * sin(p) + f.z * cos(p));
+  f = vec3<f32>(f.x * cos(rl) - f.y * sin(rl), f.x * sin(rl) + f.y * cos(rl), f.z);
+}
+let range = D(19) - D(18);
+var ci = 0.5;
+let cm = i32(D(16));
+if (cm == 0) {
+  ci = D(17);
+} else if (range > 1e-6) {
+  if (cm == 1) { ci = (length(f) - D(18)) / range; }
+  if (cm == 2) { ci = (length(f.xy) - D(18)) / range; }
+  if (cm == 3) { ci = (f.z - D(18)) / range; }
+}
+v.color = clamp(ci, 0.0, 1.0);
+v.x += f.x * AMOUNT;
+v.y += f.y * AMOUNT;
+v.z += f.z * AMOUNT;",
+    },
+    VarDef {
+        name: "rose_wf",
+        params: &[ParamDef::new("amp", 0.5), ParamDef::int("waves", 4.0, 0.0, 32.0), ParamDef::range("filled", 0.85, 0.0, 1.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let an = a.atan_xy();
+            let mut r = d[0] * (d[1] * an).cos();
+            if d[2] > 0.0 && d[2] > ctx.random() {
+                r *= ctx.random();
+            }
+            v.x += amount * an.sin() * r;
+            v.y += amount * an.cos() * r;
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: Some(|p, _| vec![p[0], ftoi(p[1]) as f64, p[2]]),
+        wgsl: "let an = atan2(a.x, a.y);
+var r = D(0) * cos(D(1) * an);
+if (D(2) > 0.0 && D(2) > rnd()) { r *= rnd(); }
+v.x += AMOUNT * sin(an) * r;
+v.y += AMOUNT * cos(an) * r;
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "rosoni",
+        params: &[
+            ParamDef::int("maxiter", 25.0, 1.0, 1024.0),
+            ParamDef::int("sweetiter", 3.0, 0.0, 1023.0),
+            ParamDef::int("altshapes", 0.0, 0.0, 1.0),
+            ParamDef::new("cutoff", 1.0),
+            ParamDef::new("radius", 0.4),
+            ParamDef::new("dx", 0.6),
+            ParamDef::new("dy", 0.0),
+        ],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            // d = [maxiter, sweetiter, altshapes, cutoff, radius, dx, dy, sina, cosa]
+            let (x, y) = (a.x, a.y);
+            let (cutoff, radius, dx, dy) = (d[3], d[4], d[5], d[6]);
+            let r = if cutoff < 0.0 { java_max(x.abs(), y.abs()) + cutoff } else { (sqr(x) + sqr(y)).sqrt() - cutoff };
+            if r > 0.0 {
+                v.x += amount * x;
+                v.y += amount * y;
+                ctx.pass_z(a, v, amount);
+                return;
+            }
+            let mut cerc = dx > 0.0;
+            let (mut xrt, mut yrt) = (x, y);
+            let (mut sweetx, mut sweety) = (xrt, yrt);
+            let sweetiter = d[1] as i32;
+            for i in 0..d[0] as i32 {
+                let r2 = if d[2] as i32 == 0 {
+                    if radius < 0.0 { java_max((xrt - dx).abs(), (yrt - dy).abs()) + radius } else { sqr(xrt - dx) + sqr(yrt - dy) - sqr(radius) }
+                } else if radius < 0.0 {
+                    (yrt - dy).atan2(xrt - dx).abs() * M_1_PI + radius
+                } else if (xrt - dx) < 0.0 {
+                    -(xrt - dx)
+                } else {
+                    sqr(yrt - dy) - sqr(xrt - dx) * (sqr(radius) - sqr(xrt - dx))
+                };
+                cerc ^= r2 <= 0.0;
+                if i == sweetiter {
+                    sweetx = xrt;
+                    sweety = yrt;
+                }
+                (xrt, yrt) = (xrt * d[8] - yrt * d[7], xrt * d[7] + yrt * d[8]);
+            }
+            if cerc {
+                if sweetiter == 0 {
+                    if dy != 0.0 {
+                        v.x -= amount * sweetx;
+                    } else {
+                        v.x += amount * sweetx;
+                    }
+                    v.y -= amount * sweety;
+                } else {
+                    v.x += amount * sweetx;
+                    v.y += amount * sweety;
+                }
+            } else {
+                v.x += amount * x;
+                v.y += amount * y;
+            }
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: Some(|p, _| {
+            let mut d = p.to_vec();
+            d[0] = limit_value(ftoi(p[0]), 1, 1024) as f64;
+            d[1] = limit_value(ftoi(p[1]), 0, 1023) as f64;
+            d[2] = ftoi(p[2]) as f64;
+            let phi = M_2PI / d[0];
+            d.extend([phi.sin(), phi.cos()]);
+            d
+        }),
+        wgsl: "let x = a.x;
+let y = a.y;
+let cutoff = D(3);
+let radius = D(4);
+let dx = D(5);
+let dy = D(6);
+var r = sqrt(x * x + y * y) - cutoff;
+if (cutoff < 0.0) { r = max(abs(x), abs(y)) + cutoff; }
+var res = vec2<f32>(x, y);
+if (r <= 0.0) {
+  var cerc = dx > 0.0;
+  var xrt = x;
+  var yrt = y;
+  var sweet = vec2<f32>(x, y);
+  let sweetiter = i32(D(1));
+  let n = i32(D(0));
+  for (var i = 0; i < n; i++) {
+    var r2 = 0.0;
+    if (i32(D(2)) == 0) {
+      r2 = (xrt - dx) * (xrt - dx) + (yrt - dy) * (yrt - dy) - radius * radius;
+      if (radius < 0.0) { r2 = max(abs(xrt - dx), abs(yrt - dy)) + radius; }
+    } else if (radius < 0.0) {
+      r2 = abs(atan2(yrt - dy, xrt - dx)) / PI + radius;
+    } else if ((xrt - dx) < 0.0) {
+      r2 = -(xrt - dx);
+    } else {
+      r2 = (yrt - dy) * (yrt - dy) - (xrt - dx) * (xrt - dx) * (radius * radius - (xrt - dx) * (xrt - dx));
+    }
+    cerc = cerc != (r2 <= 0.0);
+    if (i == sweetiter) { sweet = vec2<f32>(xrt, yrt); }
+    let swp = xrt * D(8) - yrt * D(7);
+    yrt = xrt * D(7) + yrt * D(8);
+    xrt = swp;
+  }
+  if (cerc) {
+    res = sweet;
+    if (sweetiter == 0) {
+      res.y = -sweet.y;
+      if (dy != 0.0) { res.x = -sweet.x; }
+    }
+  }
+}
+v.x += AMOUNT * res.x;
+v.y += AMOUNT * res.y;
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    simple(
+        "roundspher",
+        false,
+        |_, ctx, a, v, amount| {
+            let d = sqr(a.x) + sqr(a.y);
+            let e = 1.0 / d + sqr(M_2_PI);
+            v.x += amount * (amount / d * a.x / e);
+            v.y += amount * (amount / d * a.y / e);
+            ctx.pass_z(a, v, amount);
+        },
+        "let d = a.x * a.x + a.y * a.y;
+let e = 1.0 / d + 4.0 / (PI * PI);
+v.x += AMOUNT * (AMOUNT / d * a.x / e);
+v.y += AMOUNT * (AMOUNT / d * a.y / e);
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    ),
+    simple(
+        "roundspher3D",
+        true,
+        |_, _, a, v, amount| {
+            let f = (sqr(a.x) + sqr(a.y)).sqrt();
+            let ttz = if a.z == 0.0 { f.cos() } else { a.z };
+            let tpz = if v.z == 0.0 { f.cos() } else { v.z };
+            let d = sqr(a.x) + sqr(a.y) + sqr(ttz);
+            let e = 1.0 / d + sqr(M_2_PI);
+            v.x += amount * (amount / d * a.x / e);
+            v.y += amount * (amount / d * a.y / e);
+            v.z = tpz + amount * (amount / d * ttz / e);
+        },
+        "let f = sqrt(a.x * a.x + a.y * a.y);
+var ttz = a.z;
+if (a.z == 0.0) { ttz = cos(f); }
+var tpz = v.z;
+if (v.z == 0.0) { tpz = cos(f); }
+let d = a.x * a.x + a.y * a.y + ttz * ttz;
+let e = 1.0 / d + 4.0 / (PI * PI);
+v.x += AMOUNT * (AMOUNT / d * a.x / e);
+v.y += AMOUNT * (AMOUNT / d * a.y / e);
+v.z = tpz + AMOUNT * (AMOUNT / d * ttz / e);",
+    ),
+    VarDef {
         name: "post_ztranslate_wf",
         params: &[],
         kind: VarKind::Post,
