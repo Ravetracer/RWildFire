@@ -33,6 +33,7 @@ pub mod random;
 pub mod render;
 pub mod resources;
 pub mod rng;
+pub mod shapes;
 pub mod solid;
 pub mod variations;
 pub mod video;

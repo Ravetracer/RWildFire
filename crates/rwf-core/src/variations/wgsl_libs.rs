@@ -117,6 +117,7 @@ mod tests {
   acc += res_colormap(ub, x, y, mp).x + res_displacemap(ub, x, y, z, mp).y;
   acc += res_discret_noise(n) + res_brush(ub, mp, mp, x, y, z, x > 0.0).x;
   acc += res_metaballs(ub, mp, x).z;
+  acc += res_shape_point(ub, 2u, x).w;
   acc += res_formula(ub, 4u, v4);
   acc += res_f(ub, 2u, v4) + res_normal(v3, v3).x + res_plot_displ(ub, 1u, x > 0.0, x, y) + res_plot_color(ub, 1u, true, x, y, mp).r;
   prm[4] = acc;

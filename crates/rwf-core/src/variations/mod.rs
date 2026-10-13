@@ -355,6 +355,10 @@ pub enum ResKind {
     Text,
     /// A formula (Java expression, see `crate::formula`).
     Formula,
+    /// SVG document (the file content is stored).
+    Svg,
+    /// Font family name.
+    Font,
 }
 
 /// A resource parameter: a string value (e.g. a file name), stored hex-encoded in `.flame` files.

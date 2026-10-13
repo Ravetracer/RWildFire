@@ -505,6 +505,31 @@ fn resource_picker(ui: &mut Ui, var: &mut VariationInstance, r: &variations::Res
     };
     let image_filter = ("Image", &["png", "jpg", "jpeg"][..]);
     match r.kind {
+        ResKind::Svg => {
+            let len = var.resource_bytes(r.name).len();
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(format!("SVG, {} KB", len.div_ceil(1024))).color(theme::TEXT_MUTED));
+                if ui.small_button("Load…").clicked()
+                    && let Some(p) = rfd::FileDialog::new().add_filter("SVG", &["svg"]).pick_file()
+                    && let Ok(text) = std::fs::read_to_string(&p)
+                {
+                    var.set_resource(r.name, &text);
+                }
+            });
+        }
+        ResKind::Font => {
+            let mut value = var.resource(r.name);
+            let before = value.clone();
+            egui::ComboBox::from_id_salt((r.name, var.name.as_str())).selected_text(value.clone()).width(180.0).show_ui(ui, |ui| {
+                static FAMILIES: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+                for f in FAMILIES.get_or_init(rwf_core::shapes::font_families) {
+                    ui.selectable_value(&mut value, f.clone(), f);
+                }
+            });
+            if value != before {
+                var.set_resource(r.name, &value);
+            }
+        }
         ResKind::Formula => {
             let mut value = var.resource(r.name);
             ui.vertical(|ui| {

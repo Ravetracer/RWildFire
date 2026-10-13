@@ -1198,6 +1198,47 @@ fn sattractor_load(d: &mut Vec<f64>, res: &[Vec<u8>], _: &LoadEnv) {
 }
 
 // ---------------------------------------------------------------------------------------------
+// svg_wf (SVGWFFunc), text_wf (TextWFFunc): point sets of rendered shapes
+
+/// Point header after the parameters: `[count, start]`; a point is `[x, y, packed rgb]`.
+fn push_shape_points(d: &mut Vec<f64>, o: usize, pts: &[crate::shapes::ShapePoint]) {
+    d[o] = pts.len() as f64;
+    d[o + 1] = d.len() as f64;
+    d.reserve(3 * pts.len());
+    for p in pts {
+        d.extend([p.x, p.y, ((p.rgb[0] as u32) << 16 | (p.rgb[1] as u32) << 8 | p.rgb[2] as u32) as f64]);
+    }
+}
+
+/// Picks a point and adds the antialiasing jitter of JWildfire's shape variations; `None` if
+/// the set is empty (then JWildfire adds a random black point).
+fn shape_point(d: &[f64], o: usize, aa_radius: f64, ctx: &mut Ctx) -> Option<(f64, f64, u32)> {
+    let n = d[o] as usize;
+    if n <= 1 {
+        return None;
+    }
+    let p = d[o + 1] as usize + 3 * ctx.random_int(n);
+    let (mut x, mut y) = (d[p], d[p + 1]);
+    if aa_radius > 0.01 {
+        let dr = ((aa_radius * (-ctx.random().ln()).sqrt()).exp() - 1.0) * 0.001;
+        let da = ctx.random() * 2.0 * M_PI;
+        x += dr * da.cos();
+        y += dr * da.sin();
+    }
+    Some((x, y, d[p + 2] as u32))
+}
+
+fn random_black(ctx: &mut Ctx, v: &mut Pt) {
+    v.x += ctx.random();
+    v.y += ctx.random();
+    v.rgb_color = true;
+    v.red = 0.0;
+    v.green = 0.0;
+    v.blue = 0.0;
+}
+
+
+// ---------------------------------------------------------------------------------------------
 
 pub static DEFS: &[VarDef] = &[
     VarDef {
@@ -1654,6 +1695,96 @@ if (i32(D(3)) == 0) {
         }),
         wgsl: "v = res_mesh(base, 17u, v, AMOUNT);",
     },
+    VarDef {
+        name: "svg_wf",
+        params: &[
+            ParamDef::range("antialias_radius", 0.5, 0.0, 2.0),
+            ParamDef::range("resolution_multiplier", 2.0, 0.1, 8.0),
+            ParamDef::int("true_color", 1.0, 0.0, 1.0),
+            ParamDef::int("pre_antialias", 1.0, 0.0, 1.0),
+            ParamDef::new("scale_x", 1.0),
+            ParamDef::new("scale_y", 1.0),
+            ParamDef::new("offset_x", 0.0),
+            ParamDef::new("offset_y", 0.0),
+        ],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, _, v, _| {
+            // d = [antialias_radius, resolution_multiplier, true_color, pre_antialias, scale_x,
+            //      scale_y, offset_x, offset_y, count, start, points [x, y, rgb] ..]
+            let Some((x, y, rgb)) = shape_point(d, 8, d[0], ctx) else {
+                return random_black(ctx, v);
+            };
+            v.x += x * d[4] + d[6];
+            v.y += y * d[5] + d[7];
+            let c = [(rgb >> 16 & 255) as i32, (rgb >> 8 & 255) as i32, (rgb & 255) as i32];
+            if d[2] as i32 == 1 {
+                v.rgb_color = true;
+                v.red = c[0] as f64;
+                v.green = c[1] as f64;
+                v.blue = c[2] as f64;
+            }
+            v.color = ctx.uv_color_idx(c[0], c[1], c[2]);
+        },
+        prepare: Some(|p, _| {
+            let mut d = p.to_vec();
+            d[2] = ftoi(p[2]) as f64;
+            d[3] = ftoi(p[3]) as f64;
+            d.extend([0.0; 2]);
+            d
+        }),
+        wgsl: "let q = res_shape_point(base, 8u, D(0));
+if (q.w < 0.0) {
+  v.x += rnd(); v.y += rnd();
+  v.rgbc = 1.0; v.r = 0.0; v.g = 0.0; v.b = 0.0;
+} else {
+  v.x += q.x * D(4) + D(6);
+  v.y += q.y * D(5) + D(7);
+  let p = u32(q.z);
+  let c = vec3<f32>(f32((p >> 16u) & 255u), f32((p >> 8u) & 255u), f32(p & 255u));
+  if (i32(D(2)) == 1) { v.rgbc = 1.0; v.r = c.x; v.g = c.y; v.b = c.z; }
+  v.color = res_nearest_color_idx(c);
+}",
+    },
+    VarDef {
+        name: "text_wf",
+        params: &[
+            ParamDef::int("font_size", 320.0, 4.0, 1000.0),
+            ParamDef::range("antialias", 0.5, 0.0, 2.0),
+            ParamDef::new("scale_x", 1.0),
+            ParamDef::new("scale_y", 1.0),
+            ParamDef::new("offset_x", 0.0),
+            ParamDef::new("offset_y", 0.0),
+            ParamDef::int("baseline", 0.0, -100.0, 100.0),
+        ],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, _, v, _| {
+            // d = [font_size, antialias, scale_x, scale_y, offset_x, offset_y, baseline, count,
+            //      start, points ..]
+            const DFLT_SCALE: f64 = 3.0;
+            let Some((x, y, _)) = shape_point(d, 7, d[1], ctx) else {
+                return random_black(ctx, v);
+            };
+            v.x += (x * d[2] + d[4]) * DFLT_SCALE;
+            v.y += (y * d[3] + d[5]) * DFLT_SCALE;
+        },
+        prepare: Some(|p, _| {
+            let mut d = p.to_vec();
+            d[0] = ftoi(p[0]) as f64;
+            d[6] = ftoi(p[6]) as f64;
+            d.extend([0.0; 2]);
+            d
+        }),
+        wgsl: "let q = res_shape_point(base, 7u, D(1));
+if (q.w < 0.0) {
+  v.x += rnd(); v.y += rnd();
+  v.rgbc = 1.0; v.r = 0.0; v.g = 0.0; v.b = 0.0;
+} else {
+  v.x += (q.x * D(2) + D(4)) * 3.0;
+  v.y += (q.y * D(3) + D(5)) * 3.0;
+}",
+    },
 ];
 
 const COLORMAP_RESOURCES: [ResDef; 4] = [
@@ -1703,6 +1834,25 @@ pub static RESOURCES: &[ResourceVar] = &[
     },
     ResourceVar { name: "knots3D", resources: &CURVE_RESOURCES, load: knots_load },
     ResourceVar { name: "sattractor3D", resources: &CURVE_RESOURCES, load: sattractor_load },
+    ResourceVar {
+        name: "svg_wf",
+        resources: &[ResDef { name: "svg", kind: ResKind::Svg, default: include_str!("../../assets/svg_wf_default.svg") }],
+        load: |d, res, _| {
+            let pts = crate::shapes::svg_points(&text(&res[0]), d[1], d[3] != 0.0);
+            push_shape_points(d, 8, &pts);
+        },
+    },
+    ResourceVar {
+        name: "text_wf",
+        resources: &[
+            ResDef { name: "text", kind: ResKind::Text, default: "JWildfire" },
+            ResDef { name: "font_name", kind: ResKind::Font, default: "Arial" },
+        ],
+        load: |d, res, _| {
+            let pts = crate::shapes::text_points(&text(&res[0]), &text(&res[1]), d[0] as i32, d[6] as i32);
+            push_shape_points(d, 7, &pts);
+        },
+    },
     ResourceVar { name: "brush_stroke_wf", resources: &BRUSH_RESOURCES, load: brush_load },
     ResourceVar { name: "post_brush_stroke_wf", resources: &BRUSH_RESOURCES, load: brush_load },
     ResourceVar { name: "plane_wf", resources: &IMAGE_RESOURCES, load: plane_wf_load },

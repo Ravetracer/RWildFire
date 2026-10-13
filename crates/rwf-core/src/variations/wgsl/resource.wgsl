@@ -467,3 +467,18 @@ fn res_plot_color(base: u32, o: u32, blend: bool, ru: f32, rv: f32, v_in: Pt) ->
   }
   return v;
 }
+
+// svg_wf / text_wf: a random point [x, y, packed rgb] of the set at prm[base + o] ([count, start])
+// with JWildfire's antialiasing jitter; w = -1 if the set is empty.
+fn res_shape_point(base: u32, o: u32, aa: f32) -> vec4<f32> {
+  let n = prm[base + o];
+  if (n <= 1.0) { return vec4<f32>(0.0, 0.0, 0.0, -1.0); }
+  let p = base + u32(prm[base + o + 1u]) + 3u * min(u32(rnd() * n), u32(n) - 1u);
+  var q = vec2<f32>(prm[p], prm[p + 1u]);
+  if (aa > 0.01) {
+    let dr = (exp(aa * sqrt(-log(max(rnd(), 1.0e-30)))) - 1.0) * 0.001;
+    let da = rnd() * TWO_PI;
+    q += dr * vec2<f32>(cos(da), sin(da));
+  }
+  return vec4<f32>(q, prm[p + 2u], 1.0);
+}
