@@ -828,6 +828,171 @@ fn gosperisland_prepare(p: &[f64]) -> Vec<f64> {
     d
 }
 
+/// `GreeblesFunc.transform`; d = [mode, base_shape, size, subdivisions, greeble_shape,
+/// greeble_height, seed].
+fn greebles_apply(d: &[f64], ctx: &mut Ctx, a: &Pt, v: &mut Pt, amount: f64) {
+    let (mode, base_shape, size, subdivisions, shape, gheight, seed) = (d[0] as i32, d[1] as i32, d[2], d[3] as i32, d[4] as i32, d[5], d[6] as i32);
+    let norm = |p: [f64; 3]| {
+        let len = (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt();
+        if len > 1e-9 { [p[0] / len, p[1] / len, p[2] / len] } else { p }
+    };
+    let cross = |a: [f64; 3], b: [f64; 3]| [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+    let frac = |n: f64| n - n.floor();
+    let base;
+    let normal;
+    let gsize;
+    if base_shape == 0 {
+        let half = size * 0.5;
+        let (ua, va) = if mode == 1 {
+            (a.y.atan2(a.x), a.z.atan2((a.x * a.x + a.y * a.y).sqrt()))
+        } else {
+            let ua = ctx.random() * 2.0 * M_PI;
+            (ua, (2.0 * ctx.random() - 1.0).acos())
+        };
+        let ucell = (2.0 * M_PI) / (subdivisions * 2).max(1) as f64;
+        let vcell = M_PI / subdivisions.max(1) as f64;
+        let uq = (ua / ucell).floor() * ucell + ucell * 0.5;
+        let vq = (va / vcell).floor() * vcell + vcell * 0.5;
+        base = [half * vq.sin() * uq.cos(), half * vq.sin() * uq.sin(), half * vq.cos()];
+        normal = norm(base);
+        gsize = (M_PI * size) / subdivisions as f64;
+    } else {
+        let mut p = if mode == 1 {
+            [a.x, a.y, a.z]
+        } else if base_shape == 2 {
+            [(ctx.random() - 0.5) * size, (ctx.random() - 0.5) * size, 0.0]
+        } else {
+            let face = (ctx.random() * 6.0) as i32;
+            let (ur, vr) = ((ctx.random() - 0.5) * size, (ctx.random() - 0.5) * size);
+            let hs = size * 0.5;
+            match face {
+                0 => [hs, ur, vr],
+                1 => [-hs, ur, vr],
+                2 => [ur, hs, vr],
+                3 => [ur, -hs, vr],
+                4 => [ur, vr, hs],
+                _ => [ur, vr, -hs],
+            }
+        };
+        let half = size * 0.5;
+        let sgn = |c: f64| if c > 0.0 { 1.0 } else { -1.0 };
+        if base_shape == 2 {
+            p[2] = 0.0;
+            normal = [0.0, 0.0, 1.0];
+        } else {
+            let (ax, ay, az) = (p[0].abs(), p[1].abs(), p[2].abs());
+            let k = if ax >= ay && ax >= az { 0 } else if ay >= ax && ay >= az { 1 } else { 2 };
+            p[k] = sgn(p[k]) * half;
+            let mut n = [0.0; 3];
+            n[k] = sgn(p[k]);
+            normal = n;
+        }
+        gsize = if subdivisions > 0 { size / subdivisions as f64 } else { size };
+        if gsize < 1.0e-6 {
+            v.do_hide = true;
+            return;
+        }
+        base = p.map(|c| (c / gsize).floor() as i32 as f64 * gsize + gsize * 0.5);
+    }
+    let cell_seed = (seed as i64).wrapping_add(((base[0] * 100.0) as i64).wrapping_mul(73856093))
+        ^ ((base[1] * 100.0) as i64).wrapping_mul(19349663)
+        ^ ((base[2] * 100.0) as i64).wrapping_mul(83492791);
+    let height = gheight * crate::brush::Marsaglia::new(cell_seed).random();
+    let up = if normal[1].abs() > 0.999 { [1.0, 0.0, 0.0] } else { [0.0, 1.0, 0.0] };
+    let tangent = norm(cross(normal, up));
+    let bitangent = norm(cross(normal, tangent));
+    let (mut u, mut w2, mut w) = (0.0, 0.0, 0.0);
+    if mode == 0 {
+        match shape {
+            1 => {
+                let ang = ctx.random() * 2.0 * M_PI;
+                let rad = (gsize * 0.5) * ctx.random().sqrt();
+                u = ang.cos() * rad;
+                w2 = ang.sin() * rad;
+                w = ctx.random() * height;
+            }
+            2 => {
+                let (rx, ry, rz) = (ctx.random() - 0.5, ctx.random() - 0.5, ctx.random() - 0.5);
+                let rl = (rx * rx + ry * ry + rz * rz).sqrt();
+                if rl > 1e-9 {
+                    let rad = ctx.random().powf(1.0 / 3.0);
+                    u = (rx / rl) * rad * (gsize * 0.5);
+                    w2 = (ry / rl) * rad * (gsize * 0.5);
+                    w = (rz / rl) * rad * height;
+                }
+            }
+            3 => {
+                let ang = ctx.random() * 2.0 * M_PI;
+                w = ctx.random() * height;
+                let taper = if height > 1e-9 { 1.0 - w / height } else { 1.0 };
+                let rad = (gsize * 0.5) * ctx.random().sqrt() * taper;
+                u = ang.cos() * rad;
+                w2 = ang.sin() * rad;
+            }
+            _ => {
+                u = (ctx.random() - 0.5) * gsize;
+                w2 = (ctx.random() - 0.5) * gsize;
+                w = ctx.random() * height;
+            }
+        }
+    } else {
+        let r = [a.x - base[0], a.y - base[1], a.z - base[2]];
+        let dot = |b: [f64; 3]| r[0] * b[0] + r[1] * b[1] + r[2] * b[2];
+        let (lu, lv, lw) = (dot(tangent), dot(bitangent), dot(normal));
+        match shape {
+            1 | 3 => {
+                let ang = lv.atan2(lu);
+                if shape == 1 {
+                    let rad = (gsize * 0.5) * frac((lu * lu + lv * lv).sqrt());
+                    u = ang.cos() * rad;
+                    w2 = ang.sin() * rad;
+                    w = frac(lw) * height;
+                } else {
+                    w = frac(lw) * height;
+                    let taper = if height > 1e-9 { 1.0 - w / height } else { 1.0 };
+                    let rad = (gsize * 0.5) * frac((lu * lu + lv * lv).sqrt()) * taper;
+                    u = ang.cos() * rad;
+                    w2 = ang.sin() * rad;
+                }
+            }
+            2 => {
+                let rl = (lu * lu + lv * lv + lw * lw).sqrt();
+                let rad = (gsize * 0.5) * frac(rl);
+                if rl > 1e-9 {
+                    u = (lu / rl) * rad;
+                    w2 = (lv / rl) * rad;
+                    w = (lw / rl) * rad;
+                }
+            }
+            _ => {
+                u = (frac(lu) - 0.5) * gsize;
+                w2 = (frac(lv) - 0.5) * gsize;
+                w = frac(lw) * height;
+            }
+        }
+    }
+    for k in 0..3 {
+        let f = base[k] + tangent[k] * u + bitangent[k] * w2 + normal[k] * w;
+        match k {
+            0 => v.x += f * amount,
+            1 => v.y += f * amount,
+            _ => v.z += f * amount,
+        }
+    }
+}
+
+/// Deterministic 0..1 value per grid cell (`Grid3DWFFunc` draws the spreads from a
+/// java.util.Random in the order the cells are first visited).
+fn grid3d_cell_rnd(x: i32, y: i32, z: i32, k: u32) -> f64 {
+    let mut h = (x as u32).wrapping_mul(0x8da6b343) ^ (y as u32).wrapping_mul(0xd8163841) ^ (z as u32).wrapping_mul(0xcb1ab31f) ^ k.wrapping_mul(0x165667b1);
+    h ^= h >> 16;
+    h = h.wrapping_mul(0x7feb352d);
+    h ^= h >> 15;
+    h = h.wrapping_mul(0x846ca68b);
+    h ^= h >> 16;
+    h as f64 / 4294967296.0
+}
+
 pub static DEFS: &[VarDef] = &[
     VarDef {
         name: "barycentroid",
@@ -3965,5 +4130,307 @@ let py = D(0) * a.y + D(2) * 1.3;
 v.x += AMOUNT * (D(1) * cos(px) * sin(py));
 v.y += AMOUNT * (D(1) * sin(px) * cos(py));
 if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "greebles",
+        params: &[
+            ParamDef::int("mode", 0.0, 0.0, 1.0),
+            ParamDef::int("base_shape", 1.0, 0.0, 2.0),
+            ParamDef::new("size", 2.0),
+            ParamDef::int("subdivisions", 10.0, 0.0, 100.0),
+            ParamDef::int("greeble_shape", 0.0, 0.0, 3.0),
+            ParamDef::new("greeble_height", 0.2),
+            ParamDef::int("seed", 12345.0, 0.0, 100000.0),
+        ],
+        kind: VarKind::Normal,
+        is_3d: true,
+        apply: |d, ctx, a, v, amount| greebles_apply(d, ctx, a, v, amount),
+        prepare: Some(|p, _| {
+            let mut d = p.to_vec();
+            for i in [0, 1, 3, 4, 6] {
+                d[i] = p[i].trunc();
+            }
+            d
+        }),
+        wgsl: "fn greebles_norm(p: vec3<f32>) -> vec3<f32> {
+  let len = length(p);
+  if (len > 1e-9) { return p / len; }
+  return p;
+}
+// MarsagliaRandomGenerator.randomize(seed) + random(); only the low 16 bits of the seed matter.
+fn greebles_marsaglia(seed: i32) -> f32 {
+  var u = seed << 16u;
+  var v = (seed << 16u) >> 16u;
+  v = 36969 * (v & 65535) + (v >> 16u);
+  u = 18000 * (u & 65535) + (u >> 16u);
+  return abs(f32((v << 16u) + u) / 2147483647.0);
+}
+@body
+let mode = i32(D(0));
+let bshape = i32(D(1));
+let size = D(2);
+let subdiv = i32(D(3));
+let shape = i32(D(4));
+var gb = vec3<f32>(0.0);
+var normal = vec3<f32>(0.0);
+var gsize = 0.0;
+var hide = false;
+if (bshape == 0) {
+  var ua = atan2(a.y, a.x);
+  var va = atan2(a.z, sqrt(a.x * a.x + a.y * a.y));
+  if (mode != 1) {
+    ua = rnd() * TWO_PI;
+    va = acos(2.0 * rnd() - 1.0);
+  }
+  let ucell = TWO_PI / f32(max(1, subdiv * 2));
+  let vcell = PI / f32(max(1, subdiv));
+  let uq = floor(ua / ucell) * ucell + ucell * 0.5;
+  let vq = floor(va / vcell) * vcell + vcell * 0.5;
+  gb = size * 0.5 * vec3<f32>(sin(vq) * cos(uq), sin(vq) * sin(uq), cos(vq));
+  normal = greebles_norm(gb);
+  gsize = PI * size / f32(subdiv);
+} else {
+  var p = vec3<f32>(a.x, a.y, a.z);
+  if (mode != 1) {
+    if (bshape == 2) {
+      p = vec3<f32>((rnd() - 0.5) * size, (rnd() - 0.5) * size, 0.0);
+    } else {
+      let face = i32(rnd() * 6.0);
+      let ur = (rnd() - 0.5) * size;
+      let vr = (rnd() - 0.5) * size;
+      let hs = size * 0.5;
+      switch (face) {
+        case 0: { p = vec3<f32>(hs, ur, vr); }
+        case 1: { p = vec3<f32>(-hs, ur, vr); }
+        case 2: { p = vec3<f32>(ur, hs, vr); }
+        case 3: { p = vec3<f32>(ur, -hs, vr); }
+        case 4: { p = vec3<f32>(ur, vr, hs); }
+        default: { p = vec3<f32>(ur, vr, -hs); }
+      }
+    }
+  }
+  let half = size * 0.5;
+  if (bshape == 2) {
+    p.z = 0.0;
+    normal = vec3<f32>(0.0, 0.0, 1.0);
+  } else {
+    let ap = abs(p);
+    if (ap.x >= ap.y && ap.x >= ap.z) {
+      p.x = select(-half, half, p.x > 0.0);
+      normal = vec3<f32>(select(-1.0, 1.0, p.x > 0.0), 0.0, 0.0);
+    } else if (ap.y >= ap.x && ap.y >= ap.z) {
+      p.y = select(-half, half, p.y > 0.0);
+      normal = vec3<f32>(0.0, select(-1.0, 1.0, p.y > 0.0), 0.0);
+    } else {
+      p.z = select(-half, half, p.z > 0.0);
+      normal = vec3<f32>(0.0, 0.0, select(-1.0, 1.0, p.z > 0.0));
+    }
+  }
+  gsize = size;
+  if (subdiv > 0) { gsize = size / f32(subdiv); }
+  hide = gsize < 1.0e-6;
+  gb = floor(p / gsize) * gsize + gsize * 0.5;
+}
+if (hide) {
+  v.hide = 1.0;
+} else {
+  let ib = vec3<i32>(gb * 100.0);
+  let cseed = (i32(D(6)) + ib.x * 73856093) ^ (ib.y * 19349663) ^ (ib.z * 83492791);
+  let height = D(5) * greebles_marsaglia(cseed);
+  var up = vec3<f32>(0.0, 1.0, 0.0);
+  if (abs(normal.y) > 0.999) { up = vec3<f32>(1.0, 0.0, 0.0); }
+  let tangent = greebles_norm(cross(normal, up));
+  let bitangent = greebles_norm(cross(normal, tangent));
+  var u = 0.0;
+  var w2 = 0.0;
+  var w = 0.0;
+  if (mode == 0) {
+    if (shape == 1) {
+      let ang = rnd() * TWO_PI;
+      let rad = gsize * 0.5 * sqrt(rnd());
+      u = cos(ang) * rad;
+      w2 = sin(ang) * rad;
+      w = rnd() * height;
+    } else if (shape == 2) {
+      let rv = vec3<f32>(rnd() - 0.5, rnd() - 0.5, rnd() - 0.5);
+      let rl = length(rv);
+      if (rl > 1e-9) {
+        let rad = java_pow(rnd(), 1.0 / 3.0);
+        u = rv.x / rl * rad * gsize * 0.5;
+        w2 = rv.y / rl * rad * gsize * 0.5;
+        w = rv.z / rl * rad * height;
+      }
+    } else if (shape == 3) {
+      let ang = rnd() * TWO_PI;
+      w = rnd() * height;
+      var taper = 1.0;
+      if (height > 1e-9) { taper = 1.0 - w / height; }
+      let rad = gsize * 0.5 * sqrt(rnd()) * taper;
+      u = cos(ang) * rad;
+      w2 = sin(ang) * rad;
+    } else {
+      u = (rnd() - 0.5) * gsize;
+      w2 = (rnd() - 0.5) * gsize;
+      w = rnd() * height;
+    }
+  } else {
+    let r = vec3<f32>(a.x, a.y, a.z) - gb;
+    let lu = dot(r, tangent);
+    let lv = dot(r, bitangent);
+    let lw = dot(r, normal);
+    if (shape == 1 || shape == 3) {
+      let ang = atan2(lv, lu);
+      w = fract(lw) * height;
+      var taper = 1.0;
+      if (shape == 3 && height > 1e-9) { taper = 1.0 - w / height; }
+      let rad = gsize * 0.5 * fract(sqrt(lu * lu + lv * lv)) * taper;
+      u = cos(ang) * rad;
+      w2 = sin(ang) * rad;
+    } else if (shape == 2) {
+      let rl = sqrt(lu * lu + lv * lv + lw * lw);
+      let rad = gsize * 0.5 * fract(rl);
+      if (rl > 1e-9) {
+        u = lu / rl * rad;
+        w2 = lv / rl * rad;
+        w = lw / rl * rad;
+      }
+    } else {
+      u = (fract(lu) - 0.5) * gsize;
+      w2 = (fract(lv) - 0.5) * gsize;
+      w = fract(lw) * height;
+    }
+  }
+  let f = gb + tangent * u + bitangent * w2 + normal * w;
+  v.x += f.x * AMOUNT;
+  v.y += f.y * AMOUNT;
+  v.z += f.z * AMOUNT;
+}",
+    },
+    VarDef {
+        name: "grid3d_wf",
+        params: &[
+            ParamDef::new("size", 0.1),
+            ParamDef::new("size_spread", 0.0),
+            ParamDef::new("spacing", 0.75),
+            ParamDef::new("alpha", 0.0),
+            ParamDef::new("alpha_spread", 0.0),
+            ParamDef::new("beta", 0.0),
+            ParamDef::new("beta_spread", 0.0),
+            ParamDef::new("gamma", 0.0),
+            ParamDef::new("gamma_spread", 0.0),
+            ParamDef::range("c1", 0.1, 0.0, 1.0),
+            ParamDef::range("c2", 0.2, 0.0, 1.0),
+            ParamDef::range("c3", 0.3, 0.0, 1.0),
+            ParamDef::range("c4", 0.4, 0.0, 1.0),
+            ParamDef::range("c5", 0.5, 0.0, 1.0),
+            ParamDef::range("c6", 0.6, 0.0, 1.0),
+        ],
+        kind: VarKind::Normal,
+        is_3d: true,
+        // d = [<params>, do_rotate]
+        apply: |d, ctx, a, v, _| {
+            let size = d[0];
+            let (cx, cy, cz) = ((a.x / size) as i32, (a.y / size) as i32, (a.z / size) as i32);
+            // spread values per cell: spread * (1 - rnd)
+            let spread = |i: usize, k: u32| if d[i] > EPSILON { d[i] * (1.0 - grid3d_cell_rnd(cx, cy, cz, k)) } else { 0.0 };
+            let sizescl = d[2] * (size + spread(1, 0) * 0.1);
+            let (mut dx, mut dy, mut dz);
+            match ctx.random_int(3) {
+                0 => {
+                    let left = ctx.random() < 0.5;
+                    dx = sizescl * if left { -0.5 } else { 0.5 };
+                    dy = sizescl * (ctx.random() - 0.5);
+                    dz = sizescl * (ctx.random() - 0.5);
+                    v.color = if left { d[9] } else { d[10] };
+                }
+                1 => {
+                    let top = ctx.random() < 0.5;
+                    dx = sizescl * (ctx.random() - 0.5);
+                    dy = sizescl * if top { -0.5 } else { 0.5 };
+                    dz = sizescl * (ctx.random() - 0.5);
+                    v.color = if top { d[11] } else { d[12] };
+                }
+                _ => {
+                    let front = ctx.random() < 0.5;
+                    dx = sizescl * (ctx.random() - 0.5);
+                    dy = sizescl * (ctx.random() - 0.5);
+                    dz = sizescl * if front { -0.5 } else { 0.5 };
+                    v.color = if front { d[13] } else { d[14] };
+                }
+            }
+            if d[15] != 0.0 {
+                let (sina, cosa) = (d[3] + spread(4, 1)).sin_cos();
+                let (sinb, cosb) = (d[5] + spread(6, 2)).sin_cos();
+                let (sing, cosg) = (d[7] + spread(8, 3)).sin_cos();
+                let dxr = dx * (cosb * cosg) + dy * (cosg * sina * sinb - cosa * sing) + dz * (cosa * cosg * sinb + sina * sing);
+                let dyr = dx * (cosb * sing) + dy * (cosa * cosg + sina * sinb * sing) + dz * (-cosg * sina + cosa * sinb * sing);
+                let dzr = dx * (-sinb) + dy * (cosb * sina) + dz * (cosa * cosb);
+                dx = dxr;
+                dy = dyr;
+                dz = dzr;
+            }
+            v.x += cx as f64 * size + dx;
+            v.y += cy as f64 * size + dy;
+            v.z += cz as f64 * size + dz;
+        },
+        prepare: Some(|p, _| {
+            let mut d = p.to_vec();
+            for i in 9..15 {
+                d[i] = limit_value(p[i], 0.0, 1.0);
+            }
+            let rot = [3, 5, 7, 4, 6, 8].iter().any(|&i| p[i].abs() > EPSILON);
+            d.push(if rot { 1.0 } else { 0.0 });
+            d
+        }),
+        wgsl: "fn grid3d_wf_rnd(c: vec3<i32>, k: u32) -> f32 {
+  var h = (bitcast<u32>(c.x) * 0x8da6b343u) ^ (bitcast<u32>(c.y) * 0xd8163841u) ^ (bitcast<u32>(c.z) * 0xcb1ab31fu) ^ (k * 0x165667b1u);
+  h ^= h >> 16u;
+  h *= 0x7feb352du;
+  h ^= h >> 15u;
+  h *= 0x846ca68bu;
+  h ^= h >> 16u;
+  return f32(h) / 4294967296.0;
+}
+fn grid3d_wf_spread(s: f32, c: vec3<i32>, k: u32) -> f32 {
+  if (s > EPSILON) { return s * (1.0 - grid3d_wf_rnd(c, k)); }
+  return 0.0;
+}
+@body
+let size = D(0);
+let c = vec3<i32>(vec3<f32>(a.x, a.y, a.z) / size);
+let sizescl = D(2) * (size + grid3d_wf_spread(D(1), c, 0u) * 0.1);
+var dd = vec3<f32>(0.0);
+let face = min(u32(rnd() * 3.0), 2u);
+let side = rnd() < 0.5;
+let h = select(0.5, -0.5, side);
+if (face == 0u) {
+  dd = sizescl * vec3<f32>(h, rnd() - 0.5, rnd() - 0.5);
+  v.color = select(D(10), D(9), side);
+} else if (face == 1u) {
+  dd.x = sizescl * (rnd() - 0.5);
+  dd.y = sizescl * h;
+  dd.z = sizescl * (rnd() - 0.5);
+  v.color = select(D(12), D(11), side);
+} else {
+  dd.x = sizescl * (rnd() - 0.5);
+  dd.y = sizescl * (rnd() - 0.5);
+  dd.z = sizescl * h;
+  v.color = select(D(14), D(13), side);
+}
+if (D(15) != 0.0) {
+  let al = D(3) + grid3d_wf_spread(D(4), c, 1u);
+  let be = D(5) + grid3d_wf_spread(D(6), c, 2u);
+  let ga = D(7) + grid3d_wf_spread(D(8), c, 3u);
+  let sina = sin(al); let cosa = cos(al);
+  let sinb = sin(be); let cosb = cos(be);
+  let sing = sin(ga); let cosg = cos(ga);
+  dd = vec3<f32>(
+    dd.x * (cosb * cosg) + dd.y * (cosg * sina * sinb - cosa * sing) + dd.z * (cosa * cosg * sinb + sina * sing),
+    dd.x * (cosb * sing) + dd.y * (cosa * cosg + sina * sinb * sing) + dd.z * (-cosg * sina + cosa * sinb * sing),
+    dd.x * (-sinb) + dd.y * (cosb * sina) + dd.z * (cosa * cosb));
+}
+v.x += f32(c.x) * size + dd.x;
+v.y += f32(c.y) * size + dd.y;
+v.z += f32(c.z) * size + dd.z;",
     },
 ];
