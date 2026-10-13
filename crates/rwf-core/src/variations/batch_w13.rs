@@ -2048,8 +2048,618 @@ if (a.x > 0.0) {
 }
 if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
     },
+    VarDef {
+        name: "tree_js",
+        params: &[
+            ParamDef::int("level", 2.0, 1.0, 10.0),
+            ParamDef::int("show_lines", 1.0, 0.0, 1.0),
+            ParamDef::new("line_thickness", 0.5),
+            ParamDef::new("bend_angle", 15.0),
+            ParamDef::new("branch_angle", 37.0),
+            ParamDef::new("branch_ratio", 0.65),
+            ParamDef::int("show_points", 0.0, 0.0, 1.0),
+            ParamDef::new("point_thickness", 3.0),
+        ],
+        kind: VarKind::Normal,
+        is_3d: false,
+        // d = [level, show_lines, line_thickness, bend, branch, ratio, show_points, point_thickness,
+        //      line_threshold, point_threshold, bend_rad, branch_rad]
+        apply: |d, ctx, a, v, amount| {
+            // Java walks the branches of the tree one by one (in recursion order) per instance;
+            // here per render thread.
+            let level = d[0] as i32;
+            let n_nodes = (3i64.pow(level as u32 + 1) - 1) / 2;
+            let key = d.as_ptr() as usize;
+            let k = ctx.orbits.get(&key).map_or(0, |s| s[0] as i64);
+            ctx.orbits.insert(key, [((k + 1) % n_nodes) as f64, 0.0]);
+            let (x1, y1, x2, y2) = tree_js_branch(d, level, k);
+            let rnd = ctx.random();
+            let (mut ox, mut oy) = (0.0, 0.0);
+            if rnd < d[8] {
+                let lt = d[2] / 100.0;
+                let ydiff = y2 - y1;
+                let xdiff = x2 - x1;
+                let m = if xdiff == 0.0 { 10000.0 } else { ydiff / xdiff };
+                let line_length = (xdiff * xdiff + ydiff * ydiff).sqrt();
+                let dd = ctx.random() * line_length;
+                let mut xoffset = dd / (1.0 + m * m).sqrt();
+                if x2 < x1 {
+                    xoffset = -xoffset;
+                }
+                let mut yoffset = (m * xoffset).abs();
+                if y2 < y1 {
+                    yoffset = -yoffset;
+                }
+                if lt != 0.0 {
+                    xoffset += (ctx.random() - 0.5) * lt;
+                    yoffset += (ctx.random() - 0.5) * lt;
+                }
+                ox = x1 + xoffset;
+                oy = y1 + yoffset;
+            } else if rnd <= d[9] {
+                let pt = d[7] / 100.0;
+                let (mut xoffset, mut yoffset) = (0.0, 0.0);
+                if pt != 0.0 {
+                    let roffset = ctx.random() * pt;
+                    let rangle = ctx.random() * M_2PI;
+                    xoffset = roffset * rangle.cos();
+                    yoffset = roffset * rangle.sin();
+                }
+                ox = x1 + xoffset;
+                oy = y1 + yoffset;
+            }
+            v.x += amount * ox;
+            v.y += amount * oy;
+            v.x += amount * ox;
+            v.y += amount * oy;
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: Some(|p, _| {
+            let mut d = p.to_vec();
+            d[0] = limit_value(ftoi(p[0]), 1, 10) as f64;
+            d[1] = p[1] as i32 as f64;
+            d[6] = p[6] as i32 as f64;
+            let show_sum = d[1] + d[6];
+            let line_fraction = d[1] / show_sum;
+            let point_fraction = d[6] / show_sum;
+            d.extend([line_fraction, line_fraction + point_fraction, p[3].to_radians(), p[4].to_radians()]);
+            d
+        }),
+        // GPU: a random branch instead of the sequential walk.
+        wgsl: "fn tree_js_branch(base: u32, level: i32, k_in: i32) -> vec4<f32> {
+  let bend = prm[base + 10u];
+  let branch = prm[base + 11u];
+  let ratio = prm[base + 5u];
+  var x = 0.0;
+  var y = 0.0;
+  var ang = PI / 2.0;
+  var r = 2.0;
+  var k = k_in;
+  var sub = (i32(pow(3.0, f32(level + 1)) + 0.5) - 1) / 2;
+  for (var t = 0; t < level; t++) {
+    if (k == 0) { break; }
+    k -= 1;
+    sub = (sub - 1) / 3;
+    let c = k / sub;
+    k = k % sub;
+    x = x + cos(ang) * r;
+    y = y + sin(ang) * r;
+    if (c == 0) { ang = ang + bend - branch; r = r * ratio; }
+    else if (c == 1) { ang = ang + bend + branch; r = r * ratio; }
+    else { ang = ang + bend; r = r * (1.0 - ratio); }
+  }
+  return vec4<f32>(x, y, x + cos(ang) * r, y + sin(ang) * r);
+}
+@body
+let level = i32(D(0));
+let n_nodes = (i32(pow(3.0, f32(level + 1)) + 0.5) - 1) / 2;
+let seg = tree_js_branch(base, level, min(i32(rnd() * f32(n_nodes)), n_nodes - 1));
+let x1 = seg.x;
+let y1 = seg.y;
+let x2 = seg.z;
+let y2 = seg.w;
+let rv = rnd();
+var ox = 0.0;
+var oy = 0.0;
+if (rv < D(8)) {
+  let lt = D(2) / 100.0;
+  let ydiff = y2 - y1;
+  let xdiff = x2 - x1;
+  var m = 10000.0;
+  if (xdiff != 0.0) { m = ydiff / xdiff; }
+  let line_length = sqrt(xdiff * xdiff + ydiff * ydiff);
+  var xoffset = rnd() * line_length / sqrt(1.0 + m * m);
+  if (x2 < x1) { xoffset = -xoffset; }
+  var yoffset = abs(m * xoffset);
+  if (y2 < y1) { yoffset = -yoffset; }
+  if (lt != 0.0) {
+    xoffset += (rnd() - 0.5) * lt;
+    yoffset += (rnd() - 0.5) * lt;
+  }
+  ox = x1 + xoffset;
+  oy = y1 + yoffset;
+} else if (rv <= D(9)) {
+  let pt = D(7) / 100.0;
+  ox = x1;
+  oy = y1;
+  if (pt != 0.0) {
+    let roffset = rnd() * pt;
+    let rangle = rnd() * TWO_PI;
+    ox += roffset * cos(rangle);
+    oy += roffset * sin(rangle);
+  }
+}
+v.x += 2.0 * AMOUNT * ox;
+v.y += 2.0 * AMOUNT * oy;
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "triangle",
+        params: &[
+            ParamDef::new("x1", -0.2),
+            ParamDef::new("y1", -0.1),
+            ParamDef::new("z1", 0.0),
+            ParamDef::new("x2", 0.2),
+            ParamDef::new("y2", -0.1),
+            ParamDef::new("z2", 0.0),
+            ParamDef::new("x3", 0.2),
+            ParamDef::new("y3", 0.1),
+            ParamDef::new("z3", 0.0),
+        ],
+        kind: VarKind::Normal,
+        is_3d: true,
+        apply: |d, ctx, _a, v, amount| {
+            let sqrt_r1 = ctx.random().sqrt();
+            let r2 = ctx.random();
+            let (a, b, c) = (1.0 - sqrt_r1, sqrt_r1 * (1.0 - r2), r2 * sqrt_r1);
+            v.x = amount * (a * d[0] + b * d[3] + c * d[6]);
+            v.y = amount * (a * d[1] + b * d[4] + c * d[7]);
+            v.z = amount * (a * d[2] + b * d[5] + c * d[8]);
+        },
+        prepare: None,
+        wgsl: "let sqrt_r1 = sqrt(rnd());
+let r2 = rnd();
+let ta = 1.0 - sqrt_r1;
+let tb = sqrt_r1 * (1.0 - r2);
+let tc = r2 * sqrt_r1;
+v.x = AMOUNT * (ta * D(0) + tb * D(3) + tc * D(6));
+v.y = AMOUNT * (ta * D(1) + tb * D(4) + tc * D(7));
+v.z = AMOUNT * (ta * D(2) + tb * D(5) + tc * D(8));",
+    },
+    VarDef {
+        name: "tri_lattice",
+        params: &[ParamDef::new("scale", 2.0), ParamDef::new("morph", 1.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let ax = a.x * d[0];
+            let ay = a.y * d[0];
+            let u = ax - ay * 0.5773502691896257;
+            let w = ay * 1.1547005383792515;
+            let fu = u - java_round(u);
+            let fv = w - java_round(w);
+            let bx = fu + fv * 0.5;
+            let by = fv * 0.8660254037844386;
+            v.x += amount * (a.x + d[1] * (bx / d[0] - a.x));
+            v.y += amount * (a.y + d[1] * (by / d[0] - a.y));
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "let ax = a.x * D(0);
+let ay = a.y * D(0);
+let u = ax - ay * 0.5773502691896257;
+let w = ay * 1.1547005383792515;
+let fu = u - java_round(u);
+let fv = w - java_round(w);
+let bx = fu + fv * 0.5;
+let by = fv * 0.8660254037844386;
+v.x += AMOUNT * (a.x + D(1) * (bx / D(0) - a.x));
+v.y += AMOUNT * (a.y + D(1) * (by / D(0) - a.y));
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "triprism3D",
+        params: &[ParamDef::range("d", 0.25, 0.0, 0.5), ParamDef::range("h", 0.5, 0.0, 0.5)],
+        kind: VarKind::Normal,
+        is_3d: true,
+        apply: |d, ctx, _a, v, amount| {
+            for _ in 0..50 {
+                let x = ctx.random() - 0.5;
+                let y = ctx.random() - 0.5;
+                let z = ctx.random() - 0.5;
+                if triprism3d_sd([x, y, z], d[0], d[1]) < 0.0 {
+                    v.do_hide = false;
+                    v.x += amount * x;
+                    v.y += amount * y;
+                    v.z += amount * z;
+                    return;
+                }
+            }
+            v.do_hide = true;
+        },
+        prepare: Some(|p, _| vec![limit_value(p[0], 0.0, 0.5), limit_value(p[1], 0.0, 0.5)]),
+        wgsl: "fn triprism3D_sd(p_in: vec3<f32>, hx_in: f32, hy: f32) -> f32 {
+  let k = sqrt(3.0);
+  let hx = hx_in * (0.5 * k);
+  var px = p_in.x / hx;
+  var py = p_in.y / hx;
+  px = abs(px) - 1.0;
+  py = py + 1.0 / k;
+  if (px + k * py > 0.0) {
+    let t0 = vec2<f32>(px - k * py, -k * px - py) / 2.0;
+    px = t0.x;
+    py = t0.y;
+  }
+  px = px - clamp(px, -2.0, 0.0);
+  let d1 = sqrt(px * px + py * py) * sign(-py) * hx;
+  let d2 = abs(p_in.z) - hy;
+  return length(max(vec2<f32>(d1, d2), vec2<f32>(0.0))) + min(max(d1, d2), 0.0);
+}
+@body
+var found = false;
+for (var i = 0; i < 50; i++) {
+  let p = vec3<f32>(rnd() - 0.5, rnd() - 0.5, rnd() - 0.5);
+  if (triprism3D_sd(p, D(0), D(1)) < 0.0) {
+    v.hide = 0.0;
+    v.x += AMOUNT * p.x;
+    v.y += AMOUNT * p.y;
+    v.z += AMOUNT * p.z;
+    found = true;
+    break;
+  }
+}
+if (!found) { v.hide = 1.0; }",
+    },
+    VarDef {
+        name: "truchet",
+        params: &[
+            ParamDef::int("extended", 0.0, 0.0, 1.0),
+            ParamDef::range("exponent", 2.0, 0.001, 2.0),
+            ParamDef::range("arc_width", 0.5, 0.001, 1.0),
+            ParamDef::new("rotation", 0.0),
+            ParamDef::range("size", 1.0, 0.001, 10.0),
+            ParamDef::range("seed", 50.0, 0.0, 100.0),
+            ParamDef::int("direct_color", 0.0, 0.0, 1.0),
+        ],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let (extended, n, width, size) = (d[0] as i32, d[1], d[2], d[4]);
+            let onen = 1.0 / n;
+            let mut seed = d[5].abs();
+            let seed2 = (seed + (seed / 2.0) + SMALL_EPSILON).sqrt() / ((seed * 0.5) + SMALL_EPSILON) * 0.25;
+            let mut r = -d[3];
+            let rmax = 0.5 * (2f64.powf(1.0 / n) - 1.0) * width;
+            let scale = (r.cos() - r.sin()) / amount;
+            let mut x = a.x * scale;
+            let mut y = a.y * scale;
+            let intx = java_round(x) as i32;
+            let inty = java_round(y) as i32;
+            r = x - intx as f64;
+            x = if r < 0.0 { 1.0 + r } else { r };
+            r = y - inty as f64;
+            y = if r < 0.0 { 1.0 + r } else { r };
+            let tiletype;
+            if seed == 0.0 {
+                tiletype = 0.0;
+            } else if seed == 1.0 {
+                tiletype = 1.0;
+            } else {
+                let mut randint;
+                if extended == 0 {
+                    let xrand = java_round(a.x) * seed2;
+                    let yrand = java_round(a.y) * seed2;
+                    let niter = xrand + yrand + xrand * yrand;
+                    randint = (niter + seed) * seed2 / 2.0;
+                    randint = fmod(randint * 32747.0 + 12345.0, 65535.0);
+                } else {
+                    seed = seed.floor();
+                    let xrand = java_round(a.x) as i32;
+                    let yrand = java_round(a.y) as i32;
+                    let mut niter = (xrand.wrapping_add(yrand).wrapping_add(xrand.wrapping_mul(yrand)) as f64).abs();
+                    if niter > 1000.0 {
+                        niter = 1000.0;
+                    }
+                    randint = seed + niter;
+                    let mut randiter = 0;
+                    while (randiter as f64) < niter {
+                        randiter += 1;
+                        randint = fmod(randint * 32747.0 + 12345.0, 65535.0);
+                    }
+                }
+                tiletype = fmod(randint, 2.0);
+            }
+            let rp = |dx: f64, dy: f64| ((dx.abs()).powf(n) + (dy.abs()).powf(n)).powf(onen);
+            let (r0, r1) = if (extended == 0 && tiletype < 1.0) || (extended != 0 && tiletype == 1.0) {
+                (rp(x, y), rp(x - 1.0, y - 1.0))
+            } else {
+                (rp(x - 1.0, y), rp(x, y - 1.0))
+            };
+            if (r0 - 0.5).abs() / rmax < 1.0 {
+                if d[6] as i32 == 1 {
+                    v.color = limit_value(r0, 0.0, 1.0);
+                }
+                v.x += size * (x + a.x.floor());
+                v.y += size * (y + a.y.floor());
+            }
+            if (r1 - 0.5).abs() / rmax < 1.0 {
+                if d[6] as i32 == 1 {
+                    v.color = limit_value(1.0 - r1, 0.0, 1.0);
+                }
+                v.x += size * (x + a.x.floor());
+                v.y += size * (y + a.y.floor());
+                ctx.pass_z(a, v, amount);
+            }
+        },
+        prepare: Some(|p, _| {
+            vec![
+                limit_value(ftoi(p[0]), 0, 1) as f64,
+                limit_value(p[1], 0.001, 2.0),
+                limit_value(p[2], 0.001, 1.0),
+                p[3],
+                limit_value(p[4], 0.001, 10.0),
+                p[5],
+                limit_value(ftoi(p[6]), 0, 1) as f64,
+            ]
+        }),
+        // GPU: the tile hash runs in f32 (non-extended) / u32 (extended) arithmetic.
+        wgsl: "fn truchet_rp(dx: f32, dy: f32, n: f32, onen: f32) -> f32 {
+  return pow(pow(abs(dx), n) + pow(abs(dy), n), onen);
+}
+@body
+let extended = i32(D(0));
+let n = D(1);
+let onen = 1.0 / n;
+let size = D(4);
+let seed = abs(D(5));
+let seed2 = sqrt(seed + (seed / 2.0) + EPS) / ((seed * 0.5) + EPS) * 0.25;
+let rot = -D(3);
+let rmax = 0.5 * (pow(2.0, 1.0 / n) - 1.0) * D(2);
+let scale = (cos(rot) - sin(rot)) / AMOUNT;
+var x = a.x * scale;
+var y = a.y * scale;
+var r = x - java_round(x);
+x = select(r, 1.0 + r, r < 0.0);
+r = y - java_round(y);
+y = select(r, 1.0 + r, r < 0.0);
+var tiletype = 0.0;
+if (seed == 1.0) {
+  tiletype = 1.0;
+} else if (seed != 0.0) {
+  if (extended == 0) {
+    let xrand = java_round(a.x) * seed2;
+    let yrand = java_round(a.y) * seed2;
+    let niter = xrand + yrand + xrand * yrand;
+    let randint = fmod(((niter + seed) * seed2 / 2.0) * 32747.0 + 12345.0, 65535.0);
+    tiletype = fmod(randint, 2.0);
+  } else {
+    let xrand = i32(java_round(a.x));
+    let yrand = i32(java_round(a.y));
+    let niter = min(abs(xrand + yrand + xrand * yrand), 1000);
+    var randint = u32(floor(seed)) + u32(niter);
+    for (var i = 0; i < niter; i++) { randint = (randint * 32747u + 12345u) % 65535u; }
+    tiletype = f32(randint % 2u);
+  }
+}
+var r0 = 0.0;
+var r1 = 0.0;
+if ((extended == 0 && tiletype < 1.0) || (extended != 0 && tiletype == 1.0)) {
+  r0 = truchet_rp(x, y, n, onen);
+  r1 = truchet_rp(x - 1.0, y - 1.0, n, onen);
+} else {
+  r0 = truchet_rp(x - 1.0, y, n, onen);
+  r1 = truchet_rp(x, y - 1.0, n, onen);
+}
+if (abs(r0 - 0.5) / rmax < 1.0) {
+  if (i32(D(6)) == 1) { v.color = clamp(r0, 0.0, 1.0); }
+  v.x += size * (x + floor(a.x));
+  v.y += size * (y + floor(a.y));
+}
+if (abs(r1 - 0.5) / rmax < 1.0) {
+  if (i32(D(6)) == 1) { v.color = clamp(1.0 - r1, 0.0, 1.0); }
+  v.x += size * (x + floor(a.x));
+  v.y += size * (y + floor(a.y));
+  if (PRESERVE_Z) { v.z += AMOUNT * a.z; }
+}",
+    },
+    VarDef {
+        name: "truchet2",
+        params: &[
+            ParamDef::range("exponent1", 1.0, -1.0, 3.0),
+            ParamDef::range("exponent2", 2.0, -1.0, 3.0),
+            ParamDef::range("width1", 0.5, -1.0, 2.0),
+            ParamDef::range("width2", 0.5, -1.0, 2.0),
+            ParamDef::new("scale", 10.0),
+            ParamDef::range("seed", 50.0, 0.0, 100.0),
+            ParamDef::int("inverse", 0.0, 0.0, 1.0),
+        ],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, _ctx, a, v, amount| {
+            let scale = d[4];
+            let xp = ((a.x / scale - (a.x / scale).floor()) - 0.5).abs() * 2.0;
+            let mut width = d[2] * (1.0 - xp) + xp * d[3];
+            width = if width < 1.0 { width } else { 1.0 };
+            if width <= 0.0 {
+                v.x += a.x * amount;
+                v.y += a.y * amount;
+                return;
+            }
+            let xp2 = d[0] * (1.0 - xp) + xp * d[1];
+            let n = if xp2 < 2.0 { xp2 } else { 2.0 };
+            if n <= 0.0 {
+                v.x += a.x * amount;
+                v.y += a.y * amount;
+                return;
+            }
+            let onen = 1.0 / xp2;
+            let seed = d[5].abs();
+            let seed2 = (seed + (seed / 2.0) + SMALL_EPSILON).sqrt() / ((seed * 0.5) + SMALL_EPSILON) * 0.25;
+            let (mut x, mut y) = (a.x, a.y);
+            let mut r = x - java_round(x);
+            x = if r < 0.0 { 1.0 + r } else { r };
+            r = y - java_round(y);
+            y = if r < 0.0 { 1.0 + r } else { r };
+            let tiletype = if seed == 0.0 {
+                0.0
+            } else if seed == 1.0 {
+                1.0
+            } else {
+                let xrand = java_round(a.x) * seed2;
+                let yrand = java_round(a.y) * seed2;
+                let niter = xrand + yrand + xrand * yrand;
+                let randint = fmod(((niter + seed) * seed2 / 2.0) * 32747.0 + 12345.0, 65535.0);
+                fmod(randint, 2.0)
+            };
+            let rp = |dx: f64, dy: f64| ((dx.abs()).powf(n) + (dy.abs()).powf(n)).powf(onen);
+            let (r0, r1) = if tiletype < 1.0 { (rp(x, y), rp(x - 1.0, y - 1.0)) } else { (rp(x - 1.0, y), rp(x, y - 1.0)) };
+            let rmax = 0.5 * (2f64.powf(onen) - 1.0) * width;
+            let r00 = (r0 - 0.5).abs() / rmax;
+            let r11 = (r1 - 0.5).abs() / rmax;
+            if d[6] as i32 == 0 {
+                if r00 < 1.0 || r11 < 1.0 {
+                    v.x += (x + a.x.floor()) * amount;
+                    v.y += (y + a.y.floor()) * amount;
+                } else {
+                    v.x += 100.0;
+                    v.y += 100.0;
+                }
+            } else if r00 > 1.0 && r11 > 1.0 {
+                v.x += (x + a.x.floor()) * amount;
+                v.y += (y + a.y.floor()) * amount;
+            } else {
+                v.x += 10000.0;
+                v.y += 10000.0;
+            }
+        },
+        prepare: Some(|p, _| {
+            vec![
+                limit_value(p[0], -1.0, 3.0),
+                limit_value(p[1], -1.0, 3.0),
+                limit_value(p[2], -1.0, 2.0),
+                limit_value(p[3], -1.0, 2.0),
+                p[4],
+                p[5],
+                limit_value(ftoi(p[6]), 0, 1) as f64,
+            ]
+        }),
+        // GPU: the tile hash runs in f32 arithmetic.
+        wgsl: "fn truchet2_rp(dx: f32, dy: f32, n: f32, onen: f32) -> f32 {
+  return pow(pow(abs(dx), n) + pow(abs(dy), n), onen);
+}
+@body
+let scale = D(4);
+let xp = abs((a.x / scale - floor(a.x / scale)) - 0.5) * 2.0;
+let width = min(D(2) * (1.0 - xp) + xp * D(3), 1.0);
+let xp2 = D(0) * (1.0 - xp) + xp * D(1);
+let n = min(xp2, 2.0);
+if (width <= 0.0 || n <= 0.0) {
+  v.x += a.x * AMOUNT;
+  v.y += a.y * AMOUNT;
+} else {
+  let onen = 1.0 / xp2;
+  let seed = abs(D(5));
+  let seed2 = sqrt(seed + (seed / 2.0) + EPS) / ((seed * 0.5) + EPS) * 0.25;
+  var r = a.x - java_round(a.x);
+  let x = select(r, 1.0 + r, r < 0.0);
+  r = a.y - java_round(a.y);
+  let y = select(r, 1.0 + r, r < 0.0);
+  var tiletype = 0.0;
+  if (seed == 1.0) {
+    tiletype = 1.0;
+  } else if (seed != 0.0) {
+    let xrand = java_round(a.x) * seed2;
+    let yrand = java_round(a.y) * seed2;
+    let niter = xrand + yrand + xrand * yrand;
+    tiletype = fmod(fmod(((niter + seed) * seed2 / 2.0) * 32747.0 + 12345.0, 65535.0), 2.0);
+  }
+  var r0 = 0.0;
+  var r1 = 0.0;
+  if (tiletype < 1.0) {
+    r0 = truchet2_rp(x, y, n, onen);
+    r1 = truchet2_rp(x - 1.0, y - 1.0, n, onen);
+  } else {
+    r0 = truchet2_rp(x - 1.0, y, n, onen);
+    r1 = truchet2_rp(x, y - 1.0, n, onen);
+  }
+  let rmax = 0.5 * (pow(2.0, onen) - 1.0) * width;
+  let r00 = abs(r0 - 0.5) / rmax;
+  let r11 = abs(r1 - 0.5) / rmax;
+  if (i32(D(6)) == 0) {
+    if (r00 < 1.0 || r11 < 1.0) {
+      v.x += (x + floor(a.x)) * AMOUNT;
+      v.y += (y + floor(a.y)) * AMOUNT;
+    } else {
+      v.x += 100.0;
+      v.y += 100.0;
+    }
+  } else if (r00 > 1.0 && r11 > 1.0) {
+    v.x += (x + floor(a.x)) * AMOUNT;
+    v.y += (y + floor(a.y)) * AMOUNT;
+  } else {
+    v.x += 10000.0;
+    v.y += 10000.0;
+  }
+}",
+    },
     // @@NEXT@@
 ];
+
+/// `TreeFunc`: branch `k` (in the recursion order of `tree()`) -> (x, y, cx, cy).
+fn tree_js_branch(d: &[f64], level: i32, mut k: i64) -> (f64, f64, f64, f64) {
+    let (ratio, bend, branch) = (d[5], d[10], d[11]);
+    let (mut x, mut y, mut ang, mut r) = (0.0, 0.0, M_PI / 2.0, 2.0);
+    let mut sub = (3i64.pow(level as u32 + 1) - 1) / 2;
+    for _ in 0..level {
+        if k == 0 {
+            break;
+        }
+        k -= 1;
+        sub = (sub - 1) / 3;
+        let c = k / sub;
+        k %= sub;
+        x += ang.cos() * r;
+        y += ang.sin() * r;
+        match c {
+            0 => {
+                ang = ang + bend - branch;
+                r *= ratio;
+            }
+            1 => {
+                ang = ang + bend + branch;
+                r *= ratio;
+            }
+            _ => {
+                ang += bend;
+                r *= 1.0 - ratio;
+            }
+        }
+    }
+    (x, y, x + ang.cos() * r, y + ang.sin() * r)
+}
+
+/// `TriPrism3DFunc.sdTriPrism`
+fn triprism3d_sd(p: [f64; 3], hx: f64, hy: f64) -> f64 {
+    let k = 3f64.sqrt();
+    let hx = hx * (0.5 * k);
+    let mut px = p[0] / hx;
+    let mut py = p[1] / hx;
+    px = px.abs() - 1.0;
+    py += 1.0 / k;
+    if px + k * py > 0.0 {
+        let (tx, ty) = ((px - k * py) / 2.0, (-k * px - py) / 2.0);
+        px = tx;
+        py = ty;
+    }
+    px -= java_min(java_max(px, -2.0), 0.0);
+    let s = if -py > 0.0 { 1.0 } else if -py < 0.0 { -1.0 } else { -py };
+    let d1 = (px * px + py * py).sqrt() * s * hx;
+    let d2 = p[2].abs() - hy;
+    let m1 = if d1 < 0.0 { 0.0 } else { d1 };
+    let m2 = if d2 < 0.0 { 0.0 } else { d2 };
+    let mx = if d1 < d2 { d2 } else { d1 };
+    (m1 * m1 + m2 * m2).sqrt() + if 0.0 < mx { 0.0 } else { mx }
+}
 
 /// `TessShapeFunc.calculate_profile_offset`
 fn tess_shape_profile(v: f64, profile_type: i32, amp: f64, wf: f64, ppd: f64) -> f64 {
