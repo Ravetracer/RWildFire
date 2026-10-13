@@ -3859,4 +3859,263 @@ v.x += AMOUNT * r * cos(t);
 v.y += AMOUNT * r * sin(t);
 if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
     },
+    VarDef {
+        name: "lazyjess",
+        params: &[ParamDef::int("n", 4.0, 2.0, 100.0), ParamDef::new("spin", M_PI), ParamDef::new("space", 0.0), ParamDef::int("corner", 1.0, -100.0, 100.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        // d = [n, spin, space, corner, vertex, sin_vertex, pie_slice, half_slice, corner_rotation]
+        apply: |d, ctx, a, v, amount| {
+            let (spin, space) = (d[1], d[2]);
+            let (sin_vertex, vertex, pie, half, crot) = (d[5], d[4], d[6], d[7], d[8]);
+            let (mut x, mut y) = (a.x, a.y);
+            let mut modulus = (x * x + y * y).sqrt();
+            let inside;
+            if d[0] as i32 == 2 {
+                inside = x.abs() < amount;
+                if inside {
+                    let th = y.atan2(x) + spin;
+                    x = amount * modulus * th.cos();
+                    y = amount * modulus * th.sin();
+                    if x.abs() < amount {
+                        v.x += x;
+                        v.y += y;
+                    } else {
+                        let th = y.atan2(x) - spin + crot;
+                        v.x += amount * modulus * th.cos();
+                        v.y -= amount * modulus * th.sin();
+                    }
+                }
+            } else {
+                let th = y.atan2(x) + M_2PI;
+                let diff = fmod(th + half, pie);
+                let r = amount * M_SQRT2 * sin_vertex / (M_PI - diff - vertex).sin();
+                inside = modulus < r;
+                if inside {
+                    let th = y.atan2(x) + spin + M_2PI;
+                    x = amount * modulus * th.cos();
+                    y = amount * modulus * th.sin();
+                    let diff = fmod(th + half, pie);
+                    let r = amount * M_SQRT2 * sin_vertex / (M_PI - diff - vertex).sin();
+                    modulus = (x * x + y * y).sqrt();
+                    if modulus < r {
+                        v.x += x;
+                        v.y += y;
+                    } else {
+                        let th = y.atan2(x) - spin + crot + M_2PI;
+                        v.x += amount * modulus * th.cos();
+                        v.y -= amount * modulus * th.sin();
+                    }
+                }
+            }
+            if !inside {
+                let m = 1.0 + space / modulus;
+                v.x += amount * m * x;
+                v.y += amount * m * y;
+            }
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: Some(|p, _| {
+            let n = ftoi(p[0]).max(2) as f64;
+            let corner = ftoi(p[3]) as f64;
+            let vertex = M_PI * (n - 2.0) / (2.0 * n);
+            let pie = M_2PI / n;
+            vec![n, p[1], p[2], corner, vertex, vertex.sin(), pie, pie / 2.0, (corner - 1.0) * pie]
+        }),
+        wgsl: "let spin = D(1);
+let space = D(2);
+var x = a.x;
+var y = a.y;
+var modulus = sqrt(x * x + y * y);
+var inside = false;
+if (i32(D(0)) == 2) {
+  inside = abs(x) < AMOUNT;
+  if (inside) {
+    let th = atan2(y, x) + spin;
+    x = AMOUNT * modulus * cos(th);
+    y = AMOUNT * modulus * sin(th);
+    if (abs(x) < AMOUNT) {
+      v.x += x;
+      v.y += y;
+    } else {
+      let th2 = atan2(y, x) - spin + D(8);
+      v.x += AMOUNT * modulus * cos(th2);
+      v.y -= AMOUNT * modulus * sin(th2);
+    }
+  }
+} else {
+  let th = atan2(y, x) + TWO_PI;
+  let diff = (th + D(7)) % D(6);
+  let r = AMOUNT * sqrt(2.0) * D(5) / sin(PI - diff - D(4));
+  inside = modulus < r;
+  if (inside) {
+    let th1 = atan2(y, x) + spin + TWO_PI;
+    x = AMOUNT * modulus * cos(th1);
+    y = AMOUNT * modulus * sin(th1);
+    let diff1 = (th1 + D(7)) % D(6);
+    let r1 = AMOUNT * sqrt(2.0) * D(5) / sin(PI - diff1 - D(4));
+    modulus = sqrt(x * x + y * y);
+    if (modulus < r1) {
+      v.x += x;
+      v.y += y;
+    } else {
+      let th2 = atan2(y, x) - spin + D(8) + TWO_PI;
+      v.x += AMOUNT * modulus * cos(th2);
+      v.y -= AMOUNT * modulus * sin(th2);
+    }
+  }
+}
+if (!inside) {
+  let m = 1.0 + space / modulus;
+  v.x += AMOUNT * m * x;
+  v.y += AMOUNT * m * y;
+}
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "lazysensen",
+        params: &[ParamDef::new("scale_x", 1.0), ParamDef::new("scale_y", 1.0), ParamDef::new("scale_z", 0.0)],
+        kind: VarKind::Normal,
+        is_3d: true,
+        // flips the coordinates of the affine point itself, as in JWildfire
+        apply: |d, _, a, v, amount| {
+            let flip = |c: &mut f64, sc: f64| {
+                if sc != 0.0 {
+                    let nr = (*c * sc).floor() as i32 as f64;
+                    if (nr >= 0.0 && nr % 2.0 == 1.0) || (nr < 0.0 && nr % 2.0 == 0.0) {
+                        *c = -*c;
+                    }
+                }
+            };
+            flip(&mut a.x, d[0]);
+            flip(&mut a.y, d[1]);
+            flip(&mut a.z, d[2]);
+            v.x += amount * a.x;
+            v.y += amount * a.y;
+            v.z += amount * a.z;
+        },
+        prepare: None,
+        wgsl: "fn lazysensen_flip(c: f32, sc: f32) -> f32 {
+  if (sc == 0.0) { return c; }
+  let nr = f32(i32(floor(c * sc)));
+  if ((nr >= 0.0 && nr % 2.0 == 1.0) || (nr < 0.0 && nr % 2.0 == 0.0)) { return -c; }
+  return c;
+}
+@body
+a.x = lazysensen_flip(a.x, D(0));
+a.y = lazysensen_flip(a.y, D(1));
+a.z = lazysensen_flip(a.z, D(2));
+v.x += AMOUNT * a.x;
+v.y += AMOUNT * a.y;
+v.z += AMOUNT * a.z;",
+    },
+    VarDef {
+        name: "lazyTravis",
+        params: &[ParamDef::new("spin_in", 1.0), ParamDef::new("spin_out", 0.5), ParamDef::new("space", M_PI / 2.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let (x, y, space) = (a.x.abs(), a.y.abs(), d[2]);
+            let outside = x > amount || y > amount;
+            let spin = 4.0 * if outside { d[1] } else { d[0] };
+            let (s, p) = if x > y {
+                (x, if a.x > 0.0 { x + a.y + x * spin } else { 5.0 * x - a.y + x * spin })
+            } else {
+                (y, if a.y > 0.0 { 3.0 * y - a.x + y * spin } else { 7.0 * y + a.x + y * spin })
+            };
+            let p = fmod(p, s * 8.0);
+            if outside {
+                let (x2, y2) = if p <= 2.0 * s {
+                    let y2 = -(s - p);
+                    (s + space, y2 + y2 / s * space)
+                } else if p <= 4.0 * s {
+                    let x2 = 3.0 * s - p;
+                    (x2 + x2 / s * space, s + space)
+                } else if p <= 6.0 * s {
+                    let y2 = 5.0 * s - p;
+                    (-(s + space), y2 + y2 / s * space)
+                } else {
+                    let x2 = -(7.0 * s - p);
+                    (x2 + x2 / s * space, -(s + space))
+                };
+                v.x += amount * x2;
+                v.y += amount * y2;
+            } else if p <= 2.0 * s {
+                v.x += amount * s;
+                v.y -= amount * (s - p);
+            } else if p <= 4.0 * s {
+                v.x += amount * (3.0 * s - p);
+                v.y += amount * s;
+            } else if p <= 6.0 * s {
+                v.x -= amount * s;
+                v.y += amount * (5.0 * s - p);
+            } else {
+                v.x -= amount * (7.0 * s - p);
+                v.y -= amount * s;
+            }
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "let x = abs(a.x);
+let y = abs(a.y);
+let space = D(2);
+let outside = x > AMOUNT || y > AMOUNT;
+var spin = 4.0 * D(0);
+if (outside) { spin = 4.0 * D(1); }
+var s = y;
+var p = 0.0;
+if (x > y) {
+  s = x;
+  if (a.x > 0.0) { p = x + a.y + x * spin; } else { p = 5.0 * x - a.y + x * spin; }
+} else {
+  if (a.y > 0.0) { p = 3.0 * y - a.x + y * spin; } else { p = 7.0 * y + a.x + y * spin; }
+}
+p = p % (s * 8.0);
+var q = vec2<f32>(0.0);
+if (outside) {
+  if (p <= 2.0 * s) {
+    let y2 = -(s - p);
+    q = vec2<f32>(s + space, y2 + y2 / s * space);
+  } else if (p <= 4.0 * s) {
+    let x2 = 3.0 * s - p;
+    q = vec2<f32>(x2 + x2 / s * space, s + space);
+  } else if (p <= 6.0 * s) {
+    let y2 = 5.0 * s - p;
+    q = vec2<f32>(-(s + space), y2 + y2 / s * space);
+  } else {
+    let x2 = -(7.0 * s - p);
+    q = vec2<f32>(x2 + x2 / s * space, -(s + space));
+  }
+} else if (p <= 2.0 * s) {
+  q = vec2<f32>(s, -(s - p));
+} else if (p <= 4.0 * s) {
+  q = vec2<f32>(3.0 * s - p, s);
+} else if (p <= 6.0 * s) {
+  q = vec2<f32>(-s, 5.0 * s - p);
+} else {
+  q = vec2<f32>(-(7.0 * s - p), -s);
+}
+v.x += AMOUNT * q.x;
+v.y += AMOUNT * q.y;
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "leather",
+        params: &[ParamDef::new("scale", 2.0), ParamDef::new("rough", 0.3)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let sc = java_max(d[0].abs(), 0.01);
+            let coarse = d[1] * (sc * a.x).sin() * (sc * a.y).cos();
+            let fine = d[1] * 0.3 * (sc * 3.0 * a.y).sin() * (sc * 3.0 * a.x).cos();
+            v.x += amount * (a.x + coarse);
+            v.y += amount * (a.y + fine);
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "let sc = max(abs(D(0)), 0.01);
+v.x += AMOUNT * (a.x + D(1) * sin(sc * a.x) * cos(sc * a.y));
+v.y += AMOUNT * (a.y + D(1) * 0.3 * sin(sc * 3.0 * a.y) * cos(sc * 3.0 * a.x));
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
 ];
