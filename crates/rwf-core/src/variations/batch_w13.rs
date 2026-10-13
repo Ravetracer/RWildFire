@@ -1673,6 +1673,381 @@ v.x += x * AMOUNT;
 v.y += y * AMOUNT;
 if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
     ),
+    VarDef {
+        name: "tidal_lock",
+        params: &[ParamDef::new("ratio", 1.0), ParamDef::new("ecc", 0.3)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let r = (a.x * a.x + a.y * a.y).sqrt();
+            let ang = a.y.atan2(a.x);
+            let new_a = ang * d[0] + d[1] * (2.0 * ang).sin();
+            v.x += amount * r * new_a.cos();
+            v.y += amount * r * new_a.sin();
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "let r = sqrt(a.x * a.x + a.y * a.y);
+let ang = atan2(a.y, a.x);
+let new_a = ang * D(0) + D(1) * sin(2.0 * ang);
+v.x += AMOUNT * r * cos(new_a);
+v.y += AMOUNT * r * sin(new_a);
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "tile_hlp",
+        params: &[ParamDef::new("width", 1.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let width2 = d[0] * amount;
+            let x = a.x / d[0];
+            let mut aux = if x > 0.0 { x - (x as i32) as f64 } else { x + (x as i32) as f64 };
+            aux = (aux * M_PI).cos();
+            let mut aux2 = 0.0;
+            if aux < ctx.random() * 2.0 - 1.0 {
+                aux2 = if x > 0.0 { -width2 } else { width2 };
+            }
+            v.x += a.x * amount + aux2;
+            v.y += amount * a.y;
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "let width2 = D(0) * AMOUNT;
+let x = a.x / D(0);
+var aux = x + trunc(x);
+if (x > 0.0) { aux = x - trunc(x); }
+aux = cos(aux * PI);
+var aux2 = 0.0;
+if (aux < rnd() * 2.0 - 1.0) { aux2 = select(width2, -width2, x > 0.0); }
+v.x += a.x * AMOUNT + aux2;
+v.y += AMOUNT * a.y;
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "tile_reverse",
+        params: &[ParamDef::new("space", 1.0), ParamDef::new("reversal", 1.0), ParamDef::int("vertical", 0.0, 0.0, 1.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let n = ctx.random();
+            let rev = if d[1] == 1.0 { -1.0 } else { 1.0 };
+            let vertical = d[2] as i32 == 1;
+            if n < 0.5 && !vertical {
+                v.x = amount * (rev * a.x) + d[0];
+                v.y = amount * a.y;
+            } else if n > 0.5 && !vertical {
+                v.x = amount * (rev * a.x) - d[0];
+                v.y = amount * a.y;
+            } else if n < 0.5 && vertical {
+                v.y = amount * (rev * a.y) + d[0];
+                v.x = amount * a.x;
+            } else if n > 0.5 && vertical {
+                v.y = amount * (rev * a.y) - d[0];
+                v.x = amount * a.x;
+            }
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: Some(|p, _| vec![p[0], p[1], ftoi(p[2]) as f64]),
+        wgsl: "let n = rnd();
+let rev = select(1.0, -1.0, D(1) == 1.0);
+let vertical = i32(D(2)) == 1;
+if (n < 0.5 && !vertical) {
+  v.x = AMOUNT * (rev * a.x) + D(0);
+  v.y = AMOUNT * a.y;
+} else if (n > 0.5 && !vertical) {
+  v.x = AMOUNT * (rev * a.x) - D(0);
+  v.y = AMOUNT * a.y;
+} else if (n < 0.5 && vertical) {
+  v.y = AMOUNT * (rev * a.y) + D(0);
+  v.x = AMOUNT * a.x;
+} else if (n > 0.5 && vertical) {
+  v.y = AMOUNT * (rev * a.y) - D(0);
+  v.x = AMOUNT * a.x;
+}
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "tinkerbell",
+        params: &[ParamDef::new("a", -0.3), ParamDef::new("b", -0.6013), ParamDef::new("c", 2.0), ParamDef::new("d", 0.5)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let nx = a.x * a.x - a.y * a.y + d[0] * a.x + d[1] * a.y;
+            let ny = 2.0 * a.x * a.y + d[2] * a.x + d[3] * a.y;
+            v.x += amount * nx;
+            v.y += amount * ny;
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "let nx = a.x * a.x - a.y * a.y + D(0) * a.x + D(1) * a.y;
+let ny = 2.0 * a.x * a.y + D(2) * a.x + D(3) * a.y;
+v.x += AMOUNT * nx;
+v.y += AMOUNT * ny;
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "toroidal",
+        params: &[ParamDef::new("major", 2.0), ParamDef::new("minor", 0.5)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let tor_x = (d[0] + d[1] * a.y.cos()) * a.x.cos();
+            let tor_y = (d[0] + d[1] * a.y.cos()) * a.x.sin();
+            v.x += amount * tor_x;
+            v.y += amount * tor_y;
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "let rr = D(0) + D(1) * cos(a.y);
+v.x += AMOUNT * rr * cos(a.x);
+v.y += AMOUNT * rr * sin(a.x);
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "torus3D",
+        params: &[ParamDef::range("r1", 0.5, 0.0, 0.5), ParamDef::range("r2", 0.5, 0.0, 0.5)],
+        kind: VarKind::Normal,
+        is_3d: true,
+        apply: |d, ctx, _a, v, amount| {
+            for _ in 0..50 {
+                let x = ctx.random() - 0.5;
+                let y = ctx.random() - 0.5;
+                let z = ctx.random() - 0.5;
+                let q = (x * x + z * z).sqrt() - d[0];
+                if (q * q + y * y).sqrt() - d[1] < 0.0 {
+                    v.do_hide = false;
+                    v.x += amount * x;
+                    v.y += amount * y;
+                    v.z += amount * z;
+                    return;
+                }
+            }
+            v.do_hide = true;
+        },
+        prepare: Some(|p, _| vec![limit_value(p[0], 0.0, 0.5), limit_value(p[1], 0.0, 0.5)]),
+        wgsl: "var found = false;
+for (var i = 0; i < 50; i++) {
+  let p = vec3<f32>(rnd() - 0.5, rnd() - 0.5, rnd() - 0.5);
+  if (length(vec2<f32>(length(p.xz) - D(0), p.y)) - D(1) < 0.0) {
+    v.hide = 0.0;
+    v.x += AMOUNT * p.x;
+    v.y += AMOUNT * p.y;
+    v.z += AMOUNT * p.z;
+    found = true;
+    break;
+  }
+}
+if (!found) { v.hide = 1.0; }",
+    },
+    VarDef {
+        name: "torus_knot",
+        params: &[ParamDef::new("p", 2.0), ParamDef::new("q", 3.0), ParamDef::new("r_big", 1.0), ParamDef::new("r_small", 0.3)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let t = a.y.atan2(a.x);
+            let outer = d[2] + d[3] * (d[1] * t).cos();
+            v.x += amount * outer * (d[0] * t).cos();
+            v.y += amount * outer * (d[0] * t).sin();
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "let t = atan2(a.y, a.x);
+let outer = D(2) + D(3) * cos(D(1) * t);
+v.x += AMOUNT * outer * cos(D(0) * t);
+v.y += AMOUNT * outer * sin(D(0) * t);
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "tqmirror",
+        params: &[
+            ParamDef::int("preset", 0.0, 0.0, 3.0),
+            ParamDef::new("a", 1.0),
+            ParamDef::new("b", 1.0),
+            ParamDef::new("c", 1.0),
+            ParamDef::new("d", 1.0),
+            ParamDef::new("e", 1.0),
+            ParamDef::new("f", 1.0),
+            ParamDef::new("g", 1.0),
+            ParamDef::new("h", 1.0),
+            ParamDef::new("i", 1.0),
+            ParamDef::new("j", 1.0),
+            ParamDef::new("k", 1.0),
+            ParamDef::new("l", 0.0),
+            ParamDef::new("m", 0.0),
+            ParamDef::new("n", 0.0),
+            ParamDef::new("o", 0.0),
+            ParamDef::new("p", 0.0),
+            ParamDef::new("q", 0.0),
+            ParamDef::new("r", 1.0),
+            ParamDef::new("s", 1.0),
+            ParamDef::int("type", 0.0, 0.0, 1.0),
+            ParamDef::int("mode", 0.0, 0.0, 2.0),
+        ],
+        kind: VarKind::Normal,
+        is_3d: false,
+        // d = [preset, a .. s (1..19), type, mode]; JWildfire's preset only overwrites a .. s when
+        // it is changed, the stored values of a .. s follow it when a flame is loaded.
+        apply: |d, ctx, a, v, amount| {
+            let (x, y) = (a.x, a.y);
+            let p = &d[1..20];
+            let (pa, pb, pc, pd, pe, pf, pg, ph, pi, pj, pk) = (p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7], p[8], p[9], p[10]);
+            let (pl, pm, pn, po, pp, pq, pr, ps) = (p[11], p[12], p[13], p[14], p[15], p[16], p[17], p[18]);
+            if amount * pd + x < pl || amount * pe + y < pm {
+                if d[20] as i32 != 0 {
+                    v.x += x * pr;
+                    v.y += y * ps;
+                } else {
+                    v.x += y * pr;
+                    v.y += x * ps;
+                    ctx.pass_z(a, v, amount);
+                }
+                return;
+            }
+            if x < pn && y < po {
+                v.x += x + amount * pf;
+                v.y += y + amount * pg;
+            } else {
+                let inside = x + pq < amount && y < amount * pa && x + amount * pb > pl && y + amount * pc > pp;
+                match d[21] as i32 {
+                    0 => {
+                        if inside {
+                            v.x -= y * ph;
+                            v.y -= x * pi;
+                        } else {
+                            v.x += x * pj;
+                            v.y += y * pk;
+                        }
+                    }
+                    1 => {
+                        if inside {
+                            v.x -= y * ph;
+                            v.y -= x * pi;
+                        } else {
+                            v.x -= x * pj;
+                            v.y -= y * pk;
+                        }
+                    }
+                    2 => {
+                        if inside {
+                            v.x += y * ph;
+                            v.y -= x * pi;
+                        } else {
+                            v.x += x * pj;
+                            v.y -= y * pk;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: Some(|p, _| {
+            let mut d = p.to_vec();
+            d[0] = ftoi(p[0]) as f64;
+            d[20] = limit_value(p[20], 0.0, 1.0) as i32 as f64;
+            d[21] = limit_value(p[21], 0.0, 2.0) as i32 as f64;
+            d
+        }),
+        wgsl: "let x = a.x;
+let y = a.y;
+if (AMOUNT * D(4) + x < D(12) || AMOUNT * D(5) + y < D(13)) {
+  if (i32(D(20)) != 0) {
+    v.x += x * D(18);
+    v.y += y * D(19);
+  } else {
+    v.x += y * D(18);
+    v.y += x * D(19);
+    if (PRESERVE_Z) { v.z += AMOUNT * a.z; }
+  }
+} else {
+  if (x < D(14) && y < D(15)) {
+    v.x += x + AMOUNT * D(6);
+    v.y += y + AMOUNT * D(7);
+  } else {
+    let inside = x + D(17) < AMOUNT && y < AMOUNT * D(1) && x + AMOUNT * D(2) > D(12) && y + AMOUNT * D(3) > D(16);
+    let mode = i32(D(21));
+    if (mode == 0) {
+      if (inside) { v.x -= y * D(8); v.y -= x * D(9); } else { v.x += x * D(10); v.y += y * D(11); }
+    } else if (mode == 1) {
+      if (inside) { v.x -= y * D(8); v.y -= x * D(9); } else { v.x -= x * D(10); v.y -= y * D(11); }
+    } else if (mode == 2) {
+      if (inside) { v.x += y * D(8); v.y -= x * D(9); } else { v.x += x * D(10); v.y -= y * D(11); }
+    }
+  }
+  if (PRESERVE_Z) { v.z += AMOUNT * a.z; }
+}",
+    },
+    VarDef {
+        name: "trade",
+        params: &[ParamDef::new("r1", 1.0), ParamDef::new("d1", 1.0), ParamDef::new("r2", 1.0), ParamDef::new("d2", 1.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        // d = [r1, d1, r2, d2, c1, c2]
+        apply: |d, ctx, a, v, amount| {
+            let (r1, r2, c1, c2) = (d[0], d[2], d[4], d[5]);
+            if a.x > 0.0 {
+                let mut r = (sqr(c1 - a.x) + sqr(a.y)).sqrt();
+                if r <= r1 {
+                    r *= r2 / r1;
+                    let ang = a.y.atan2(c1 - a.x);
+                    v.x += amount * (r * ang.cos() - c2);
+                    v.y += amount * r * ang.sin();
+                } else {
+                    v.x += amount * a.x;
+                    v.y += amount * a.y;
+                }
+            } else {
+                let mut r = (sqr(-c2 - a.x) + sqr(a.y)).sqrt();
+                if r <= r2 {
+                    r *= r1 / r2;
+                    let ang = a.y.atan2(-c2 - a.x);
+                    v.x += amount * (r * ang.cos() + c1);
+                    v.y += amount * r * ang.sin();
+                } else {
+                    v.x += amount * a.x;
+                    v.y += amount * a.y;
+                }
+            }
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: Some(|p, _| {
+            let r1 = limit_value(p[0], EPSILON, f64::MAX);
+            let d1 = limit_value(p[1], 0.0, f64::MAX);
+            let r2 = limit_value(p[2], EPSILON, f64::MAX);
+            let d2 = limit_value(p[3], 0.0, f64::MAX);
+            vec![r1, d1, r2, d2, r1 + d1, r2 + d2]
+        }),
+        wgsl: "let r1 = D(0);
+let r2 = D(2);
+let c1 = D(4);
+let c2 = D(5);
+if (a.x > 0.0) {
+  var r = sqrt(sqr(c1 - a.x) + sqr(a.y));
+  if (r <= r1) {
+    r *= r2 / r1;
+    let ang = atan2(a.y, c1 - a.x);
+    v.x += AMOUNT * (r * cos(ang) - c2);
+    v.y += AMOUNT * r * sin(ang);
+  } else {
+    v.x += AMOUNT * a.x;
+    v.y += AMOUNT * a.y;
+  }
+} else {
+  var r = sqrt(sqr(-c2 - a.x) + sqr(a.y));
+  if (r <= r2) {
+    r *= r1 / r2;
+    let ang = atan2(a.y, -c2 - a.x);
+    v.x += AMOUNT * (r * cos(ang) + c1);
+    v.y += AMOUNT * r * sin(ang);
+  } else {
+    v.x += AMOUNT * a.x;
+    v.y += AMOUNT * a.y;
+  }
+}
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
     // @@NEXT@@
 ];
 
