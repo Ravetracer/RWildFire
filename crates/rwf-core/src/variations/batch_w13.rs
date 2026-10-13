@@ -2339,11 +2339,10 @@ if (!found) { v.hide = 1.0; }",
             x = if r < 0.0 { 1.0 + r } else { r };
             r = y - inty as f64;
             y = if r < 0.0 { 1.0 + r } else { r };
-            let tiletype;
-            if seed == 0.0 {
-                tiletype = 0.0;
+            let tiletype = if seed == 0.0 {
+                0.0
             } else if seed == 1.0 {
-                tiletype = 1.0;
+                1.0
             } else {
                 let mut randint;
                 if extended == 0 {
@@ -2367,8 +2366,8 @@ if (!found) { v.hide = 1.0; }",
                         randint = fmod(randint * 32747.0 + 12345.0, 65535.0);
                     }
                 }
-                tiletype = fmod(randint, 2.0);
-            }
+                fmod(randint, 2.0)
+            };
             let rp = |dx: f64, dy: f64| ((dx.abs()).powf(n) + (dy.abs()).powf(n)).powf(onen);
             let (r0, r1) = if (extended == 0 && tiletype < 1.0) || (extended != 0 && tiletype == 1.0) {
                 (rp(x, y), rp(x - 1.0, y - 1.0))
@@ -2602,8 +2601,414 @@ if (width <= 0.0 || n <= 0.0) {
   }
 }",
     },
+    VarDef {
+        name: "truchet_ae",
+        params: &[
+            ParamDef::int("seed", 0.0, 0.0, 1000.0),
+            ParamDef::new("step", 0.5),
+            ParamDef::new("width", 0.25),
+            ParamDef::new("angle", 0.0),
+            ParamDef::int("layout", 0.0, 0.0, 4.0),
+            ParamDef::int("style", 0.0, 0.0, 5.0),
+            ParamDef::new("K01A", 0.5),
+            ParamDef::new("K02A", 0.5),
+            ParamDef::new("K01B", 0.5),
+            ParamDef::new("K02B", 0.5),
+            ParamDef::new("K11A", 0.5),
+            ParamDef::new("K12A", 0.5),
+            ParamDef::new("K11B", 0.5),
+            ParamDef::new("K12B", 0.5),
+            ParamDef::new("K21A", 0.5),
+            ParamDef::new("K22A", 0.5),
+            ParamDef::new("K21B", 0.5),
+            ParamDef::new("K22B", 0.5),
+            ParamDef::new("K31A", 0.5),
+            ParamDef::new("K32A", 0.5),
+            ParamDef::new("K31B", 0.5),
+            ParamDef::new("K32B", 0.5),
+        ],
+        kind: VarKind::Normal,
+        is_3d: false,
+        // d = [22 params, sinang, cosang]
+        apply: |d, ctx, a, v, amount| {
+            // Java iterates one orbit (x, y, z1, z2) per instance; here one per render thread.
+            let key = d.as_ptr() as usize;
+            let xy = ctx.orbits.get(&key).copied().unwrap_or([0.0, 0.0]);
+            let zz = ctx.orbits.get(&(key + 1)).copied().unwrap_or([0.0, 0.0]);
+            let mut st = [xy[0], xy[1], zz[0], zz[1]];
+            let i = (4.0 * ctx.random()).floor() as i32;
+            let (u1, v1, z) = truchet_ae_step(d, &mut st, i);
+            ctx.orbits.insert(key, [u1, v1]);
+            ctx.orbits.insert(key + 1, [z, z]);
+            v.x += u1;
+            v.y += v1;
+            ctx.pass_z(a, v, amount);
+            v.color = z;
+        },
+        prepare: Some(|p, _| {
+            let mut d = p.to_vec();
+            d[0] = ftoi(p[0]) as f64;
+            d[4] = limit_value(ftoi(p[4]), 0, 4) as f64;
+            d[5] = limit_value(ftoi(p[5]), 0, 5) as f64;
+            d.extend([(p[3] * M_PI).sin(), (p[3] * M_PI).cos()]);
+            d
+        }),
+        // GPU: no state across calls, every call iterates the orbit from the origin.
+        wgsl: TRUCHET_AE_WGSL,
+    },
+    VarDef {
+        name: "truchet_fill",
+        params: &[ParamDef::range("exponent", 0.0, 0.001, 2.0), ParamDef::range("arc_width", 0.0, 0.001, 1.0), ParamDef::new("seed", 0.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        // d = [exponent, arc_width, seed, exponent (clamped), onen, width, seed2]
+        apply: |d, ctx, a, v, amount| {
+            let (seed, exponent, onen, width, seed2) = (d[2], d[3], d[4], d[5], d[6]);
+            let rmax = 0.5 * (2f64.powf(onen) - 1.0) * width;
+            let scale = 1.0 / amount;
+            let mut x = a.x * scale;
+            let mut y = a.y * scale;
+            let mut r = x - java_round(x);
+            x = if r < 0.0 { 1.0 + r } else { r };
+            r = y - java_round(y);
+            y = if r < 0.0 { 1.0 + r } else { r };
+            let tiletype = if seed == 0.0 {
+                0.0
+            } else if seed == 1.0 {
+                1.0
+            } else {
+                let xrand = java_round(a.x.abs()) * seed2;
+                let yrand = java_round(a.y.abs()) * seed2;
+                let niter = xrand + yrand + xrand * yrand;
+                let randint = (seed + niter) * seed2 * 0.5;
+                fmod(fmod(randint * 32747.0 + 12345.0, 65535.0), 2.0)
+            };
+            let rp = |dx: f64, dy: f64| ((dx.abs()).powf(exponent) + (dy.abs()).powf(exponent)).powf(onen);
+            let (r0, r1) = if tiletype < 1.0 { (rp(x, y), rp(x - 1.0, y - 1.0)) } else { (rp(x - 1.0, y), rp(x, y - 1.0)) };
+            let (x1, y1) = if (r0 - 0.5).abs() / rmax < 1.0 { (2.0 * (x + a.x.floor()), 2.0 * (y + a.y.floor())) } else { (0.0, 0.0) };
+            if (r1 - 0.5).abs() / rmax < 1.0 {
+                v.x += x1 + 2.0 * (x + a.x.floor()) - a.x;
+                v.y += y1 + 2.0 * (y + a.y.floor()) - a.y;
+            } else {
+                v.x += x1 - a.x;
+                v.y += y1 - a.y;
+            }
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: Some(|p, _| {
+            let exponent = limit_value(p[0], 0.001, 2.0);
+            let width = limit_value(p[1], 0.001, 1.0);
+            vec![p[0], p[1], p[2], exponent, 1.0 / exponent, width, (p[2] * 1.5).sqrt() / (p[2] * 0.5) * 0.25]
+        }),
+        // GPU: the tile hash runs in f32 arithmetic.
+        wgsl: "fn truchet_fill_rp(dx: f32, dy: f32, n: f32, onen: f32) -> f32 {
+  return pow(pow(abs(dx), n) + pow(abs(dy), n), onen);
+}
+@body
+let seed = D(2);
+let exponent = D(3);
+let onen = D(4);
+let seed2 = D(6);
+let rmax = 0.5 * (pow(2.0, onen) - 1.0) * D(5);
+let scale = 1.0 / AMOUNT;
+var x = a.x * scale;
+var y = a.y * scale;
+var r = x - java_round(x);
+x = select(r, 1.0 + r, r < 0.0);
+r = y - java_round(y);
+y = select(r, 1.0 + r, r < 0.0);
+var tiletype = 0.0;
+if (seed == 1.0) {
+  tiletype = 1.0;
+} else if (seed != 0.0) {
+  let xrand = java_round(abs(a.x)) * seed2;
+  let yrand = java_round(abs(a.y)) * seed2;
+  let niter = xrand + yrand + xrand * yrand;
+  tiletype = fmod(fmod((seed + niter) * seed2 * 0.5 * 32747.0 + 12345.0, 65535.0), 2.0);
+}
+var r0 = 0.0;
+var r1 = 0.0;
+if (tiletype < 1.0) {
+  r0 = truchet_fill_rp(x, y, exponent, onen);
+  r1 = truchet_fill_rp(x - 1.0, y - 1.0, exponent, onen);
+} else {
+  r0 = truchet_fill_rp(x - 1.0, y, exponent, onen);
+  r1 = truchet_fill_rp(x, y - 1.0, exponent, onen);
+}
+var x1 = 0.0;
+var y1 = 0.0;
+if (abs(r0 - 0.5) / rmax < 1.0) {
+  x1 = 2.0 * (x + floor(a.x));
+  y1 = 2.0 * (y + floor(a.y));
+}
+if (abs(r1 - 0.5) / rmax < 1.0) {
+  v.x += x1 + 2.0 * (x + floor(a.x)) - a.x;
+  v.y += y1 + 2.0 * (y + floor(a.y)) - a.y;
+} else {
+  v.x += x1 - a.x;
+  v.y += y1 - a.y;
+}
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
     // @@NEXT@@
 ];
+
+/// `TruchetAEFunc.dn1`
+fn truchet_ae_dn1(x: i32) -> f64 {
+    let n = (x << 13) ^ x;
+    let h = n.wrapping_mul(n.wrapping_mul(n).wrapping_mul(15731).wrapping_add(789221)).wrapping_add(1376312589);
+    (h & 0x7fffffff) as f64 * (1.0 / 2147483647.0)
+}
+
+/// One `TruchetAEFunc.transform` step on the state `[x, y, z1, z2]` with map `i`; returns (u1, v1, z).
+fn truchet_ae_step(d: &[f64], st: &mut [f64; 4], i: i32) -> (f64, f64, f64) {
+    const M_SQ3_2: f64 = 0.866_025_403_784_438_6;
+    let fmod2 = |num: f64, den: f64| {
+        let t = fmod(num, den);
+        if t < 0.0 && den > 0.0 { t + den } else { t }
+    };
+    let (x, y) = (st[0], st[1]);
+    let (u1, v1) = match (d[4] as i32, i) {
+        (1, 0) => (-x * 0.5 + 1.0, y * 0.5 + 1.0),
+        (1, 1) => (x * 0.5 - 1.0, y * 0.5 + 1.0),
+        (1, 2) => (-x * 0.5 + 1.0, -y * 0.5 - 1.0),
+        (1, 3) => (x * 0.5 - 1.0, -y * 0.5 - 1.0),
+        (2, 0) => (x * 0.5 + 1.0, y * 0.5 + 1.0),
+        (2, 1) => (x * 0.5 - 1.0, y * 0.5 - 1.0),
+        (2, 2) => (x * 0.5 - 1.0, y * 0.5 + 1.0),
+        (2, 3) => (-x * 0.5 - 1.0, -y * 0.5 + 1.0),
+        (3, 0) => (x * 0.5, y * 0.5),
+        (3, 1) => (x * 0.5 - 1.0, y * 0.5 + 1.0),
+        (3, 2) => (-y * 0.5 - 1.0, x * 0.5 - 1.0),
+        (3, 3) => (y * 0.5 + 1.0, -x * 0.5 + 1.0),
+        (4, 0) => (x * 0.5 + 1.0, y * 0.5 + M_SQ3_2),
+        (4, 1) => (x * 0.5 - 1.0, y * 0.5 + M_SQ3_2),
+        (4, 2) => (x * 0.5, y * 0.5 - M_SQ3_2),
+        (4, 3) => (x * 0.5, -y * 0.5 + M_SQ3_2),
+        (_, 0) => {
+            let mut j = y * 0.5 + 1.0 + 0.7;
+            if j > 2.0 {
+                j -= 2.0;
+            }
+            (x * 0.5 + 1.0, j)
+        }
+        (_, 1) => (x * 0.5 - 1.0, y * 0.5 + 1.0),
+        (_, 2) => (x * 0.5 + 1.0, y * 0.5 - 1.0),
+        (_, 3) => (x * 0.5 - 1.0, y * 0.5 - 1.0),
+        _ => (0.0, 0.0),
+    };
+    if (0..4).contains(&i) {
+        let k = &d[6 + 4 * i as usize..10 + 4 * i as usize];
+        st[2] = fmod2(k[0] * st[2] + k[1], 1.0);
+        st[3] = fmod2(k[2] * st[3] + k[3], if i == 2 { 0.5 } else { 1.0 });
+    }
+    let (z1, z2) = (st[2], st[3]);
+    let (step, width, seed, style) = (d[1], d[2], d[0] as i32, d[5] as i32);
+    let (sinang, cosang) = (d[22], d[23]);
+    let uu1 = cosang * u1 - sinang * v1;
+    let vv1 = sinang * u1 + cosang * v1;
+    let m = (uu1 / step).floor() as i32;
+    let n = (vv1 / step).floor() as i32;
+    let u = uu1 / step - m as f64;
+    let v = vv1 / step - n as f64;
+    let chance = truchet_ae_dn1(m.wrapping_add(n.wrapping_mul(34)).wrapping_add(seed));
+    let pick = |c: bool| if c { z1 } else { z2 };
+    let dist = |du: f64, dv: f64| (du * du + dv * dv).sqrt();
+    let z = match style {
+        0 => {
+            if chance > 0.5 {
+                pick((v < u + 1.0 - width && v > u + width) || (v < u - width && v > u - 1.0 + width))
+            } else {
+                pick((v < -u + 1.0 - width && v > -u + width) || (v > -u + 1.0 + width && v < -u + 2.0 - width))
+            }
+        }
+        1 => {
+            let sq = java_max((u - 0.5).abs(), (v - 0.5).abs()) - 0.5 * (1.0 - width) < 0.0;
+            if chance < 0.25 {
+                pick(sq ^ (u > v))
+            } else if chance < 0.5 {
+                pick(sq ^ (u > 1.0 - v))
+            } else if chance < 0.75 {
+                pick(sq ^ (u < v))
+            } else {
+                pick(sq ^ (u < 1.0 - v))
+            }
+        }
+        2 | 3 => {
+            let lim = 0.5 * (1.0 - width);
+            let arc = |c: f64| ((c - 0.5).abs() - 0.5).abs() - lim;
+            let t1 = style == 2 && chance < 0.5 || style == 3 && chance < 0.333333;
+            let t2 = style == 2 || chance < 0.666666;
+            let cir = if t1 {
+                arc(java_min(dist(u - 1.0, v - 1.0), dist(u, v)))
+            } else if t2 {
+                arc(java_min(dist(u - 1.0, v), dist(u, v - 1.0)))
+            } else {
+                0.5 * width - java_min((u - 0.5).abs(), (v - 0.5).abs())
+            };
+            pick(cir < 0.0)
+        }
+        4 => {
+            let sq = java_max((u - 0.5).abs(), (v - 0.5).abs()) - 0.5 * (1.0 - width) < 0.0;
+            let c = if chance < 0.125 {
+                u > v
+            } else if chance < 0.25 {
+                u > 1.0 - v
+            } else if chance < 0.375 {
+                u < v
+            } else if chance < 0.5 {
+                u < 1.0 - v
+            } else if chance < 0.625 {
+                u < 0.5
+            } else if chance < 0.75 {
+                v < 0.5
+            } else if chance < 0.875 {
+                u > 0.5
+            } else {
+                v > 0.5
+            };
+            pick(sq ^ c)
+        }
+        5 => {
+            let inv = (m % 2 == 0) ^ (n % 2 == 0);
+            if chance < 0.5 {
+                let cir0 = java_min(dist(u - 1.0, v - 1.0), dist(u, v));
+                let mut sq = java_min(cir0, dist(u - 1.0, v));
+                sq = java_min(sq, dist(u, v - 1.0));
+                pick((cir0.abs() - 0.5 < 0.0) ^ (sq.abs() - width < 0.0) ^ inv)
+            } else {
+                let cir0 = java_min(dist(u - 1.0, v), dist(u, v - 1.0));
+                let mut sq = java_min(cir0, dist(u - 1.0, v - 1.0));
+                sq = java_min(sq, dist(u, v));
+                if (cir0.abs() - 0.5 < 0.0) ^ (sq.abs() - width < 0.0) ^ inv { z2 } else { z1 }
+            }
+        }
+        _ => 0.0,
+    };
+    (u1, v1, z)
+}
+
+const TRUCHET_AE_WGSL: &str = "fn truchet_ae_dn1(x: i32) -> f32 {
+  let n = (x << 13u) ^ x;
+  let h = n * (n * n * 15731 + 789221) + 1376312589;
+  return f32(h & 0x7fffffff) * (1.0 / 2147483647.0);
+}
+fn truchet_ae_fmod2(num: f32, den: f32) -> f32 {
+  let t = fmod(num, den);
+  if (t < 0.0 && den > 0.0) { return t + den; }
+  return t;
+}
+fn truchet_ae_dist(du: f32, dv: f32) -> f32 { return sqrt(du * du + dv * dv); }
+// returns (u1, v1, z1, z2) of one step from the state st
+fn truchet_ae_step(base: u32, st: vec4<f32>, i: i32) -> vec4<f32> {
+  let SQ3_2 = 0.8660254037844386;
+  let x = st.x;
+  let y = st.y;
+  var u1 = 0.0;
+  var v1 = 0.0;
+  let lay = i32(prm[base + 4u]);
+  if (lay == 1) {
+    if (i == 0) { u1 = -x * 0.5 + 1.0; v1 = y * 0.5 + 1.0; }
+    else if (i == 1) { u1 = x * 0.5 - 1.0; v1 = y * 0.5 + 1.0; }
+    else if (i == 2) { u1 = -x * 0.5 + 1.0; v1 = -y * 0.5 - 1.0; }
+    else { u1 = x * 0.5 - 1.0; v1 = -y * 0.5 - 1.0; }
+  } else if (lay == 2) {
+    if (i == 0) { u1 = x * 0.5 + 1.0; v1 = y * 0.5 + 1.0; }
+    else if (i == 1) { u1 = x * 0.5 - 1.0; v1 = y * 0.5 - 1.0; }
+    else if (i == 2) { u1 = x * 0.5 - 1.0; v1 = y * 0.5 + 1.0; }
+    else { u1 = -x * 0.5 - 1.0; v1 = -y * 0.5 + 1.0; }
+  } else if (lay == 3) {
+    if (i == 0) { u1 = x * 0.5; v1 = y * 0.5; }
+    else if (i == 1) { u1 = x * 0.5 - 1.0; v1 = y * 0.5 + 1.0; }
+    else if (i == 2) { u1 = -y * 0.5 - 1.0; v1 = x * 0.5 - 1.0; }
+    else { u1 = y * 0.5 + 1.0; v1 = -x * 0.5 + 1.0; }
+  } else if (lay == 4) {
+    if (i == 0) { u1 = x * 0.5 + 1.0; v1 = y * 0.5 + SQ3_2; }
+    else if (i == 1) { u1 = x * 0.5 - 1.0; v1 = y * 0.5 + SQ3_2; }
+    else if (i == 2) { u1 = x * 0.5; v1 = y * 0.5 - SQ3_2; }
+    else { u1 = x * 0.5; v1 = -y * 0.5 + SQ3_2; }
+  } else {
+    if (i == 0) {
+      u1 = x * 0.5 + 1.0;
+      v1 = y * 0.5 + 1.0 + 0.7;
+      if (v1 > 2.0) { v1 -= 2.0; }
+    }
+    else if (i == 1) { u1 = x * 0.5 - 1.0; v1 = y * 0.5 + 1.0; }
+    else if (i == 2) { u1 = x * 0.5 + 1.0; v1 = y * 0.5 - 1.0; }
+    else { u1 = x * 0.5 - 1.0; v1 = y * 0.5 - 1.0; }
+  }
+  let ko = base + 6u + 4u * u32(i);
+  let z1 = truchet_ae_fmod2(prm[ko] * st.z + prm[ko + 1u], 1.0);
+  let z2 = truchet_ae_fmod2(prm[ko + 2u] * st.w + prm[ko + 3u], select(1.0, 0.5, i == 2));
+  let step = prm[base + 1u];
+  let width = prm[base + 2u];
+  let style = i32(prm[base + 5u]);
+  let sinang = prm[base + 22u];
+  let cosang = prm[base + 23u];
+  let uu1 = cosang * u1 - sinang * v1;
+  let vv1 = sinang * u1 + cosang * v1;
+  let m = i32(floor(uu1 / step));
+  let n = i32(floor(vv1 / step));
+  let u = uu1 / step - f32(m);
+  let v = vv1 / step - f32(n);
+  let chance = truchet_ae_dn1(m + 34 * n + i32(prm[base]));
+  var c = false;
+  var swap = false;
+  if (style == 0) {
+    if (chance > 0.5) {
+      c = (v < u + 1.0 - width && v > u + width) || (v < u - width && v > u - 1.0 + width);
+    } else {
+      c = (v < -u + 1.0 - width && v > -u + width) || (v > -u + 1.0 + width && v < -u + 2.0 - width);
+    }
+  } else if (style == 1 || style == 4) {
+    let sq = max(abs(u - 0.5), abs(v - 0.5)) - 0.5 * (1.0 - width) < 0.0;
+    var t = false;
+    if (style == 1) {
+      if (chance < 0.25) { t = u > v; } else if (chance < 0.5) { t = u > 1.0 - v; } else if (chance < 0.75) { t = u < v; } else { t = u < 1.0 - v; }
+    } else {
+      if (chance < 0.125) { t = u > v; } else if (chance < 0.25) { t = u > 1.0 - v; } else if (chance < 0.375) { t = u < v; }
+      else if (chance < 0.5) { t = u < 1.0 - v; } else if (chance < 0.625) { t = u < 0.5; } else if (chance < 0.75) { t = v < 0.5; }
+      else if (chance < 0.875) { t = u > 0.5; } else { t = v > 0.5; }
+    }
+    c = sq != t;
+  } else if (style == 2 || style == 3) {
+    let lim = 0.5 * (1.0 - width);
+    var cir = 0.0;
+    if ((style == 2 && chance < 0.5) || (style == 3 && chance < 0.333333)) {
+      cir = abs(abs(min(truchet_ae_dist(u - 1.0, v - 1.0), truchet_ae_dist(u, v)) - 0.5) - 0.5) - lim;
+    } else if (style == 2 || chance < 0.666666) {
+      cir = abs(abs(min(truchet_ae_dist(u - 1.0, v), truchet_ae_dist(u, v - 1.0)) - 0.5) - 0.5) - lim;
+    } else {
+      cir = 0.5 * width - min(abs(u - 0.5), abs(v - 0.5));
+    }
+    c = cir < 0.0;
+  } else if (style == 5) {
+    let inv = (m % 2 == 0) != (n % 2 == 0);
+    if (chance < 0.5) {
+      let cir0 = min(truchet_ae_dist(u - 1.0, v - 1.0), truchet_ae_dist(u, v));
+      let sq = min(min(cir0, truchet_ae_dist(u - 1.0, v)), truchet_ae_dist(u, v - 1.0));
+      c = ((abs(cir0) - 0.5 < 0.0) != (abs(sq) - width < 0.0)) != inv;
+    } else {
+      let cir0 = min(truchet_ae_dist(u - 1.0, v), truchet_ae_dist(u, v - 1.0));
+      let sq = min(min(cir0, truchet_ae_dist(u - 1.0, v - 1.0)), truchet_ae_dist(u, v));
+      c = !(((abs(cir0) - 0.5 < 0.0) != (abs(sq) - width < 0.0)) != inv);
+    }
+  } else {
+    return vec4<f32>(u1, v1, 0.0, 0.0);
+  }
+  let z = select(z2, z1, c);
+  return vec4<f32>(u1, v1, z, z);
+}
+@body
+var st = vec4<f32>(0.0);
+let n = 16 + min(i32(rnd() * 16.0), 15);
+for (var k = 0; k < n; k++) {
+  st = truchet_ae_step(base, st, min(i32(floor(4.0 * rnd())), 3));
+}
+v.x += st.x;
+v.y += st.y;
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }
+v.color = st.z;";
 
 /// `TreeFunc`: branch `k` (in the recursion order of `tree()`) -> (x, y, cx, cy).
 fn tree_js_branch(d: &[f64], level: i32, mut k: i64) -> (f64, f64, f64, f64) {
