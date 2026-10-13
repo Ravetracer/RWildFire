@@ -3568,8 +3568,616 @@ v.x += AMOUNT * p.x;
 v.y += AMOUNT * p.y;
 if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
     },
+    VarDef {
+        name: "w",
+        // JWildfire initializes angle and hypergon randomly.
+        params: &[
+            ParamDef::new("angle", 0.5),
+            ParamDef::new("hypergon", 0.5),
+            ParamDef::int("hypergon_n", 4.0, 3.0, 20.0),
+            ParamDef::new("hypergon_r", 1.0),
+            ParamDef::new("star", 0.0),
+            ParamDef::int("star_n", 5.0, 3.0, 20.0),
+            ParamDef::new("star_slope", 2.0),
+            ParamDef::new("lituus", 0.0),
+            ParamDef::new("lituus_a", 1.0),
+            ParamDef::new("super", 0.0),
+            ParamDef::new("super_m", 1.0),
+            ParamDef::new("super_n1", 1.0),
+            ParamDef::new("super_n2", 1.0),
+            ParamDef::new("super_n3", 0.0),
+        ],
+        kind: VarKind::Normal,
+        is_3d: false,
+        // d = [14 params, hypergon_d(14), hypergon_n, lituus_a, star_n, star_slope, super_m, super_n1]
+        apply: |d, ctx, a, v, amount| {
+            let ang = a.y.atan2(a.x);
+            let r = (sqr(a.x) + sqr(a.y)).sqrt();
+            let mut a2 = ang + d[0];
+            if a2 < -M_PI {
+                a2 += M_2PI;
+            }
+            if a2 > M_PI {
+                a2 -= M_2PI;
+            }
+            let total = w_total(d, ang);
+            if r <= total {
+                let total2 = w_total(d, a2);
+                let r = amount * total2 * r / total;
+                v.x += r * a2.cos();
+                v.y += r * a2.sin();
+            } else {
+                v.x += amount * a.x;
+                v.y += amount * a.y;
+            }
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: Some(|p, _| {
+            let mut d = p.to_vec();
+            d[2] = limit_value(ftoi(p[2]), 3, i32::MAX) as f64;
+            d[5] = limit_value(ftoi(p[5]), 3, i32::MAX) as f64;
+            d.extend([(1.0 + sqr(p[3])).sqrt(), d[2], -p[8], d[5], p[6].tan(), p[10] / 4.0, -1.0 / (p[11] + SMALL_EPSILON)]);
+            d
+        }),
+        wgsl: "fn w_total(base: u32, ang: f32) -> f32 {
+  var total = 0.0;
+  let hypergon = prm[base + 1u];
+  let star = prm[base + 4u];
+  let lituus = prm[base + 7u];
+  let sup = prm[base + 9u];
+  let hd = prm[base + 14u];
+  let hn = prm[base + 15u];
+  let sn = prm[base + 17u];
+  let ss = prm[base + 18u];
+  if (hypergon != 0.0) {
+    let t1 = fmod(abs(ang), TWO_PI / hn) - PI / hn;
+    let t2 = sqr(tan(t1)) + 1.0;
+    if (t2 >= sqr(hd)) {
+      total += hypergon;
+    } else {
+      total += hypergon * (hd - sqrt(sqr(hd) - t2)) / sqrt(t2);
+    }
+  }
+  if (star != 0.0) {
+    let t1 = tan(abs(fmod(abs(ang), TWO_PI / sn) - PI / sn));
+    total += star * sqrt(sqr(ss) * (1.0 + sqr(t1)) / sqr(t1 + ss));
+  }
+  if (lituus != 0.0) {
+    total += lituus * java_pow(ang / PI + 1.0, prm[base + 16u]);
+  }
+  if (sup != 0.0) {
+    let sa = ang * prm[base + 19u];
+    total += sup * pow(pow(abs(cos(sa)), prm[base + 12u]) + pow(abs(sin(sa)), prm[base + 13u]), prm[base + 20u]);
+  }
+  return total;
+}
+@body
+let ang = atan2(a.y, a.x);
+let r = sqrt(sqr(a.x) + sqr(a.y));
+var a2 = ang + D(0);
+if (a2 < -PI) { a2 += TWO_PI; }
+if (a2 > PI) { a2 -= TWO_PI; }
+let total = w_total(base, ang);
+if (r <= total) {
+  let rr = AMOUNT * w_total(base, a2) * r / total;
+  v.x += rr * cos(a2);
+  v.y += rr * sin(a2);
+} else {
+  v.x += AMOUNT * a.x;
+  v.y += AMOUNT * a.y;
+}
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "waffle",
+        params: &[ParamDef::int("slices", 6.0, 1.0, 50.0), ParamDef::new("xthickness", 0.5), ParamDef::new("ythickness", 0.5), ParamDef::new("rotation", 0.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let slices = d[0] as i32;
+            let sl = slices as f64;
+            let n = slices.max(0) as usize;
+            let (xt, yt) = (d[1], d[2]);
+            let (mut wa, mut wr) = (0.0, 0.0);
+            match ctx.random_int(5) {
+                0 => {
+                    wa = (ctx.random_int(n) as f64 + ctx.random() * xt) / sl;
+                    wr = (ctx.random_int(n) as f64 + ctx.random() * yt) / sl;
+                }
+                1 => {
+                    wa = (ctx.random_int(n) as f64 + ctx.random()) / sl;
+                    wr = (ctx.random_int(n) as f64 + yt) / sl;
+                }
+                2 => {
+                    wa = (ctx.random_int(n) as f64 + xt) / sl;
+                    wr = (ctx.random_int(n) as f64 + ctx.random()) / sl;
+                }
+                3 => {
+                    wa = ctx.random();
+                    wr = (ctx.random_int(n) as f64 + yt + ctx.random() * (1.0 - yt)) / sl;
+                }
+                4 => {
+                    wa = (ctx.random_int(n) as f64 + xt + ctx.random() * (1.0 - xt)) / sl;
+                    wr = ctx.random();
+                }
+                _ => {}
+            }
+            let vcosr = amount * d[3].cos();
+            let vsinr = amount * d[3].sin();
+            v.x += vcosr * wa + vsinr * wr;
+            v.y += -vsinr * wa + vcosr * wr;
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: Some(|p, _| vec![ftoi(p[0]) as f64, p[1], p[2], p[3]]),
+        wgsl: "let sl = D(0);
+let xt = D(1);
+let yt = D(2);
+var wa = 0.0;
+var wr = 0.0;
+switch (min(i32(rnd() * 5.0), 4)) {
+  case 0: {
+    wa = (floor(rnd() * sl) + rnd() * xt) / sl;
+    wr = (floor(rnd() * sl) + rnd() * yt) / sl;
+  }
+  case 1: {
+    wa = (floor(rnd() * sl) + rnd()) / sl;
+    wr = (floor(rnd() * sl) + yt) / sl;
+  }
+  case 2: {
+    wa = (floor(rnd() * sl) + xt) / sl;
+    wr = (floor(rnd() * sl) + rnd()) / sl;
+  }
+  case 3: {
+    wa = rnd();
+    wr = (floor(rnd() * sl) + yt + rnd() * (1.0 - yt)) / sl;
+  }
+  default: {
+    wa = (floor(rnd() * sl) + xt + rnd() * (1.0 - xt)) / sl;
+    wr = rnd();
+  }
+}
+let vcosr = AMOUNT * cos(D(3));
+let vsinr = AMOUNT * sin(D(3));
+v.x += vcosr * wa + vsinr * wr;
+v.y += -vsinr * wa + vcosr * wr;
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "wallpaper_js",
+        params: &[ParamDef::new("a", 1.156), ParamDef::new("b", -0.28), ParamDef::new("c", 21.288)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            if ctx.random() < 0.5 {
+                v.x += a.y - ((a.x as i32).signum() as f64) * (d[1] * a.x - d[2]).abs().sqrt();
+                v.y += d[0] - a.x;
+            } else {
+                v.x = a.x;
+                v.y = a.y;
+            }
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "if (rnd() < 0.5) {
+  v.x += a.y - sign(trunc(a.x)) * sqrt(abs(D(1) * a.x - D(2)));
+  v.y += D(0) - a.x;
+} else {
+  v.x = a.x;
+  v.y = a.y;
+}
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "waveblur_wf",
+        params: &[
+            ParamDef::int("count", 5.0, 1.0, 50.0),
+            ParamDef::new("phase", 0.0),
+            ParamDef::new("amplitude_z", 0.5),
+            ParamDef::range("damping_z", 0.0, 0.0, 2.0),
+            ParamDef::int("direct_color", 0.0, 0.0, 1.0),
+            ParamDef::new("color_scale", 0.5),
+            ParamDef::new("color_offset", 0.0),
+        ],
+        kind: VarKind::Normal,
+        is_3d: true,
+        apply: |d, ctx, _a, v, amount| {
+            let count = d[0] as i32;
+            let ang = ctx.random() * M_2PI;
+            let rnd = 1.0 - 2.0 * ctx.random();
+            let mut r = if ctx.random() < 0.5 {
+                rnd.acos() - (ctx.random_int(count as usize) + 1) as f64 * M_PI + d[1]
+            } else {
+                (-rnd).acos() - (ctx.random_int(count as usize) + 1) as f64 * M_PI + d[1]
+            };
+            r *= amount / (count as f64 * M_PI);
+            v.x += r * ang.cos();
+            v.y += r * ang.sin();
+            if d[4] as i32 == 1 {
+                v.color = limit_value(rnd.acos() * d[5] + d[6], 0.0, 1.0);
+            }
+            if d[2] != 0.0 {
+                let mut zamp = (rnd.cos() - 0.5) * d[2];
+                if d[3].abs() > SMALL_EPSILON {
+                    zamp *= (r * d[3]).exp();
+                }
+                v.z += amount * zamp;
+            }
+        },
+        prepare: Some(|p, _| {
+            let mut d = p.to_vec();
+            d[0] = ftoi(p[0]).max(1) as f64;
+            d[3] = if p[3] < 0.0 { 0.0 } else { p[3] };
+            d[4] = limit_value(ftoi(p[4]), 0, 1) as f64;
+            d
+        }),
+        wgsl: "let count = D(0);
+let ang = rnd() * TWO_PI;
+let rv = 1.0 - 2.0 * rnd();
+var r = 0.0;
+if (rnd() < 0.5) {
+  r = acos(rv) - (floor(rnd() * count) + 1.0) * PI + D(1);
+} else {
+  r = acos(-rv) - (floor(rnd() * count) + 1.0) * PI + D(1);
+}
+r *= AMOUNT / (count * PI);
+v.x += r * cos(ang);
+v.y += r * sin(ang);
+if (i32(D(4)) == 1) { v.color = clamp(acos(rv) * D(5) + D(6), 0.0, 1.0); }
+if (D(2) != 0.0) {
+  var zamp = (cos(rv) - 0.5) * D(2);
+  if (abs(D(3)) > EPS) { zamp *= exp(r * D(3)); }
+  v.z += AMOUNT * zamp;
+}",
+    },
+    VarDef {
+        name: "wave_func",
+        params: &[ParamDef::new("freq", 3.0), ParamDef::new("phase", 1.0), ParamDef::new("decay", 0.5)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let r = (a.x * a.x + a.y * a.y).sqrt();
+            let ang = a.y.atan2(a.x);
+            let psi = (d[0] * r).cos() * (-d[2] * r).exp() * (d[1] * ang).cos();
+            let nr = r + psi;
+            v.x += amount * nr * ang.cos();
+            v.y += amount * nr * ang.sin();
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "let r = sqrt(a.x * a.x + a.y * a.y);
+let ang = atan2(a.y, a.x);
+let nr = r + cos(D(0) * r) * exp(-D(2) * r) * cos(D(1) * ang);
+v.x += AMOUNT * nr * cos(ang);
+v.y += AMOUNT * nr * sin(ang);
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "waves22",
+        params: &[
+            ParamDef::new("scalex", 0.05),
+            ParamDef::new("scaley", 0.05),
+            ParamDef::new("freqx", 7.0),
+            ParamDef::new("freqy", 13.0),
+            ParamDef::int("modex", 0.0, 0.0, 1.0),
+            ParamDef::int("modey", 0.0, 0.0, 1.0),
+            ParamDef::new("powerx", 2.0),
+            ParamDef::new("powery", 2.0),
+        ],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let (x0, y0) = (a.x, a.y);
+            let px = d[6] as i32 as f64;
+            let py = d[7] as i32 as f64;
+            let sinx = if d[4] < 0.5 { (y0 * d[2]).sin() } else { 0.5 * (1.0 + (y0 * d[2]).sin()) };
+            let offsetx = sinx.powf(px) * d[0];
+            let siny = if d[5] < 0.5 { (x0 * d[3]).sin() } else { 0.5 * (1.0 + (x0 * d[3]).sin()) };
+            let offsety = siny.powf(py) * d[1];
+            v.x += amount * (x0 + offsetx);
+            v.y += amount * (y0 + offsety);
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: Some(|p, _| {
+            let mut d = p.to_vec();
+            d[4] = limit_value(p[4], 0.0, 1.0) as i32 as f64;
+            d[5] = limit_value(p[5], 0.0, 1.0) as i32 as f64;
+            d
+        }),
+        wgsl: "var sinx = sin(a.y * D(2));
+if (D(4) >= 0.5) { sinx = 0.5 * (1.0 + sinx); }
+var siny = sin(a.x * D(3));
+if (D(5) >= 0.5) { siny = 0.5 * (1.0 + siny); }
+v.x += AMOUNT * (a.x + java_pow(sinx, trunc(D(6))) * D(0));
+v.y += AMOUNT * (a.y + java_pow(siny, trunc(D(7))) * D(1));
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "waves23",
+        params: &[ParamDef::new("scalex", 0.05), ParamDef::new("scaley", 0.05), ParamDef::new("freqx", 7.0), ParamDef::new("freqy", 13.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let mx = a.y * d[2] * M_1_2PI;
+            let mut fx = mx - mx.floor();
+            if fx > 0.5 {
+                fx = 0.5 - fx;
+            }
+            let my = a.x * d[3] * M_1_2PI;
+            let mut fy = my - my.floor();
+            if fy > 0.5 {
+                fy = 0.5 - fy;
+            }
+            v.x += amount * (a.x + fx * d[0]);
+            v.y += amount * (a.y + fy * d[1]);
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "var fx = fract(a.y * D(2) / TWO_PI);
+if (fx > 0.5) { fx = 0.5 - fx; }
+var fy = fract(a.x * D(3) / TWO_PI);
+if (fy > 0.5) { fy = 0.5 - fy; }
+v.x += AMOUNT * (a.x + fx * D(0));
+v.y += AMOUNT * (a.y + fy * D(1));
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "waves2_3D",
+        params: &[ParamDef::new("freq", 2.0), ParamDef::new("scale", 1.0)],
+        kind: VarKind::Normal,
+        is_3d: true,
+        apply: |d, _ctx, a, v, amount| {
+            let avgxy = (a.x + a.y) / 2.0;
+            v.x += amount * (a.x + d[1] * (a.y * d[0]).sin());
+            v.y += amount * (a.y + d[1] * (a.x * d[0]).sin());
+            v.z += amount * (a.z + d[1] * (avgxy * d[0]).sin());
+        },
+        prepare: None,
+        wgsl: "let avgxy = (a.x + a.y) / 2.0;
+v.x += AMOUNT * (a.x + D(1) * sin(a.y * D(0)));
+v.y += AMOUNT * (a.y + D(1) * sin(a.x * D(0)));
+v.z += AMOUNT * (a.z + D(1) * sin(avgxy * D(0)));",
+    },
+    VarDef {
+        name: "waves2b",
+        params: &[
+            ParamDef::new("freqx", 1.5),
+            ParamDef::new("freqy", 2.5),
+            ParamDef::range("pwx", 1.0, -10.0, 10.0),
+            ParamDef::range("pwy", 1.5, -10.0, 10.0),
+            ParamDef::new("scalex", 2.0),
+            ParamDef::new("scaleinfx", 1.0),
+            ParamDef::new("scaley", 0.75),
+            ParamDef::new("scaleinfy", 1.5),
+            ParamDef::new("unity", 1.0),
+            ParamDef::range("jacok", 0.25, -1.0, 1.0),
+        ],
+        kind: VarKind::Normal,
+        is_3d: false,
+        // d = [10 params, six, siy]
+        apply: |d, ctx, a, v, amount| {
+            let (freqx, freqy, pwx, pwy, scaleinfx, scaleinfy, unity, jacok) = (d[0], d[1], d[2], d[3], d[5], d[7], d[8], d[9]);
+            let safediv = |q: f64, r: f64| if r < 1e-10 { 1.0 / r } else { q / r };
+            let sgn = |x: f64| if x < 0.0 { -1.0 } else { 1.0 };
+            let csx = safediv(unity, unity + sqr(a.x)) * d[10] + scaleinfx;
+            let csy = safediv(unity, unity + sqr(a.y)) * d[11] + scaleinfy;
+            if (0.0..1e-4).contains(&pwx) {
+                v.x += amount * (a.x + csx * waves2b_jacobi_sn(a.y * freqx, jacok));
+            } else if pwx < 0.0 && pwx > -1e-4 {
+                v.x += amount * (a.x + csx * waves2b_bessel_j1(a.y * freqx));
+            } else {
+                v.x += amount * (a.x + csx * (sgn(a.y) * (a.y.abs() + 1e-10).powf(pwx) * freqx).sin());
+            }
+            if (0.0..1e-4).contains(&pwy) {
+                v.y += amount * (a.y + csy * waves2b_jacobi_sn(a.x * freqy, jacok));
+            } else if pwy < 0.0 && pwy > -1e-4 {
+                v.y += amount * (a.y + csy * waves2b_bessel_j1(a.x * freqy));
+            } else {
+                v.y += amount * (a.y + csy * (sgn(a.x) * (a.x.abs() + 1e-10).powf(pwy) * freqy).sin());
+            }
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: Some(|p, _| {
+            let mut d = p.to_vec();
+            d[2] = limit_value(p[2], -10.0, 10.0);
+            d[3] = limit_value(p[3], -10.0, 10.0);
+            d[9] = limit_value(p[9], -1.0, 1.0);
+            d.extend([p[4] - p[5], p[6] - p[7]]);
+            d
+        }),
+        wgsl: "fn waves2b_safediv(q: f32, r: f32) -> f32 {
+  if (r < 1e-10) { return 1.0 / r; }
+  return q / r;
+}
+fn waves2b_sgn(x: f32) -> f32 { return select(1.0, -1.0, x < 0.0); }
+fn waves2b_bessel_j1(x: f32) -> f32 {
+  let ax = abs(x);
+  if (ax < 8.0) {
+    let y = x * x;
+    let ans1 = x * (72362614232.0 + y * (-7895059235.0 + y * (242396853.1 + y * (-2972611.439 + y * (15704.48260 + y * (-30.16036606))))));
+    let ans2 = 144725228442.0 + y * (2300535178.0 + y * (18583304.74 + y * (99447.43394 + y * (376.9991397 + y * 1.0))));
+    return ans1 / ans2;
+  }
+  let z = 8.0 / ax;
+  let xx = ax - 2.356194491;
+  let y = z * z;
+  let ans1 = 1.0 + y * (0.183105e-2 + y * (-0.3516396496e-4 + y * (0.2457520174e-5 + y * (-0.240337019e-6))));
+  let ans2 = 0.04687499995 + y * (-0.2002690873e-3 + y * (0.8449199096e-5 + y * (-0.88228987e-6 + y * 0.105787412e-6)));
+  let ans = sqrt(0.636619772 / ax) * (cos(xx) * ans1 - z * sin(xx) * ans2);
+  return select(ans, -ans, x < 0.0);
+}
+fn waves2b_jacobi_sn(uu: f32, emmc: f32) -> f32 {
+  if (emmc == 0.0) { return tanh(uu); }
+  var em: array<f32, 13>;
+  var en: array<f32, 13>;
+  var emc = emmc;
+  var u = uu;
+  var d = 0.0;
+  let bo = emc < 0.0;
+  if (bo) {
+    d = 1.0 - emc;
+    emc = -emc / d;
+    d = sqrt(d);
+    u = d * u;
+  }
+  var a = 1.0;
+  var dn = 1.0;
+  var c = 0.0;
+  var l = 0;
+  for (var i = 0; i < 8; i++) {
+    l = i;
+    em[i] = a;
+    emc = sqrt(emc);
+    en[i] = emc;
+    c = 0.5 * (a + emc);
+    if (abs(a - emc) <= 0.0003 * a) { break; }
+    emc = a * emc;
+    a = c;
+  }
+  u = c * u;
+  var sn = sin(u);
+  var cn = cos(u);
+  if (sn != 0.0) {
+    a = cn / sn;
+    c = a * c;
+    for (var ii = l; ii >= 0; ii--) {
+      let b = em[ii];
+      a = c * a;
+      c = dn * c;
+      dn = (en[ii] + a) / (b + a);
+      a = c / b;
+    }
+    a = 1.0 / sqrt(c * c + 1.0);
+    sn = select(a, -a, sn < 0.0);
+    cn = c * sn;
+  }
+  if (bo) { sn = sn / d; }
+  return sn;
+}
+@body
+let csx = waves2b_safediv(D(8), D(8) + sqr(a.x)) * D(10) + D(5);
+let csy = waves2b_safediv(D(8), D(8) + sqr(a.y)) * D(11) + D(7);
+let pwx = D(2);
+let pwy = D(3);
+if (pwx >= 0.0 && pwx < 1e-4) {
+  v.x += AMOUNT * (a.x + csx * waves2b_jacobi_sn(a.y * D(0), D(9)));
+} else if (pwx < 0.0 && pwx > -1e-4) {
+  v.x += AMOUNT * (a.x + csx * waves2b_bessel_j1(a.y * D(0)));
+} else {
+  v.x += AMOUNT * (a.x + csx * sin(waves2b_sgn(a.y) * pow(abs(a.y) + 1e-10, pwx) * D(0)));
+}
+if (pwy >= 0.0 && pwy < 1e-4) {
+  v.y += AMOUNT * (a.y + csy * waves2b_jacobi_sn(a.x * D(1), D(9)));
+} else if (pwy < 0.0 && pwy > -1e-4) {
+  v.y += AMOUNT * (a.y + csy * waves2b_bessel_j1(a.x * D(1)));
+} else {
+  v.y += AMOUNT * (a.y + csy * sin(waves2b_sgn(a.x) * pow(abs(a.x) + 1e-10, pwy) * D(1)));
+}
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
     // @@NEXT@@
 ];
+
+/// `cern.jet.math.Bessel.j1` (Colt)
+fn waves2b_bessel_j1(x: f64) -> f64 {
+    let ax = x.abs();
+    if ax < 8.0 {
+        let y = x * x;
+        let ans1 = x * (72362614232.0 + y * (-7895059235.0 + y * (242396853.1 + y * (-2972611.439 + y * (15704.48260 + y * (-30.16036606))))));
+        let ans2 = 144725228442.0 + y * (2300535178.0 + y * (18583304.74 + y * (99447.43394 + y * (376.9991397 + y * 1.0))));
+        ans1 / ans2
+    } else {
+        let z = 8.0 / ax;
+        let xx = ax - 2.356194491;
+        let y = z * z;
+        let ans1 = 1.0 + y * (0.183105e-2 + y * (-0.3516396496e-4 + y * (0.2457520174e-5 + y * (-0.240337019e-6))));
+        let ans2 = 0.04687499995 + y * (-0.2002690873e-3 + y * (0.8449199096e-5 + y * (-0.88228987e-6 + y * 0.105787412e-6)));
+        let ans = (0.636619772 / ax).sqrt() * (xx.cos() * ans1 - z * xx.sin() * ans2);
+        if x < 0.0 { -ans } else { ans }
+    }
+}
+
+/// `Waves2BFunc.Jacobi_elliptic` (sn only)
+fn waves2b_jacobi_sn(uu: f64, emmc: f64) -> f64 {
+    if emmc == 0.0 {
+        return uu.tanh();
+    }
+    let mut em = [0.0; 13];
+    let mut en = [0.0; 13];
+    let mut emc = emmc;
+    let mut u = uu;
+    let mut d = 0.0;
+    let bo = emc < 0.0;
+    if bo {
+        d = 1.0 - emc;
+        emc = -emc / d;
+        d = d.sqrt();
+        u *= d;
+    }
+    let mut a = 1.0;
+    let mut dn = 1.0;
+    let mut c = 0.0;
+    let mut l = 0;
+    for i in 0..8 {
+        l = i;
+        em[i] = a;
+        emc = emc.sqrt();
+        en[i] = emc;
+        c = 0.5 * (a + emc);
+        if (a - emc).abs() <= 0.0003 * a {
+            break;
+        }
+        emc *= a;
+        a = c;
+    }
+    u *= c;
+    let mut sn = u.sin();
+    let cn = u.cos();
+    if sn != 0.0 {
+        a = cn / sn;
+        c *= a;
+        for ii in (0..=l).rev() {
+            let b = em[ii];
+            a *= c;
+            c *= dn;
+            dn = (en[ii] + a) / (b + a);
+            a = c / b;
+        }
+        a = 1.0 / (c * c + 1.0).sqrt();
+        sn = if sn < 0.0 { -a } else { a };
+    }
+    if bo {
+        sn /= d;
+    }
+    sn
+}
+
+/// `WFunc`: the boundary radius at angle `ang`.
+fn w_total(d: &[f64], ang: f64) -> f64 {
+    let (hypergon, star, lituus, sup) = (d[1], d[4], d[7], d[9]);
+    let (hd, hn, la, sn, ss, sm, sn1) = (d[14], d[15], d[16], d[17], d[18], d[19], d[20]);
+    let mut total = 0.0;
+    if hypergon != 0.0 {
+        let t1 = fmod(ang.abs(), M_2PI / hn) - M_PI / hn;
+        let t2 = sqr(t1.tan()) + 1.0;
+        if t2 >= sqr(hd) {
+            total += hypergon;
+        } else {
+            total += hypergon * (hd - (sqr(hd) - t2).sqrt()) / t2.sqrt();
+        }
+    }
+    if star != 0.0 {
+        let t1 = (fmod(ang.abs(), M_2PI / sn) - M_PI / sn).abs().tan();
+        total += star * (sqr(ss) * (1.0 + sqr(t1)) / sqr(t1 + ss)).sqrt();
+    }
+    if lituus != 0.0 {
+        total += lituus * (ang / M_PI + 1.0).powf(la);
+    }
+    if sup != 0.0 {
+        let sa = ang * sm;
+        total += sup * (sa.cos().abs().powf(d[12]) + sa.sin().abs().powf(d[13])).powf(sn1);
+    }
+    total
+}
 
 /// `TruchetAEFunc.dn1`
 fn truchet_ae_dn1(x: i32) -> f64 {
