@@ -2352,4 +2352,222 @@ v.x += den * (jx.x * jy.z);
 v.y += den * (jx.y * jx.z * jy.y * jy.x);
 if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
     },
+    VarDef {
+        name: "japanese_maple_leaf",
+        params: &[ParamDef::new("filled", 0.15)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let t = a.atan_xy() * 0.5 + M_PI_2;
+            let scale = 0.667;
+            let r = if d[0] > 0.0 && d[0] > ctx.random() { amount * ctx.random() * scale } else { amount * scale };
+            let p = f64::powf;
+            let (c8, s8, ct) = ((8.0 * t).cos(), (8.0 * t).sin(), t.cos());
+            let lx = (4.0 / 15.0 + p(c8, 2.0) + 1.0 / 5.0 * p(c8 * (24.0 * t).cos(), 10.0) + (1.0 / 6.0 * p((80.0 * t).cos(), 2.0) + 1.0 / 15.0 * p((80.0 * t).cos(), 10.0)))
+                * (1.0 - p(s8, 10.0))
+                * (2.0 * t).sin()
+                * (1.0 + t.sin())
+                * (1.0 - p(ct, 10.0) * p((3.0 * t).cos(), 2.0) + 1.0 / 30.0 * p(ct, 9.0) * p((5.0 * t).cos(), 10.0));
+            let ly = (8.0 / 30.0
+                + p(c8, 2.0)
+                + 1.0 / 5.0 * p(c8 * (24.0 * t).cos(), 10.0)
+                + (1.0 / 6.0 * p((80.0 * t).cos(), 2.0) + 1.0 / 15.0 * p((80.0 * t).cos(), 10.0)) * (1.0 - p(ct, 10.0) * p((3.0 * t).cos(), 2.0)) * (1.0 - p(s8, 10.0)))
+                * (2.0 * t).cos()
+                * (1.0 + t.sin() + p(ct * (3.0 * t).cos(), 10.0));
+            v.x += r * lx;
+            v.y += r * ly;
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "let t = atan_xy(a) * 0.5 + HALF_PI;
+var r = AMOUNT * 0.667;
+if (D(0) > 0.0 && D(0) > rnd()) { r = AMOUNT * rnd() * 0.667; }
+let c8 = cos(8.0 * t);
+let s8 = sin(8.0 * t);
+let ct = cos(t);
+let c80 = cos(80.0 * t);
+let lx = (4.0 / 15.0 + java_pow(c8, 2.0) + 1.0 / 5.0 * java_pow(c8 * cos(24.0 * t), 10.0) + (1.0 / 6.0 * java_pow(c80, 2.0) + 1.0 / 15.0 * java_pow(c80, 10.0)))
+  * (1.0 - java_pow(s8, 10.0)) * sin(2.0 * t) * (1.0 + sin(t))
+  * (1.0 - java_pow(ct, 10.0) * java_pow(cos(3.0 * t), 2.0) + 1.0 / 30.0 * java_pow(ct, 9.0) * java_pow(cos(5.0 * t), 10.0));
+let ly = (8.0 / 30.0 + java_pow(c8, 2.0) + 1.0 / 5.0 * java_pow(c8 * cos(24.0 * t), 10.0)
+  + (1.0 / 6.0 * java_pow(c80, 2.0) + 1.0 / 15.0 * java_pow(c80, 10.0)) * (1.0 - java_pow(ct, 10.0) * java_pow(cos(3.0 * t), 2.0)) * (1.0 - java_pow(s8, 10.0)))
+  * cos(2.0 * t) * (1.0 + sin(t) + java_pow(ct * cos(3.0 * t), 10.0));
+v.x += r * lx;
+v.y += r * ly;
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "jet_stream",
+        params: &[ParamDef::new("speed", 1.0), ParamDef::new("width", 0.3), ParamDef::new("center", 0.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let w = java_max(d[1].abs(), 0.01);
+            let dy = a.y - d[2];
+            v.x += amount * (a.x + d[0] * (-(dy * dy) / (w * w)).exp());
+            v.y += amount * a.y;
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "let w = max(abs(D(1)), 0.01);
+let dy = a.y - D(2);
+v.x += AMOUNT * (a.x + D(0) * exp(-(dy * dy) / (w * w)));
+v.y += AMOUNT * a.y;
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "joukowski",
+        params: &[ParamDef::new("P1", 2.5), ParamDef::new("P2", 0.0), ParamDef::int("inverse", 0.0, 0.0, 1.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let (p1, z0) = (d[0], (-d[1], 0.2));
+            let mul = |a: Hc, b: Hc| hc_mul(a, b);
+            let z = if d[2] as i32 == 0 {
+                let w = (a.x + z0.0, a.y + z0.1);
+                // cdiv((p1^2, 0), w)
+                let dd = w.0 * w.0 + w.1 * w.1;
+                let q = ((p1 * p1 * w.0) / dd, (-(p1 * p1) * w.1) / dd);
+                mul(((-0.0f64).cos(), (-0.0f64).sin()), (w.0 + q.0, w.1 + q.1))
+            } else {
+                let z = mul((1.0, 0.0), (a.x, a.y));
+                let zz = mul(z, z);
+                let arg = (zz.0 / 4.0 - p1 * p1, zz.1 / 4.0);
+                // csqrt
+                let m = (arg.0 * arg.0 + arg.1 * arg.1).sqrt();
+                let sg = if arg.1 > 0.0 { 1.0 } else if arg.1 < 0.0 { -1.0 } else { 0.0 };
+                let sq = (((m + arg.0) * 0.5).sqrt(), ((m - arg.0) * 0.5).sqrt() * sg);
+                let r1 = (z.0 / 2.0 + sq.0 - z0.0, z.1 / 2.0 + sq.1 - z0.1);
+                let r2 = (z.0 / 2.0 - sq.0 - z0.0, z.1 / 2.0 - sq.1 - z0.1);
+                if hc_mag(r1) > hc_mag(r2) { r1 } else { r2 }
+            };
+            v.x += amount * z.0;
+            v.y += amount * z.1;
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: Some(|p, _| vec![p[0], p[1], limit_value(p[2], 0.0, 1.0).trunc()]),
+        wgsl: "let p1 = D(0);
+let z0 = vec2<f32>(-D(1), 0.2);
+var z = vec2<f32>(0.0);
+if (i32(D(2)) == 0) {
+  let w = vec2<f32>(a.x, a.y) + z0;
+  z = w + vec2<f32>(p1 * p1 * w.x, -(p1 * p1) * w.y) / dot(w, w);
+} else {
+  let q = vec2<f32>(a.x, a.y);
+  let arg = vec2<f32>((q.x * q.x - q.y * q.y) / 4.0 - p1 * p1, (2.0 * q.x * q.y) / 4.0);
+  let m = length(arg);
+  let sq = vec2<f32>(sqrt((m + arg.x) * 0.5), sqrt((m - arg.x) * 0.5) * sign(arg.y));
+  let r1 = q / 2.0 + sq - z0;
+  let r2 = q / 2.0 - sq - z0;
+  z = select(r2, r1, length(r1) > length(r2));
+}
+v.x += AMOUNT * z.x;
+v.y += AMOUNT * z.y;
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "jubiQ",
+        // Default power: JWildfire picks a random one (+-2..7) for new instances
+        params: &[
+            ParamDef::int("power", 3.0, -10.0, 10.0),
+            ParamDef::new("dist", 1.0),
+            ParamDef::new("a", 1.0),
+            ParamDef::new("b", 0.0),
+            ParamDef::new("c", 0.0),
+            ParamDef::new("d", 1.0),
+            ParamDef::new("e", 0.0),
+            ParamDef::new("f", 0.0),
+            ParamDef::new("qat", 0.0),
+            ParamDef::new("qax", 0.0),
+            ParamDef::new("qay", 0.0),
+            ParamDef::new("qaz", 0.0),
+            ParamDef::new("qbt", 0.0),
+            ParamDef::new("qbx", 0.0),
+            ParamDef::new("qby", 0.0),
+            ParamDef::new("qbz", 0.0),
+            ParamDef::new("qct", 0.0),
+            ParamDef::new("qcx", 0.0),
+            ParamDef::new("qcy", 0.0),
+            ParamDef::new("qcz", 0.0),
+            ParamDef::new("qdt", 1.0),
+            ParamDef::new("qdx", 0.0),
+            ParamDef::new("qdy", 0.0),
+            ParamDef::new("qdz", 0.0),
+            ParamDef::int("zmode", 0.0, 0.0, 2.0)
+        ],
+        kind: VarKind::Normal,
+        is_3d: true,
+        // d = [power, dist, a..f, qat..qdz, zmode, abs_n, cn, abs_power, cpower] (27..)
+        apply: |d, ctx, a, v, amount| {
+            let q = &d[8..24];
+            let (t2, x2, y2) = (a.x, a.y, a.z);
+            let nt = q[0] * t2 - q[1] * x2 - q[2] * y2 + q[4];
+            let nx = q[0] * x2 + q[1] * t2 - q[3] * y2 + q[5];
+            let ny = q[0] * y2 + q[2] * t2 + q[3] * x2 + q[6];
+            let nz = q[3] * t2 + q[1] * y2 - q[2] * x2 + q[7];
+            let dt = q[8] * t2 - q[9] * x2 - q[10] * y2 + q[12];
+            let dx = q[8] * x2 + q[9] * t2 - q[11] * y2 + q[13];
+            let dy = q[8] * y2 + q[10] * t2 + q[11] * x2 + q[14];
+            let dz = q[11] * t2 + q[9] * y2 - q[10] * x2 + q[15];
+            let ni = amount / (dt * dt + dx * dx + dy * dy + dz * dz);
+            let x = d[2] * a.x + d[3] * a.y + (nt * dt + nx * dx + ny * dy + nz * dz) * ni + d[6];
+            let y = d[4] * a.x + d[5] * a.y + (nx * dt - nt * dx - ny * dz + nz * dy) * ni + d[7];
+            let k = (ctx.random_int(i32::MAX as usize) as i64 % d[25] as i64) as f64;
+            let angle = (y.atan2(x) + M_2PI * k) / d[0];
+            let r = amount * (x * x + y * y).powf(d[26]);
+            v.x += r * angle.cos();
+            v.y += r * angle.sin();
+            let zq = (ny * dt - nt * dy - nz * dx + nx * dz) * ni;
+            match d[24] as i32 {
+                0 => {
+                    let z = a.z / 2.0;
+                    let r3d = (a.x * a.x + a.y * a.y + z * z).sqrt();
+                    v.z += zq + amount / (r3d.sqrt() * r3d) * z;
+                }
+                1 => {
+                    let z = a.z / d[27];
+                    v.z += zq + amount * (a.x * a.x + a.y * a.y + z * z).powf(d[28]) * z;
+                }
+                _ => v.z += zq + a.z,
+            }
+        },
+        prepare: Some(|p, _| {
+            let mut d = p.to_vec();
+            let power = ftoi(p[0]) as f64;
+            d[0] = power;
+            d[24] = limit_value(p[24], 0.0, 2.0).trunc();
+            d.extend([power.abs(), p[1] / power * 0.5, power.abs(), (1.0 / power - 1.0) * 0.5]);
+            d
+        }),
+        wgsl: "let t2 = a.x;
+let x2 = a.y;
+let y2 = a.z;
+let nt = D(8) * t2 - D(9) * x2 - D(10) * y2 + D(12);
+let nx = D(8) * x2 + D(9) * t2 - D(11) * y2 + D(13);
+let ny = D(8) * y2 + D(10) * t2 + D(11) * x2 + D(14);
+let nz = D(11) * t2 + D(9) * y2 - D(10) * x2 + D(15);
+let dt = D(16) * t2 - D(17) * x2 - D(18) * y2 + D(20);
+let dx = D(16) * x2 + D(17) * t2 - D(19) * y2 + D(21);
+let dy = D(16) * y2 + D(18) * t2 + D(19) * x2 + D(22);
+let dz = D(19) * t2 + D(17) * y2 - D(18) * x2 + D(23);
+let ni = AMOUNT / (dt * dt + dx * dx + dy * dy + dz * dz);
+let x = D(2) * a.x + D(3) * a.y + (nt * dt + nx * dx + ny * dy + nz * dz) * ni + D(6);
+let y = D(4) * a.x + D(5) * a.y + (nx * dt - nt * dx - ny * dz + nz * dy) * ni + D(7);
+let angle = (atan2(y, x) + TWO_PI * floor(rnd() * D(25))) / D(0);
+let r = AMOUNT * java_pow(x * x + y * y, D(26));
+v.x += r * cos(angle);
+v.y += r * sin(angle);
+let zq = (ny * dt - nt * dy - nz * dx + nx * dz) * ni;
+let zmode = i32(D(24));
+if (zmode == 0) {
+  let z = a.z / 2.0;
+  let r3d = sqrt(a.x * a.x + a.y * a.y + z * z);
+  v.z += zq + AMOUNT / (sqrt(r3d) * r3d) * z;
+} else if (zmode == 1) {
+  let z = a.z / D(27);
+  v.z += zq + AMOUNT * java_pow(a.x * a.x + a.y * a.y + z * z, D(28)) * z;
+} else {
+  v.z += zq + a.z;
+}",
+    },
 ];
