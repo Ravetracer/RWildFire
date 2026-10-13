@@ -19,6 +19,9 @@
 
 //! Variations ported from the JWildfire sources (batch w12).
 
+// Some shaders use JWildfire's truncated pi literals.
+#![allow(clippy::approx_constant)]
+
 #[allow(unused_imports)]
 use super::{Ctx, ParamDef, Pt, VarDef, VarKind, simple};
 #[allow(unused_imports)]
@@ -26,6 +29,7 @@ use crate::math::*;
 #[allow(unused_imports)]
 use crate::model::Affine;
 use super::complex::Complex;
+use super::glsl::{Vec2, abs, clamp, dot, glsl_atan2, glsl_mod, length, max, min, sign, vec2};
 use crate::brush::Marsaglia;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -255,6 +259,206 @@ fn crop_prepare(p: &[f64], iters: usize, color: Option<usize>) -> Vec<f64> {
         d[c] = limit_value(p[c], 0.0, 1.0);
     }
     d
+}
+
+/// `(int) Tools.limitValue(v, lo, hi)` as used by the `post_crop_*` parameter setters.
+fn crop_int_param(v: f64, lo: f64, hi: f64) -> f64 {
+    limit_value(v, lo, hi) as i32 as f64
+}
+
+/// Shared tail of the SDF based `post_crop_*` variations: points outside the shape (inside when
+/// `invert`) are hidden and moved to the origin.
+fn post_crop_output(ctx: &Ctx, a: &Pt, v: &mut Pt, amount: f64, d: f64, invert: f64) {
+    let hide = if invert == 0.0 { d > 0.0 } else { d <= 0.0 };
+    v.do_hide = hide;
+    let (x, y) = if hide { (0.0, 0.0) } else { (v.x, v.y) };
+    v.x = amount * x;
+    v.y = amount * y;
+    ctx.pass_z(a, v, amount);
+}
+
+/// WGSL of [`post_crop_output`] (`sd` = signed distance, `D(inv)` = invert flag).
+macro_rules! post_crop_sdf_tail {
+    ($inv:literal) => {
+        concat!(
+            "var hide = sd > 0.0;
+if (D(",
+            $inv,
+            ") != 0.0) { hide = sd <= 0.0; }
+if (hide) {
+  v.hide = 1.0;
+  v.x = 0.0;
+  v.y = 0.0;
+} else {
+  v.hide = 0.0;
+  v.x = AMOUNT * v.x;
+  v.y = AMOUNT * v.y;
+}
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }"
+        )
+    };
+}
+
+fn post_crop_box_sd(p: Vec2, b: Vec2) -> f64 {
+    let d = abs(p) - b;
+    length(max(d, Vec2::splat(0.0))) + min(max(d.x, d.y), 0.0)
+}
+
+fn post_crop_cross_sd(p: Vec2, b: Vec2, r: f64) -> f64 {
+    let mut p = abs(p);
+    p = if p.y > p.x { vec2(p.y, p.x) } else { vec2(p.x, p.y) };
+    let q = p - b;
+    let k = max(q.y, q.x);
+    let w = if k > 0.0 { q } else { vec2(b.y - p.x, -k) };
+    sign(k) * length(max(w, 0.0)) + r
+}
+
+fn post_crop_polygon_hexagram(p: Vec2, r: f64) -> f64 {
+    let k = [-0.5, 0.86602540378, 0.57735026919, 1.73205080757];
+    let mut p = abs(p);
+    let kxy = vec2(k[0], k[1]);
+    let t0 = dot(kxy, p);
+    p -= kxy * Vec2::splat(2.0) * min(t0, 0.0);
+    let kyx = vec2(k[1], k[0]);
+    let t0 = dot(kyx, p);
+    p -= kyx * 2.0 * min(t0, 0.0);
+    p = p - vec2(clamp(p.x, r * k[2], r * k[3]), r);
+    length(p) * sign(p.y)
+}
+
+fn post_crop_polygon_octogon(p: Vec2, r: f64) -> f64 {
+    let k = [-0.9238795325, 0.3826834323, 0.4142135623];
+    let mut p = abs(p);
+    let k1 = vec2(k[0], k[1]);
+    p = p - k1 * (2.0 * min(dot(k1, p), 0.0));
+    let k2 = vec2(-k[0], k[1]);
+    p = p - k2 * (2.0 * min(dot(k2, p), 0.0));
+    p = p - vec2(clamp(p.x, -k[2] * r, k[2] * r), r);
+    length(p) * sign(p.y)
+}
+
+fn post_crop_polygon_hexagon(p: Vec2, r: f64) -> f64 {
+    let k = [-0.866025404, 0.5, 0.577350269];
+    let mut p = abs(p);
+    let k1 = vec2(k[0], k[1]);
+    p = p - k1 * (2.0 * min(dot(k1, p), 0.0));
+    p = p - vec2(clamp(p.x, -k[2] * r, k[2] * r), r);
+    length(p) * sign(p.y)
+}
+
+fn post_crop_polygon_pentagon(p: Vec2, r: f64) -> f64 {
+    let k = [0.809016994, 0.587785252, 0.726542528];
+    let mut p = vec2(p.x.abs(), -p.y);
+    let k1 = vec2(-k[0], k[1]);
+    p = p - k1 * (2.0 * min(dot(k1, p), 0.0));
+    let k2 = vec2(k[0], k[1]);
+    p = p - k2 * (2.0 * min(dot(k2, p), 0.0));
+    p = p - vec2(clamp(p.x, -r * k[2], r * k[2]), r);
+    length(p) * sign(p.y)
+}
+
+fn post_crop_rhombus_ndot(a: Vec2, b: Vec2) -> f64 {
+    a.x * b.x - a.y * b.y
+}
+
+fn post_crop_rhombus_sd(p: Vec2, b: Vec2) -> f64 {
+    let q = abs(p);
+    let h = clamp((-2.0 * post_crop_rhombus_ndot(q, b) + post_crop_rhombus_ndot(b, b)) / dot(b, b), -1.0, 1.0);
+    let d = length(q - b * vec2(1.0 - h, 1.0 + h) * 0.5);
+    d * sign(q.x * b.y + q.y * b.x - b.x * b.y)
+}
+
+fn post_crop_stars_sd(p: Vec2, r: f64, n: i32, m: f64) -> f64 {
+    let an = 3.141593 / n as f64;
+    let en = 6.283185 / m;
+    let acs = vec2(an.cos(), an.sin());
+    let ecs = vec2(en.cos(), en.sin());
+    let bn = glsl_mod(glsl_atan2(p.x, p.y), 2.0 * an) - an;
+    let mut p = vec2(bn.cos(), bn.sin().abs()) * length(p);
+    p -= acs * r;
+    p = p + ecs * clamp(-dot(p, ecs), 0.0, r * acs.y / ecs.y);
+    length(p) * sign(p.x)
+}
+
+fn post_crop_trapezoid_sd(p: Vec2, r1: f64, r2: f64, he: f64) -> f64 {
+    let k1 = vec2(r2, he);
+    let k2 = vec2(r2 - r1, 2.0 * he);
+    let p = vec2(p.x.abs(), p.y);
+    let ca = vec2(max(0.0, p.x - if p.y < 0.0 { r1 } else { r2 }), p.y.abs() - he);
+    let t0 = dot(k1 - p, k2) / dot(k2, k2);
+    let cb = p - k1 + k2 * clamp(t0, 0.0, 1.0);
+    let s = if cb.x < 0.0 && ca.y < 0.0 { -1.0 } else { 1.0 };
+    s * java_min(dot(ca, ca), dot(cb, cb)).sqrt()
+}
+
+fn post_crop_triangle_area(x1: f64, y1: f64, x2: f64, y2: f64, x3: f64, y3: f64) -> f64 {
+    ((x1 * (y2 - y3) + x2 * (y3 - y1) + x3 * (y1 - y2)) / 2.0).abs()
+}
+
+fn post_crop_vesica_sd(p: Vec2, r: f64, d: f64) -> f64 {
+    let p = abs(p);
+    let b = (r * r - d * d).sqrt();
+    if (p.y - b) * d > p.x * b { length(p - vec2(0.0, b)) } else { length(p - vec2(-d, 0.0)) - r }
+}
+
+fn falloff3_sgnd(x: f64) -> f64 {
+    if x < 0.0 { -1.0 } else { 1.0 }
+}
+
+fn falloff3_log_scale(x: f64) -> f64 {
+    if x == 0.0 { 0.0 } else { ((x.abs() + 1.0) * M_E).ln() * falloff3_sgnd(x) / M_E }
+}
+
+fn falloff3_log_map(x: f64) -> f64 {
+    if x == 0.0 { 0.0 } else { (M_E + (x * M_E).ln()) / 4.0 * falloff3_sgnd(x) }
+}
+
+/// `AbstractFalloff3Func.transform` for the input `vin = [x, y, z, color]`: the output vector.
+// d = [blur_type, blur_shape, blur_strength, min_distance, invert_distance, mul_x, mul_y, mul_z,
+//      mul_c, center_x, center_y, center_z, alpha, r_max]
+fn falloff3_vout(d: &[f64], ctx: &mut Ctx, vin: [f64; 4]) -> [f64; 4] {
+    let rnd = [ctx.random() - 0.5, ctx.random() - 0.5, ctx.random() - 0.5, ctx.random() - 0.5];
+    let (dx, dy, dz) = (vin[0] - d[9], vin[1] - d[10], vin[2] - d[11]);
+    let radius = if d[1] as i32 == 0 { (dx * dx + dy * dy + dz * dz).sqrt() } else { java_max(dx.abs(), java_max(dy.abs(), dz.abs())) };
+    let r_max = d[13];
+    let base = if d[4] as i32 != 0 { java_max(1.0 - radius, 0.0) } else { java_max(radius, 0.0) };
+    let dist = java_max((base - d[3]) * r_max, 0.0);
+    let mul = [d[5], d[6], d[7], d[8]];
+    let alpha = d[12];
+    match d[0] as i32 {
+        0 => {
+            let sigma = dist * rnd[1] * M_2PI;
+            let phi = dist * rnd[2] * M_PI;
+            let rad = dist * rnd[0];
+            let (ss, sc) = sigma.sin_cos();
+            let (ps, pc) = phi.sin_cos();
+            [vin[0] + mul[0] * rad * sc * pc, vin[1] + mul[1] * rad * sc * ps, vin[2] + mul[2] * rad * ss, vin[3] + mul[3] * dist * rnd[3]]
+        }
+        1 => {
+            if vin[0] == 0.0 && vin[1] == 0.0 && vin[2] == 0.0 {
+                vin
+            } else {
+                let r_in = (sqr(vin[0]) + sqr(vin[1]) + sqr(vin[2])).sqrt();
+                let aa = mul[1] * dist + alpha * dist / r_max.sqrt();
+                let bb = mul[2] * dist;
+                let sigma = (vin[2] / r_in).asin() + bb * rnd[2];
+                let phi = vin[1].atan2(vin[0]) + aa * rnd[1];
+                let r = r_in + mul[0] * rnd[0] * dist;
+                let (ss, sc) = sigma.sin_cos();
+                let (ps, pc) = phi.sin_cos();
+                [r * sc * pc, r * sc * ps, r * ss, vin[3] + mul[3] * rnd[3] * dist]
+            }
+        }
+        _ => {
+            let coeff = if r_max <= EPSILON { dist } else { dist + alpha * (falloff3_log_map(dist) - dist) };
+            [
+                vin[0] + falloff3_log_map(mul[0]) * falloff3_log_scale(rnd[0]) * coeff,
+                vin[1] + falloff3_log_map(mul[1]) * falloff3_log_scale(rnd[1]) * coeff,
+                vin[2] + falloff3_log_map(mul[2]) * falloff3_log_scale(rnd[2]) * coeff,
+                vin[3] + falloff3_log_map(mul[3]) * falloff3_log_scale(rnd[3]) * coeff,
+            ]
+        }
+    }
 }
 
 /// `cern.jet.math.Arithmetic.longFactorial` as a double (`k` in 0..=20).
@@ -1554,5 +1758,813 @@ if (D(4) > 0.0) {
 } else {
   v.z += dz;
 }",
+    },
+    VarDef {
+        name: "post_crop",
+        params: &[
+            ParamDef::new("left", -1.0),
+            ParamDef::new("right", 1.0),
+            ParamDef::new("top", -1.0),
+            ParamDef::new("bottom", 1.0),
+            ParamDef::range("scatter_area", 0.0, -1.0, 1.0),
+            ParamDef::int("zero", 0.0, 0.0, 1.0),
+        ],
+        kind: VarKind::Post,
+        is_3d: false,
+        apply: |d, ctx, _a, v, amount| {
+            // d = [left, right, top, bottom, scatter_area, zero, xmin 6, xmax 7, ymin 8, ymax 9, w 10, h 11]
+            let (mut x, mut y) = (v.x, v.y);
+            if (x < d[6] || x > d[7] || y < d[8] || y > d[9]) && d[5] != 0.0 {
+                v.x = 0.0;
+                v.y = 0.0;
+                v.do_hide = true;
+                return;
+            }
+            v.do_hide = false;
+            if x < d[6] {
+                x = d[6] + ctx.random() * d[10];
+            } else if x > d[7] {
+                x = d[7] - ctx.random() * d[10];
+            }
+            if y < d[8] {
+                y = d[8] + ctx.random() * d[11];
+            } else if y > d[9] {
+                y = d[9] - ctx.random() * d[11];
+            }
+            v.x = amount * x;
+            v.y = amount * y;
+        },
+        prepare: Some(|p, _| {
+            let scatter = limit_value(p[4], -1.0, 1.0);
+            let zero = limit_value(ftoi(p[5]), 0, 1) as f64;
+            let (xmin, xmax) = (java_min(p[0], p[1]), java_max(p[0], p[1]));
+            let (ymin, ymax) = (java_min(p[2], p[3]), java_max(p[2], p[3]));
+            vec![p[0], p[1], p[2], p[3], scatter, zero, xmin, xmax, ymin, ymax, (xmax - xmin) * 0.5 * scatter, (ymax - ymin) * 0.5 * scatter]
+        }),
+        wgsl: "var x = v.x;
+var y = v.y;
+if ((x < D(6) || x > D(7) || y < D(8) || y > D(9)) && D(5) != 0.0) {
+  v.x = 0.0;
+  v.y = 0.0;
+  v.hide = 1.0;
+  return PtPair(a, v);
+}
+v.hide = 0.0;
+if (x < D(6)) { x = D(6) + rnd() * D(10); } else if (x > D(7)) { x = D(7) - rnd() * D(10); }
+if (y < D(8)) { y = D(8) + rnd() * D(11); } else if (y > D(9)) { y = D(9) - rnd() * D(11); }
+v.x = AMOUNT * x;
+v.y = AMOUNT * y;",
+    },
+    VarDef {
+        name: "post_crop_box",
+        params: &[ParamDef::new("width", 0.5), ParamDef::new("height", 0.5), ParamDef::int("invert", 0.0, 0.0, 1.0)],
+        kind: VarKind::Post,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            // d = [width, height, invert]
+            let sd = post_crop_box_sd(vec2(v.x, v.y), vec2(d[0], d[1]));
+            post_crop_output(ctx, a, v, amount, sd, d[2]);
+        },
+        prepare: Some(|p, _| vec![p[0], p[1], crop_int_param(p[2], 0.0, 1.0)]),
+        wgsl: concat!(
+            "fn post_crop_box_sd(p: vec2<f32>, b: vec2<f32>) -> f32 {
+  let d = abs(p) - b;
+  return length(max(d, vec2<f32>(0.0))) + min(max(d.x, d.y), 0.0);
+}
+@body
+let sd = post_crop_box_sd(vec2<f32>(v.x, v.y), vec2<f32>(D(0), D(1)));
+",
+            post_crop_sdf_tail!("2")
+        ),
+    },
+    VarDef {
+        name: "post_crop_cross",
+        params: &[
+            ParamDef::new("width", 0.5),
+            ParamDef::new("Size", 0.5),
+            ParamDef::new("round", 0.001),
+            ParamDef::int("invert", 0.0, 0.0, 1.0),
+        ],
+        kind: VarKind::Post,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            // d = [width, Size, round, invert]
+            let mut si = vec2(d[0], d[1]);
+            if si.x < si.y {
+                si = vec2(si.y, si.x);
+            }
+            let ra = 0.1 * (d[2] * 1.2).sin();
+            let sd = post_crop_cross_sd(vec2(v.x, v.y), si, ra);
+            post_crop_output(ctx, a, v, amount, sd, d[3]);
+        },
+        prepare: Some(|p, _| vec![p[0], p[1], p[2], crop_int_param(p[3], 0.0, 1.0)]),
+        wgsl: concat!(
+            "fn post_crop_cross_sd(p_in: vec2<f32>, b: vec2<f32>, r: f32) -> f32 {
+  var p = abs(p_in);
+  if (p.y > p.x) { p = p.yx; }
+  let q = p - b;
+  let k = max(q.y, q.x);
+  var w = q;
+  if (!(k > 0.0)) { w = vec2<f32>(b.y - p.x, -k); }
+  return sign(k) * length(max(w, vec2<f32>(0.0))) + r;
+}
+@body
+var si = vec2<f32>(D(0), D(1));
+if (si.x < si.y) { si = si.yx; }
+let sd = post_crop_cross_sd(vec2<f32>(v.x, v.y), si, 0.1 * sin(D(2) * 1.2));
+",
+            post_crop_sdf_tail!("3")
+        ),
+    },
+    VarDef {
+        name: "post_crop_polygon",
+        params: &[ParamDef::int("type", 4.0, 0.0, 4.0), ParamDef::new("radius", 0.35), ParamDef::int("invert", 0.0, 0.0, 1.0)],
+        kind: VarKind::Post,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            // d = [type, radius, invert]
+            let p = vec2(v.x, v.y);
+            let sd = match d[0] as i32 {
+                4 => post_crop_polygon_hexagram(p, d[1]),
+                3 => post_crop_polygon_octogon(p, d[1]),
+                2 => post_crop_polygon_hexagon(p, d[1]),
+                1 => post_crop_polygon_pentagon(p, d[1]),
+                _ => length(p) - d[1],
+            };
+            post_crop_output(ctx, a, v, amount, sd, d[2]);
+        },
+        prepare: Some(|p, _| vec![crop_int_param(p[0], 0.0, 4.0), p[1], crop_int_param(p[2], 0.0, 1.0)]),
+        wgsl: concat!(
+            "fn post_crop_polygon_hexagram(p_in: vec2<f32>, r: f32) -> f32 {
+  let k = vec4<f32>(-0.5, 0.86602540378, 0.57735026919, 1.73205080757);
+  var p = abs(p_in);
+  p -= k.xy * 2.0 * min(dot(k.xy, p), 0.0);
+  p -= k.yx * 2.0 * min(dot(k.yx, p), 0.0);
+  p -= vec2<f32>(clamp(p.x, r * k.z, r * k.w), r);
+  return length(p) * sign(p.y);
+}
+fn post_crop_polygon_octogon(p_in: vec2<f32>, r: f32) -> f32 {
+  let k = vec3<f32>(-0.9238795325, 0.3826834323, 0.4142135623);
+  var p = abs(p_in);
+  p -= k.xy * (2.0 * min(dot(k.xy, p), 0.0));
+  let k2 = vec2<f32>(-k.x, k.y);
+  p -= k2 * (2.0 * min(dot(k2, p), 0.0));
+  p -= vec2<f32>(clamp(p.x, -k.z * r, k.z * r), r);
+  return length(p) * sign(p.y);
+}
+fn post_crop_polygon_hexagon(p_in: vec2<f32>, r: f32) -> f32 {
+  let k = vec3<f32>(-0.866025404, 0.5, 0.577350269);
+  var p = abs(p_in);
+  p -= k.xy * (2.0 * min(dot(k.xy, p), 0.0));
+  p -= vec2<f32>(clamp(p.x, -k.z * r, k.z * r), r);
+  return length(p) * sign(p.y);
+}
+fn post_crop_polygon_pentagon(p_in: vec2<f32>, r: f32) -> f32 {
+  let k = vec3<f32>(0.809016994, 0.587785252, 0.726542528);
+  var p = vec2<f32>(abs(p_in.x), -p_in.y);
+  let k1 = vec2<f32>(-k.x, k.y);
+  p -= k1 * (2.0 * min(dot(k1, p), 0.0));
+  p -= k.xy * (2.0 * min(dot(k.xy, p), 0.0));
+  p -= vec2<f32>(clamp(p.x, -r * k.z, r * k.z), r);
+  return length(p) * sign(p.y);
+}
+@body
+let p = vec2<f32>(v.x, v.y);
+let ty = i32(D(0));
+var sd = length(p) - D(1);
+if (ty == 4) {
+  sd = post_crop_polygon_hexagram(p, D(1));
+} else if (ty == 3) {
+  sd = post_crop_polygon_octogon(p, D(1));
+} else if (ty == 2) {
+  sd = post_crop_polygon_hexagon(p, D(1));
+} else if (ty == 1) {
+  sd = post_crop_polygon_pentagon(p, D(1));
+}
+",
+            post_crop_sdf_tail!("2")
+        ),
+    },
+    VarDef {
+        name: "post_crop_rhombus",
+        params: &[ParamDef::new("width", 0.5), ParamDef::new("height", 0.5), ParamDef::int("invert", 0.0, 0.0, 1.0)],
+        kind: VarKind::Post,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            // d = [width, height, invert]
+            let sd = post_crop_rhombus_sd(vec2(v.x, v.y), vec2(d[0], d[1]));
+            post_crop_output(ctx, a, v, amount, sd, d[2]);
+        },
+        prepare: Some(|p, _| vec![p[0], p[1], crop_int_param(p[2], 0.0, 1.0)]),
+        wgsl: concat!(
+            "fn post_crop_rhombus_ndot(a: vec2<f32>, b: vec2<f32>) -> f32 { return a.x * b.x - a.y * b.y; }
+fn post_crop_rhombus_sd(p: vec2<f32>, b: vec2<f32>) -> f32 {
+  let q = abs(p);
+  let h = clamp((-2.0 * post_crop_rhombus_ndot(q, b) + post_crop_rhombus_ndot(b, b)) / dot(b, b), -1.0, 1.0);
+  let d = length(q - b * vec2<f32>(1.0 - h, 1.0 + h) * 0.5);
+  return d * sign(q.x * b.y + q.y * b.x - b.x * b.y);
+}
+@body
+let sd = post_crop_rhombus_sd(vec2<f32>(v.x, v.y), vec2<f32>(D(0), D(1)));
+",
+            post_crop_sdf_tail!("2")
+        ),
+    },
+    VarDef {
+        name: "post_crop_stars",
+        params: &[
+            ParamDef::new("radius", 0.35),
+            ParamDef::int("n", 3.0, 3.0, 9.0),
+            ParamDef::range("r2", 0.333, 0.0, 1.0),
+            ParamDef::int("invert", 0.0, 0.0, 1.0),
+        ],
+        kind: VarKind::Post,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            // d = [radius, n, r2, invert]
+            let n = d[1] as i32;
+            let m = 4.0 + d[2] * d[2] * (n as f64 * 2.0 - 4.0);
+            let sd = post_crop_stars_sd(vec2(v.x, v.y), d[0], n, m);
+            post_crop_output(ctx, a, v, amount, sd, d[3]);
+        },
+        prepare: Some(|p, _| vec![p[0], crop_int_param(p[1], 3.0, 9.0), limit_value(p[2], 0.0, 1.0), crop_int_param(p[3], 0.0, 1.0)]),
+        wgsl: concat!(
+            "fn post_crop_stars_sd(p_in: vec2<f32>, r: f32, n: f32, m: f32) -> f32 {
+  let an = 3.141593 / n;
+  let en = 6.283185 / m;
+  let acs = vec2<f32>(cos(an), sin(an));
+  let ecs = vec2<f32>(cos(en), sin(en));
+  let bn = glsl_mod(glsl_atan2(p_in.x, p_in.y), 2.0 * an) - an;
+  var p = vec2<f32>(cos(bn), abs(sin(bn))) * length(p_in);
+  p -= acs * r;
+  p += ecs * clamp(-dot(p, ecs), 0.0, r * acs.y / ecs.y);
+  return length(p) * sign(p.x);
+}
+@body
+let m = 4.0 + D(2) * D(2) * (D(1) * 2.0 - 4.0);
+let sd = post_crop_stars_sd(vec2<f32>(v.x, v.y), D(0), D(1), m);
+",
+            post_crop_sdf_tail!("3")
+        ),
+    },
+    VarDef {
+        name: "post_crop_trapezoid",
+        params: &[ParamDef::new("LMay", 0.5), ParamDef::new("LMin", 0.2), ParamDef::new("height", 0.5), ParamDef::int("invert", 0.0, 0.0, 1.0)],
+        kind: VarKind::Post,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            // d = [LMay, LMin, height, invert]
+            let sd = post_crop_trapezoid_sd(vec2(v.x, v.y), d[0], d[1], d[2]);
+            post_crop_output(ctx, a, v, amount, sd, d[3]);
+        },
+        prepare: Some(|p, _| vec![p[0], p[1], p[2], crop_int_param(p[3], 0.0, 1.0)]),
+        wgsl: concat!(
+            "fn post_crop_trapezoid_sd(p_in: vec2<f32>, r1: f32, r2: f32, he: f32) -> f32 {
+  let k1 = vec2<f32>(r2, he);
+  let k2 = vec2<f32>(r2 - r1, 2.0 * he);
+  let p = vec2<f32>(abs(p_in.x), p_in.y);
+  var rr = r2;
+  if (p.y < 0.0) { rr = r1; }
+  let ca = vec2<f32>(max(0.0, p.x - rr), abs(p.y) - he);
+  let t0 = dot(k1 - p, k2) / dot(k2, k2);
+  let cb = p - k1 + k2 * clamp(t0, 0.0, 1.0);
+  var s = 1.0;
+  if (cb.x < 0.0 && ca.y < 0.0) { s = -1.0; }
+  return s * sqrt(min(dot(ca, ca), dot(cb, cb)));
+}
+@body
+let sd = post_crop_trapezoid_sd(vec2<f32>(v.x, v.y), D(0), D(1), D(2));
+",
+            post_crop_sdf_tail!("3")
+        ),
+    },
+    VarDef {
+        name: "post_crop_triangle",
+        params: &[
+            ParamDef::new("x1", 0.0),
+            ParamDef::new("y1", 0.5),
+            ParamDef::new("x2", 0.5),
+            ParamDef::new("y2", 0.5),
+            ParamDef::new("x3", 0.0),
+            ParamDef::new("y3", -0.5),
+        ],
+        kind: VarKind::Post,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            // d = [x1, y1, x2, y2, x3, y3]
+            let (x1, y1, x2, y2, x3, y3) = (d[0], d[1], d[2], d[3], d[4], d[5]);
+            let (x, y) = (v.x, v.y);
+            let area = post_crop_triangle_area(x1, y1, x2, y2, x3, y3);
+            let a1 = post_crop_triangle_area(x, y, x2, y2, x3, y3);
+            let a2 = post_crop_triangle_area(x1, y1, x, y, x3, y3);
+            let a3 = post_crop_triangle_area(x1, y1, x2, y2, x, y);
+            // Java quirk: exact floating point comparison.
+            v.do_hide = area != a1 + a2 + a3;
+            v.x = amount * x;
+            v.y = amount * y;
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "fn post_crop_triangle_area(x1: f32, y1: f32, x2: f32, y2: f32, x3: f32, y3: f32) -> f32 {
+  return abs((x1 * (y2 - y3) + x2 * (y3 - y1) + x3 * (y1 - y2)) / 2.0);
+}
+@body
+let x = v.x;
+let y = v.y;
+let area = post_crop_triangle_area(D(0), D(1), D(2), D(3), D(4), D(5));
+let a1 = post_crop_triangle_area(x, y, D(2), D(3), D(4), D(5));
+let a2 = post_crop_triangle_area(D(0), D(1), x, y, D(4), D(5));
+let a3 = post_crop_triangle_area(D(0), D(1), D(2), D(3), x, y);
+v.hide = 1.0;
+if (area == a1 + a2 + a3) { v.hide = 0.0; }
+v.x = AMOUNT * x;
+v.y = AMOUNT * y;
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "post_crop_vesica",
+        params: &[ParamDef::new("width", 0.2), ParamDef::new("height", 0.1), ParamDef::int("invert", 0.0, 0.0, 1.0)],
+        kind: VarKind::Post,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            // d = [width, height, invert]
+            let sd = post_crop_vesica_sd(vec2(v.x, v.y), 1.0 + d[1], 0.8 + d[0]);
+            post_crop_output(ctx, a, v, amount, sd, d[2]);
+        },
+        prepare: Some(|p, _| vec![p[0], p[1], crop_int_param(p[2], 0.0, 1.0)]),
+        wgsl: concat!(
+            "fn post_crop_vesica_sd(p_in: vec2<f32>, r: f32, d: f32) -> f32 {
+  let p = abs(p_in);
+  let b = sqrt(r * r - d * d);
+  if ((p.y - b) * d > p.x * b) {
+    return length(p - vec2<f32>(0.0, b));
+  }
+  return length(p - vec2<f32>(-d, 0.0)) - r;
+}
+@body
+let sd = post_crop_vesica_sd(vec2<f32>(v.x, v.y), 1.0 + D(1), 0.8 + D(0));
+",
+            post_crop_sdf_tail!("2")
+        ),
+    },
+    VarDef {
+        name: "post_crop_x",
+        params: &[ParamDef::new("radius", 0.1), ParamDef::range("width", 0.5, 0.0, 1.0), ParamDef::int("invert", 0.0, 0.0, 1.0)],
+        kind: VarKind::Post,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            // d = [radius, width, invert]
+            let p = abs(vec2(v.x, v.y));
+            let sd = length(p - Vec2::splat(java_min(p.x + p.y, d[1]) * 0.5)) - d[0];
+            post_crop_output(ctx, a, v, amount, sd, d[2]);
+        },
+        prepare: Some(|p, _| vec![p[0], limit_value(p[1], 0.0, 1.0), crop_int_param(p[2], 0.0, 1.0)]),
+        wgsl: concat!(
+            "let p = abs(vec2<f32>(v.x, v.y));
+let sd = length(p - vec2<f32>(min(p.x + p.y, D(1)) * 0.5)) - D(0);
+",
+            post_crop_sdf_tail!("2")
+        ),
+    },
+    VarDef {
+        name: "post_crosscrop",
+        params: &[
+            ParamDef::new("x", 1.0),
+            ParamDef::new("y", 1.0),
+            ParamDef::new("z", 1.0),
+            ParamDef::range("rotation", 0.0, -180.0, 180.0),
+            ParamDef::int("reverse", 0.0, 0.0, 1.0),
+        ],
+        kind: VarKind::Post,
+        is_3d: true,
+        apply: |d, ctx, a, v, amount| {
+            // d = [x, y, z, rotation, reverse]
+            let rot = d[3] * M_PI / 180.0;
+            let rx = v.x * rot.cos() - v.y * rot.sin();
+            let ry = v.y * rot.cos() + v.x * rot.sin();
+            let inside = (rx <= d[0] && rx >= -d[0] || ry <= d[1] && ry >= -d[1]) && v.z <= d[2] && v.z >= -d[2];
+            if inside == (d[4] as i32 == 1) {
+                v.x = 0.0;
+                v.y = 0.0;
+                v.z = 0.0;
+                v.do_hide = true;
+                return;
+            }
+            v.do_hide = false;
+            v.x *= amount;
+            v.y *= amount;
+            v.z *= amount;
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: Some(|p, _| vec![p[0], p[1], p[2], p[3], crop_int_param(p[4], 0.0, 1.0)]),
+        wgsl: "let rot = D(3) * PI / 180.0;
+let rx = v.x * cos(rot) - v.y * sin(rot);
+let ry = v.y * cos(rot) + v.x * sin(rot);
+let inside = (rx <= D(0) && rx >= -D(0) || ry <= D(1) && ry >= -D(1)) && v.z <= D(2) && v.z >= -D(2);
+if (inside == (i32(D(4)) == 1)) {
+  v.x = 0.0;
+  v.y = 0.0;
+  v.z = 0.0;
+  v.hide = 1.0;
+} else {
+  v.hide = 0.0;
+  v.x *= AMOUNT;
+  v.y *= AMOUNT;
+  v.z *= AMOUNT;
+  if (PRESERVE_Z) { v.z += AMOUNT * a.z; }
+}",
+    },
+    VarDef {
+        name: "post_c_symmetry",
+        params: &[ParamDef::new("p1", 3.0), ParamDef::new("p2", 3.0)],
+        kind: VarKind::Post,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let t = d[0] * v.y.atan2(v.x);
+            let l = (v.x * v.x + v.y * v.y).sqrt().powf(d[1]);
+            v.x = amount * (t.cos() * l);
+            v.y = amount * (t.sin() * l);
+            if ctx.preserve_z {
+                v.z = amount * a.z;
+            }
+        },
+        prepare: None,
+        wgsl: "let t = D(0) * atan2(v.y, v.x);
+let l = pow(length(vec2<f32>(v.x, v.y)), D(1));
+v.x = AMOUNT * (cos(t) * l);
+v.y = AMOUNT * (sin(t) * l);
+if (PRESERVE_Z) { v.z = AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "post_curl",
+        params: &[ParamDef::new("c1", 0.0), ParamDef::new("c2", 0.0)],
+        kind: VarKind::Post,
+        is_3d: false,
+        apply: |d, _, _a, v, amount| {
+            let (c1, c2) = (d[0] * amount, d[1] * amount);
+            let (x, y) = (v.x, v.y);
+            let re = 1.0 + c1 * x + c2 * (sqr(x) - sqr(y));
+            let im = c1 * y + 2.0 * c2 * x * y;
+            let r = sqr(re) + sqr(im) + SMALL_EPSILON;
+            v.x = (x * re + y * im) / r;
+            v.y = (y * re - x * im) / r;
+        },
+        prepare: None,
+        wgsl: "let c1 = D(0) * AMOUNT;
+let c2 = D(1) * AMOUNT;
+let x = v.x;
+let y = v.y;
+let re = 1.0 + c1 * x + c2 * (x * x - y * y);
+let im = c1 * y + 2.0 * c2 * x * y;
+let r = re * re + im * im + EPS;
+v.x = (x * re + y * im) / r;
+v.y = (y * re - x * im) / r;",
+    },
+    VarDef {
+        name: "post_curl3D",
+        params: &[ParamDef::new("cx", 0.0), ParamDef::new("cy", 0.0), ParamDef::new("cz", 0.0)],
+        kind: VarKind::Post,
+        is_3d: true,
+        apply: |d, _, _a, v, amount| {
+            let (cx, cy, cz) = (amount * d[0], amount * d[1], amount * d[2]);
+            let c_2 = sqr(cx) + sqr(cy) + sqr(cz);
+            let r2 = sqr(v.x) + sqr(v.y) + sqr(v.z);
+            // Java quirk: the y term is subtracted.
+            let r = 1.0 / (r2 * c_2 + 2.0 * cx * v.x - 2.0 * cy * v.y + 2.0 * cz * v.z + 1.0);
+            v.x = r * (v.x + cx * r2);
+            v.y = r * (v.y + cy * r2);
+            v.z = r * (v.z + cz * r2);
+        },
+        prepare: None,
+        wgsl: "let c = AMOUNT * vec3<f32>(D(0), D(1), D(2));
+let c_2 = dot(c, c);
+let r2 = v.x * v.x + v.y * v.y + v.z * v.z;
+let r = 1.0 / (r2 * c_2 + 2.0 * c.x * v.x - 2.0 * c.y * v.y + 2.0 * c.z * v.z + 1.0);
+v.x = r * (v.x + c.x * r2);
+v.y = r * (v.y + c.y * r2);
+v.z = r * (v.z + c.z * r2);",
+    },
+    VarDef {
+        name: "post_dcztransl",
+        params: &[
+            ParamDef::range("x0", 0.0, 0.0, 1.0),
+            ParamDef::range("x1", 1.0, 0.0, 1.0),
+            ParamDef::new("factor", 1.0),
+            ParamDef::int("overwrite", 1.0, 0.0, 1.0),
+            ParamDef::int("clamp", 0.0, 0.0, 1.0),
+        ],
+        kind: VarKind::Post,
+        is_3d: true,
+        apply: |d, _, a, v, amount| {
+            // d = [x0, x1, factor, overwrite, clamp, x0 (min), x1 - x0]
+            let mut zf = d[2] * (a.color - d[5]) / d[6];
+            if d[4] != 0.0 {
+                zf = zf.clamp(0.0, 1.0);
+            }
+            v.x *= amount;
+            v.y *= amount;
+            v.z = if d[3] == 0.0 { amount * v.z * zf } else { amount * zf };
+        },
+        prepare: Some(|p, _| {
+            let (x0, x1) = (limit_value(p[0], 0.0, 1.0), limit_value(p[1], 0.0, 1.0));
+            let lo = if x0 < x1 { x0 } else { x1 };
+            let hi = if x0 > x1 { x0 } else { x1 };
+            let diff = if hi - lo == 0.0 { SMALL_EPSILON } else { hi - lo };
+            vec![x0, x1, p[2], limit_value(ftoi(p[3]), 0, 1) as f64, limit_value(ftoi(p[4]), 0, 1) as f64, lo, diff]
+        }),
+        wgsl: "var zf = D(2) * (a.color - D(5)) / max(D(6), EPS);
+if (D(4) != 0.0) { zf = clamp(zf, 0.0, 1.0); }
+v.x *= AMOUNT;
+v.y *= AMOUNT;
+if (D(3) == 0.0) { v.z = AMOUNT * v.z * zf; } else { v.z = AMOUNT * zf; }",
+    },
+    VarDef {
+        name: "post_depth",
+        params: &[ParamDef::new("power", 1.0)],
+        kind: VarKind::Post,
+        is_3d: true,
+        apply: |d, _, a, v, amount| {
+            let mut coeff = v.z.abs();
+            if coeff != 0.0 && d[0] != 1.0 {
+                coeff = (coeff.ln() * d[0]).exp();
+            }
+            v.x += amount * (a.x + v.x * coeff);
+            v.y += amount * (a.y + v.y * coeff);
+            v.z += amount * (a.z + v.z * coeff);
+        },
+        prepare: None,
+        wgsl: "var coeff = abs(v.z);
+if (coeff != 0.0 && D(0) != 1.0) { coeff = exp(log(coeff) * D(0)); }
+v.x += AMOUNT * (a.x + v.x * coeff);
+v.y += AMOUNT * (a.y + v.y * coeff);
+v.z += AMOUNT * (a.z + v.z * coeff);",
+    },
+    VarDef {
+        name: "post_falloff2",
+        params: &[
+            ParamDef::range("scatter", 1.0, 0.0, 2.0),
+            ParamDef::range("mindist", 0.5, 0.0, 2.0),
+            ParamDef::range("mul_x", 1.0, 0.0, 1.0),
+            ParamDef::range("mul_y", 1.0, 0.0, 1.0),
+            ParamDef::range("mul_z", 0.0, 0.0, 1.0),
+            ParamDef::range("mul_c", 0.0, 0.0, 1.0),
+            ParamDef::new("x0", 0.0),
+            ParamDef::new("y0", 0.0),
+            ParamDef::new("z0", 0.0),
+            ParamDef::int("invert", 0.0, 0.0, 1.0),
+            ParamDef::int("type", 0.0, 0.0, 2.0),
+        ],
+        kind: VarKind::Post,
+        is_3d: true,
+        apply: |d, ctx, _a, v, amount| {
+            // d = [scatter, mindist, mul_x, mul_y, mul_z, mul_c, x0, y0, z0, invert, type, rmax]
+            let (x, y, z) = (v.x, v.y, v.z);
+            let mut dist = (sqr(x - d[6]) + sqr(y - d[7]) + sqr(z - d[8])).sqrt();
+            if d[9] as i32 != 0 {
+                dist = 1.0 - dist;
+            }
+            if dist < 0.0 {
+                dist = 0.0;
+            }
+            dist = (dist - d[1]) * d[11];
+            if dist < 0.0 {
+                dist = 0.0;
+            }
+            match d[10] as i32 {
+                1 => {
+                    let r_in = (x * x + y * y + z * z).sqrt() + 1e-6;
+                    let sigma = (z / r_in).asin() + d[4] * ctx.random() * dist;
+                    let phi = y.atan2(x) + d[3] * ctx.random() * dist;
+                    let r = r_in + d[2] * ctx.random() * dist;
+                    let (sins, coss) = sigma.sin_cos();
+                    let (sinp, cosp) = phi.sin_cos();
+                    v.x += amount * (r * coss * cosp);
+                    v.y += amount * (r * coss * sinp);
+                    v.z += amount * sins;
+                }
+                2 => {
+                    let sigma = dist * ctx.random() * 2.0 * M_PI;
+                    let phi = dist * ctx.random() * M_PI;
+                    let r = dist * ctx.random();
+                    let (sins, coss) = sigma.sin_cos();
+                    let (sinp, cosp) = phi.sin_cos();
+                    v.x += amount * (x + d[2] * r * coss * cosp);
+                    v.y += amount * (y + d[3] * r * coss * sinp);
+                    v.z += amount * (z + d[4] * r * sins);
+                }
+                _ => {
+                    v.x += amount * (x + d[2] * ctx.random() * dist);
+                    v.y += amount * (y + d[3] * ctx.random() * dist);
+                    v.z += amount * (z + d[4] * ctx.random() * dist);
+                }
+            }
+            v.color = frac(v.color + d[5] * ctx.random() * dist).abs();
+        },
+        prepare: Some(|p, _| {
+            let scatter = if p[0] < 1.0e-6 { 1.0e-6 } else { p[0] };
+            let mindist = if p[1] < 0.0 { 0.0 } else { p[1] };
+            vec![
+                scatter,
+                mindist,
+                limit_value(p[2], 0.0, 1.0),
+                limit_value(p[3], 0.0, 1.0),
+                limit_value(p[4], 0.0, 1.0),
+                limit_value(p[5], 0.0, 1.0),
+                p[6],
+                p[7],
+                p[8],
+                limit_value(ftoi(p[9]), 0, 1) as f64,
+                limit_value(ftoi(p[10]), 0, 2) as f64,
+                0.04 * scatter,
+            ]
+        }),
+        wgsl: "let x = v.x;
+let y = v.y;
+let z = v.z;
+var dist = length(vec3<f32>(x - D(6), y - D(7), z - D(8)));
+if (i32(D(9)) != 0) { dist = 1.0 - dist; }
+dist = max((max(dist, 0.0) - D(1)) * D(11), 0.0);
+let ty = i32(D(10));
+if (ty == 1) {
+  let r_in = sqrt(x * x + y * y + z * z) + 1e-6;
+  let sigma = asin(clamp(z / r_in, -1.0, 1.0)) + D(4) * rnd() * dist;
+  let phi = atan2(y, x) + D(3) * rnd() * dist;
+  let r = r_in + D(2) * rnd() * dist;
+  v.x += AMOUNT * (r * cos(sigma) * cos(phi));
+  v.y += AMOUNT * (r * cos(sigma) * sin(phi));
+  v.z += AMOUNT * sin(sigma);
+} else if (ty == 2) {
+  let sigma = dist * rnd() * TWO_PI;
+  let phi = dist * rnd() * PI;
+  let r = dist * rnd();
+  v.x += AMOUNT * (x + D(2) * r * cos(sigma) * cos(phi));
+  v.y += AMOUNT * (y + D(3) * r * cos(sigma) * sin(phi));
+  v.z += AMOUNT * (z + D(4) * r * sin(sigma));
+} else {
+  v.x += AMOUNT * (x + D(2) * rnd() * dist);
+  v.y += AMOUNT * (y + D(3) * rnd() * dist);
+  v.z += AMOUNT * (z + D(4) * rnd() * dist);
+}
+let c = v.color + D(5) * rnd() * dist;
+v.color = abs(c - trunc(c));",
+    },
+    VarDef {
+        name: "post_falloff3",
+        params: &[
+            ParamDef::int("blur_type", 0.0, 0.0, 2.0),
+            ParamDef::int("blur_shape", 0.0, 0.0, 1.0),
+            ParamDef::range("blur_strength", 1.0, 0.0, 2.0),
+            ParamDef::range("min_distance", 0.5, 0.0, 2.0),
+            ParamDef::int("invert_distance", 0.0, 0.0, 1.0),
+            ParamDef::range("mul_x", 1.0, 0.0, 1.0),
+            ParamDef::range("mul_y", 1.0, 0.0, 1.0),
+            ParamDef::range("mul_z", 0.0, 0.0, 1.0),
+            ParamDef::range("mul_c", 0.0, 0.0, 1.0),
+            ParamDef::new("center_x", 0.0),
+            ParamDef::new("center_y", 0.0),
+            ParamDef::new("center_z", 0.0),
+            ParamDef::new("alpha", 0.0),
+        ],
+        kind: VarKind::Post,
+        is_3d: true,
+        apply: |d, ctx, _a, v, amount| {
+            let vout = falloff3_vout(d, ctx, [v.x, v.y, v.z, v.color]);
+            v.x = vout[0] * amount;
+            v.y = vout[1] * amount;
+            v.z = vout[2] * amount;
+            v.color = fmod(vout[3], 1.0).abs();
+        },
+        prepare: Some(|p, _| {
+            let strength = if p[2] < 1.0e-6 { 1.0e-6 } else { p[2] };
+            let min_dist = if p[3] < 0.0 { 0.0 } else { p[3] };
+            let fl = |x: f64, hi: i32| limit_value(ftoi(x), 0, hi) as f64;
+            vec![
+                fl(p[0], 2),
+                fl(p[1], 1),
+                strength,
+                min_dist,
+                fl(p[4], 1),
+                limit_value(p[5], 0.0, 1.0),
+                limit_value(p[6], 0.0, 1.0),
+                limit_value(p[7], 0.0, 1.0),
+                limit_value(p[8], 0.0, 1.0),
+                p[9],
+                p[10],
+                p[11],
+                p[12],
+                0.04 * strength,
+            ]
+        }),
+        wgsl: "fn post_falloff3_sgnd(x: f32) -> f32 { return select(1.0, -1.0, x < 0.0); }
+fn post_falloff3_log_scale(x: f32) -> f32 {
+  if (x == 0.0) { return 0.0; }
+  return log((abs(x) + 1.0) * 2.718281828459045) * post_falloff3_sgnd(x) / 2.718281828459045;
+}
+fn post_falloff3_log_map(x: f32) -> f32 {
+  if (x == 0.0) { return 0.0; }
+  return (2.718281828459045 + log(x * 2.718281828459045)) / 4.0 * post_falloff3_sgnd(x);
+}
+@body
+let rx = rnd() - 0.5;
+let ry = rnd() - 0.5;
+let rz = rnd() - 0.5;
+let rc = rnd() - 0.5;
+let vin = vec4<f32>(v.x, v.y, v.z, v.color);
+let dc = abs(vin.xyz - vec3<f32>(D(9), D(10), D(11)));
+var radius = length(dc);
+if (i32(D(1)) != 0) { radius = max(dc.x, max(dc.y, dc.z)); }
+var rb = max(radius, 0.0);
+if (i32(D(4)) != 0) { rb = max(1.0 - radius, 0.0); }
+let r_max = D(13);
+let dist = max((rb - D(3)) * r_max, 0.0);
+let alpha = D(12);
+var vo = vin;
+let bt = i32(D(0));
+if (bt == 0) {
+  let sigma = dist * ry * TWO_PI;
+  let phi = dist * rz * PI;
+  let rad0 = dist * rx;
+  vo = vec4<f32>(vin.x + D(5) * rad0 * cos(sigma) * cos(phi), vin.y + D(6) * rad0 * cos(sigma) * sin(phi),
+    vin.z + D(7) * rad0 * sin(sigma), vin.w + D(8) * dist * rc);
+} else if (bt == 1) {
+  if (!(vin.x == 0.0 && vin.y == 0.0 && vin.z == 0.0)) {
+    let r_in = length(vin.xyz);
+    let aa = D(6) * dist + alpha * dist / sqrt(r_max);
+    let bb = D(7) * dist;
+    let sigma = asin(clamp(vin.z / r_in, -1.0, 1.0)) + bb * rz;
+    let phi = atan2(vin.y, vin.x) + aa * ry;
+    let r = r_in + D(5) * rx * dist;
+    vo = vec4<f32>(r * cos(sigma) * cos(phi), r * cos(sigma) * sin(phi), r * sin(sigma), vin.w + D(8) * rc * dist);
+  }
+} else {
+  var coeff = dist;
+  if (r_max > EPSILON) { coeff = dist + alpha * (post_falloff3_log_map(dist) - dist); }
+  vo = vin + vec4<f32>(post_falloff3_log_map(D(5)) * post_falloff3_log_scale(rx), post_falloff3_log_map(D(6)) * post_falloff3_log_scale(ry),
+    post_falloff3_log_map(D(7)) * post_falloff3_log_scale(rz), post_falloff3_log_map(D(8)) * post_falloff3_log_scale(rc)) * coeff;
+}
+v.x = vo.x * AMOUNT;
+v.y = vo.y * AMOUNT;
+v.z = vo.z * AMOUNT;
+v.color = abs(fmod(vo.w, 1.0));",
+    },
+    VarDef {
+        name: "post_flatten",
+        params: &[],
+        kind: VarKind::Post,
+        is_3d: true,
+        apply: |_, _, _a, v, amount| {
+            v.z *= 1.0 - java_min(amount.abs(), 1.0);
+        },
+        prepare: None,
+        wgsl: "v.z = v.z * (1.0 - min(abs(AMOUNT), 1.0));",
+    },
+    VarDef {
+        name: "post_heat",
+        params: &[
+            ParamDef::new("theta_period", 0.0),
+            ParamDef::new("theta_phase", 0.0),
+            ParamDef::new("theta_amp", 0.0),
+            ParamDef::new("phi_period", 0.0),
+            ParamDef::new("phi_phase", 0.0),
+            ParamDef::new("phi_amp", 0.0),
+            ParamDef::new("r_period", 0.0),
+            ParamDef::new("r_phase", 0.0),
+            ParamDef::new("r_amp", 0.0),
+        ],
+        kind: VarKind::Post,
+        is_3d: true,
+        apply: |d, _, _a, v, amount| {
+            let inv = |p: f64| if p == 0.0 { 0.0 } else { 1.0 / p };
+            let (tx, px, rx) = (inv(d[0]), inv(d[3]), inv(d[6]));
+            let (at, bt, ct) = (amount * d[2], M_2PI * tx, d[1] * tx);
+            let (ap, bp, cp) = (amount * d[5], M_2PI * px, d[4] * px);
+            let (ar, br, cr) = (amount * d[8], M_2PI * rx, d[7] * rx);
+            let mut r = (sqr(v.x) + sqr(v.y) + sqr(v.z)).sqrt();
+            let atant = v.y.atan2(v.x);
+            r += ar * (br * r + cr).sin();
+            let (sint, cost) = (at * (bt * r + ct).sin() + atant).sin_cos();
+            let acosp = if r != 0.0 { v.z / r } else { 0.0 };
+            let (sinp, cosp) = (ap * (bp * r + cp).sin() + acosp.acos()).sin_cos();
+            v.x = r * cost * sinp;
+            v.y = r * sint * sinp;
+            v.z = r * cosp;
+        },
+        prepare: None,
+        wgsl: "var tx = 0.0;
+if (D(0) != 0.0) { tx = 1.0 / D(0); }
+var px = 0.0;
+if (D(3) != 0.0) { px = 1.0 / D(3); }
+var rx = 0.0;
+if (D(6) != 0.0) { rx = 1.0 / D(6); }
+var r = sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
+let atant = atan2(v.y, v.x);
+r += AMOUNT * D(8) * sin(TWO_PI * rx * r + D(7) * rx);
+let th = AMOUNT * D(2) * sin(TWO_PI * tx * r + D(1) * tx) + atant;
+var acosp = 0.0;
+if (r != 0.0) { acosp = v.z / r; }
+let ph = AMOUNT * D(5) * sin(TWO_PI * px * r + D(4) * px) + acos(acosp);
+v.x = r * cos(th) * sin(ph);
+v.y = r * sin(th) * sin(ph);
+v.z = r * cos(ph);",
     },
 ];
