@@ -699,6 +699,30 @@ fn rsquares_segment(level: i32, k: i64) -> [f64; 4] {
     }
 }
 
+/// `ScramblyFunc.mx_randflip`: pseudo random shuffle of `mx[idxmin..idxmax]`.
+fn scrambly_randflip(idxmin: i32, idxmax: i32, seed: i32, mx: &mut [i32]) {
+    let mut prn: i32 = 1;
+    let mut j = idxmin;
+    loop {
+        prn = prn.wrapping_mul(1103515245).wrapping_add(12345);
+        prn = (prn as u32 & 0xFFFF0000) as i32 | ((prn << 8) & 0xFF00) | ((prn >> 8) & 0x00FF);
+        prn = if prn & 4 != 0 { prn.wrapping_sub(seed) } else { prn ^ seed };
+        prn = if prn < 0 { prn.wrapping_neg() } else { prn };
+        let mut ridx = 1 + j;
+        if idxmax > ridx {
+            ridx += prn % (idxmax - ridx);
+        } else {
+            break;
+        }
+        // Java would fail with an index error for prn = Integer.MIN_VALUE
+        if ridx < 0 || j < 0 || ridx as usize >= mx.len() || j as usize >= mx.len() {
+            break;
+        }
+        mx.swap(ridx as usize, j as usize);
+        j += 1;
+    }
+}
+
 /// In-place `Complex` operation.
 type ComplexOp = fn(&mut Complex);
 
@@ -5898,6 +5922,200 @@ let ex = exp(PI * a.x / s);
 v.x += AMOUNT * ex * cos(PI * a.y / s);
 v.y += AMOUNT * ex * sin(PI * a.y / s);
 if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "scrambly",
+        params: &[ParamDef::int("l", 3.0, 3.0, 25.0), ParamDef::int("seed", 51.0, 0.0, 1000.0), ParamDef::int("byrows", 0.0, 0.0, 1.0), ParamDef::new("cellsize", 0.1)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            // d = [l, seed, byrows, cellsize, current_l, cella, cellainv, mzcella, permutation...]
+            let cl = d[4] as i32;
+            let (mut vx, mut vy) = ((a.x + d[7]) * d[6], (a.y + d[7]) * d[6]);
+            let (ix, iy) = (vx.floor() as i32, vy.floor() as i32);
+            if cl <= 0 || ix < 0 || ix >= cl || iy < 0 || iy >= cl {
+                v.x += amount * a.x;
+                v.y += amount * a.y;
+            } else {
+                vx -= ix as f64;
+                vy -= iy as f64;
+                let swp = d[8 + (ix + cl * iy) as usize] as i32;
+                vx += (swp % cl) as f64;
+                vy += (swp / cl) as f64;
+                vx = vx * d[5] - d[7];
+                vy = vy * d[5] - d[7];
+                v.x += amount * vx;
+                v.y += amount * vy;
+            }
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: Some(|p, _| {
+            let (l, seed, byrows) = (ftoi(p[0]), ftoi(p[1]), ftoi(p[2]));
+            let cellsize = limit_value(p[3], 1.0e-20, 1.0e20);
+            let ll = (l * l.signum()).clamp(3, 25);
+            let ll2 = ll * ll;
+            let mut mx = vec![0i32; 626];
+            if (0..=50).contains(&seed) {
+                for j in 0..ll2 {
+                    mx[j as usize] = (seed + j + 1) % ll2;
+                }
+            } else {
+                for j in 0..ll2 {
+                    mx[j as usize] = j;
+                }
+                if byrows == 0 {
+                    scrambly_randflip(0, ll2, seed, &mut mx);
+                } else {
+                    for j in 0..ll {
+                        scrambly_randflip(ll * j, ll * (1 + j), seed.wrapping_add(j), &mut mx);
+                    }
+                }
+            }
+            let cella = cellsize / ll as f64;
+            let mut d = vec![l as f64, seed as f64, byrows as f64, cellsize, ll as f64, cella, 1.0 / cella, 0.5 * cellsize];
+            d.extend(mx[..ll2 as usize].iter().map(|&m| m as f64));
+            d
+        }),
+        wgsl: "let cl = i32(D(4));
+var vx = (a.x + D(7)) * D(6);
+var vy = (a.y + D(7)) * D(6);
+let ix = i32(floor(vx));
+let iy = i32(floor(vy));
+if (cl <= 0 || ix < 0 || ix >= cl || iy < 0 || iy >= cl) {
+  v.x += AMOUNT * a.x;
+  v.y += AMOUNT * a.y;
+} else {
+  vx -= f32(ix);
+  vy -= f32(iy);
+  let swp = i32(prm[base + 8u + u32(ix + cl * iy)]);
+  vx += f32(swp % cl);
+  vy += f32(swp / cl);
+  v.x += AMOUNT * (vx * D(5) - D(7));
+  v.y += AMOUNT * (vy * D(5) - D(7));
+}
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "screw",
+        params: &[ParamDef::new("pitch", 2.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let r = (a.x * a.x + a.y * a.y).sqrt();
+            let nt = a.y.atan2(a.x) + r * d[0];
+            v.x += amount * r * nt.cos();
+            v.y += amount * r * nt.sin();
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "let r = sqrt(a.x * a.x + a.y * a.y);
+let nt = atan2(a.y, a.x) + r * D(0);
+v.x += AMOUNT * r * cos(nt);
+v.y += AMOUNT * r * sin(nt);
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "scry2",
+        params: &[ParamDef::int("sides", 4.0, 1.0, 50.0), ParamDef::range("star", 0.0, -1.0, 1.0), ParamDef::range("circle", 0.0, -1.0, 1.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            // d = [sides, star, circle, sina, cosa, sins, coss, sinc, cosc]
+            let (mut xrt, mut yrt) = (a.x, a.y);
+            let mut r2 = xrt * d[6] + yrt.abs() * d[5];
+            let circle = (sqr(xrt) + sqr(yrt)).sqrt();
+            let n = (d[0] as i32 - 1).max(0);
+            for _ in 0..n {
+                (xrt, yrt) = (xrt * d[4] - yrt * d[3], xrt * d[3] + yrt * d[4]);
+                r2 = java_max(r2, xrt * d[6] + yrt.abs() * d[5]);
+            }
+            r2 = r2 * d[8] + circle * d[7];
+            let r1 = r2;
+            r2 = if n > 1 { sqr(r2) } else { r2.abs() * r2 };
+            let dd = r1 * (r2 + 1.0 / amount);
+            if dd == 0.0 {
+                return;
+            }
+            let r = 1.0 / dd;
+            v.x += a.x * r;
+            v.y += a.y * r;
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: Some(|p, _| {
+            let sides = limit_value(ftoi(p[0]), 1, 50) as f64;
+            let (star, circle) = (limit_value(p[1], -1.0, 1.0), limit_value(p[2], -1.0, 1.0));
+            let a = M_2PI / sides;
+            let s = -M_PI_2 * star;
+            let c = M_PI_2 * circle;
+            vec![sides, star, circle, a.sin(), a.cos(), s.sin(), s.cos(), c.sin(), c.cos()]
+        }),
+        wgsl: "var xrt = a.x;
+var yrt = a.y;
+var r2 = xrt * D(6) + abs(yrt) * D(5);
+let circle = sqrt(xrt * xrt + yrt * yrt);
+let n = max(i32(D(0)) - 1, 0);
+for (var i = 0; i < n; i++) {
+  let swp = xrt * D(4) - yrt * D(3);
+  yrt = xrt * D(3) + yrt * D(4);
+  xrt = swp;
+  r2 = max(r2, xrt * D(6) + abs(yrt) * D(5));
+}
+r2 = r2 * D(8) + circle * D(7);
+let r1 = r2;
+if (n > 1) { r2 = r2 * r2; } else { r2 = abs(r2) * r2; }
+let dd = r1 * (r2 + 1.0 / AMOUNT);
+if (dd != 0.0) {
+  v.x += a.x / dd;
+  v.y += a.y / dd;
+  if (PRESERVE_Z) { v.z += AMOUNT * a.z; }
+}",
+    },
+    simple(
+        "scry_3D",
+        true,
+        |_, _, a, v, amount| {
+            let inv = 1.0 / (amount + SMALL_EPSILON);
+            let t = sqr(a.x) + sqr(a.y) + sqr(a.z);
+            let r = 1.0 / (t.sqrt() * (t + inv));
+            v.x += a.x * r;
+            v.y += a.y * r;
+            let fz = if a.z != 0.0 { a.z } else { a.y.atan2(a.x) };
+            v.z += fz * r;
+        },
+        "let inv = 1.0 / (AMOUNT + EPS);
+let t = a.x * a.x + a.y * a.y + a.z * a.z;
+let r = 1.0 / (sqrt(t) * (t + inv));
+v.x += a.x * r;
+v.y += a.y * r;
+var fz = a.z;
+if (fz == 0.0) { fz = atan2(a.y, a.x); }
+v.z += fz * r;",
+    ),
+    VarDef {
+        name: "seashell3D",
+        params: &[ParamDef::new("final_radius", 0.25), ParamDef::new("height", 3.5), ParamDef::new("inner_radius", 0.4), ParamDef::int("nSpirals", 3.0, 1.0, 20.0)],
+        kind: VarKind::Normal,
+        is_3d: true,
+        apply: |d, ctx, _a, v, amount| {
+            let t = M_2PI * ctx.random();
+            let s = M_2PI * ctx.random();
+            let n = (d[3] as i32) as f64;
+            let f = d[0] * (1.0 - t / M_2PI);
+            let x = f * (n * t).cos() * (1.0 + s.cos()) + d[2] * (n * t).cos();
+            let y = f * (n * t).sin() * (1.0 + s.cos()) + d[2] * (n * t).sin();
+            let z = d[1] * t / M_2PI + f * s.sin();
+            v.x += x * amount;
+            v.y += y * amount;
+            v.z += z * amount;
+        },
+        prepare: None,
+        wgsl: "let t = TWO_PI * rnd();
+let s = TWO_PI * rnd();
+let n = f32(i32(D(3)));
+let f = D(0) * (1.0 - t / TWO_PI);
+v.x += (f * cos(n * t) * (1.0 + cos(s)) + D(2) * cos(n * t)) * AMOUNT;
+v.y += (f * sin(n * t) * (1.0 + cos(s)) + D(2) * sin(n * t)) * AMOUNT;
+v.z += (D(1) * t / TWO_PI + f * sin(s)) * AMOUNT;",
     },
     VarDef {
         name: "post_ztranslate_wf",
