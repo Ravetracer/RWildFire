@@ -6118,6 +6118,526 @@ v.y += (f * sin(n * t) * (1.0 + cos(s)) + D(2) * sin(n * t)) * AMOUNT;
 v.z += (D(1) * t / TWO_PI + f * sin(s)) * AMOUNT;",
     },
     VarDef {
+        name: "sec2_bs",
+        params: &[ParamDef::new("x1", 1.25), ParamDef::new("x2", 0.75), ParamDef::new("y1", 1.5), ParamDef::new("y2", 0.5)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let (s, c) = ((a.x * d[0]).sin(), (a.x * d[1]).cos());
+            let (sh, ch) = ((a.y * d[2]).sinh(), (a.y * d[3]).cosh());
+            let dd = (2.0 * a.x).cos() + (2.0 * a.y).cosh();
+            if dd == 0.0 {
+                return;
+            }
+            let den = 2.0 / dd;
+            v.x += amount * den * c * ch;
+            v.y += amount * den * s * sh;
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "let dd = cos(2.0 * a.x) + cosh(2.0 * a.y);
+if (dd != 0.0) {
+  let den = 2.0 / dd;
+  v.x += AMOUNT * den * cos(a.x * D(1)) * cosh(a.y * D(3));
+  v.y += AMOUNT * den * sin(a.x * D(0)) * sinh(a.y * D(2));
+  if (PRESERVE_Z) { v.z += AMOUNT * a.z; }
+}",
+    },
+    VarDef {
+        name: "secant",
+        params: &[],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |_, ctx, a, v, amount| {
+            let cr = (amount * (a.x * a.x + a.y * a.y).sqrt()).cos();
+            if cr.abs() > 1.0e-6 {
+                v.x += amount * a.x;
+                v.y += amount / cr;
+            }
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "let cr = cos(AMOUNT * sqrt(a.x * a.x + a.y * a.y));
+if (abs(cr) > 1.0e-6) {
+  v.x += AMOUNT * a.x;
+  v.y += AMOUNT / cr;
+}
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "sech2_bs",
+        params: &[ParamDef::new("x1", 1.25), ParamDef::new("x2", 0.75), ParamDef::new("y1", 1.5), ParamDef::new("y2", 0.75)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let (s, c) = ((a.y * d[2]).sin(), (a.y * d[3]).cos());
+            let (sh, ch) = ((a.x * d[0]).sinh(), (a.x * d[1]).cosh());
+            let dd = (2.0 * a.y).cos() + (2.0 * a.x).cosh();
+            if dd == 0.0 {
+                return;
+            }
+            let den = 2.0 / dd;
+            v.x += amount * den * c * ch;
+            v.y -= amount * den * s * sh;
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "let dd = cos(2.0 * a.y) + cosh(2.0 * a.x);
+if (dd != 0.0) {
+  let den = 2.0 / dd;
+  v.x += AMOUNT * den * cos(a.y * D(3)) * cosh(a.x * D(1));
+  v.y -= AMOUNT * den * sin(a.y * D(2)) * sinh(a.x * D(0));
+  if (PRESERVE_Z) { v.z += AMOUNT * a.z; }
+}",
+    },
+    simple(
+        "sechq",
+        true,
+        |_, _, a, v, amount| {
+            let av = a.y.hypot(a.z);
+            let (s, c) = (av.sin(), av.cos());
+            let (sh, ch) = (a.x.sinh(), a.x.cosh());
+            let ni = amount / (sqr(a.x) + sqr(a.y) + sqr(a.z));
+            let cc = ni * sh * s / av;
+            v.x += ch * c * ni;
+            v.y -= cc * a.y;
+            v.z -= cc * a.z;
+        },
+        "let av = length(vec2<f32>(a.y, a.z));
+let ni = AMOUNT / (a.x * a.x + a.y * a.y + a.z * a.z);
+let cc = ni * sinh(a.x) * sin(av) / av;
+v.x += cosh(a.x) * cos(av) * ni;
+v.y -= cc * a.y;
+v.z -= cc * a.z;",
+    ),
+    simple(
+        "secq",
+        true,
+        |_, _, a, v, amount| {
+            let av = a.y.hypot(a.z);
+            let (s, c) = ((-a.x).sin(), (-a.x).cos());
+            let (sh, ch) = (av.sinh(), av.cosh());
+            let ni = amount / (sqr(a.x) + sqr(a.y) + sqr(a.z));
+            let cc = ni * s * sh / av;
+            v.x += c * ch * ni;
+            v.y -= cc * a.y;
+            v.z -= cc * a.z;
+        },
+        "let av = length(vec2<f32>(a.y, a.z));
+let ni = AMOUNT / (a.x * a.x + a.y * a.y + a.z * a.z);
+let cc = ni * sin(-a.x) * sinh(av) / av;
+v.x += cos(-a.x) * cosh(av) * ni;
+v.y -= cc * a.y;
+v.z -= cc * a.z;",
+    ),
+    VarDef {
+        name: "shape_warp",
+        params: &[
+            ParamDef::int("shape", 0.0, 0.0, 9.0),
+            ParamDef::new("size", 1.0),
+            ParamDef::new("aspect", 1.0),
+            ParamDef::new("centerX", 0.0),
+            ParamDef::new("centerY", 0.0),
+            ParamDef::new("innerRadius", 0.0),
+            ParamDef::new("outerRadius", 1.0),
+            ParamDef::int("warpMode", 0.0, 0.0, 5.0),
+            ParamDef::new("warpAmount", M_PI),
+            ParamDef::new("warpAmountX", 1.0),
+            ParamDef::new("warpAmountY", 1.0),
+            ParamDef::new("warpCenterX", 0.0),
+            ParamDef::new("warpCenterY", 0.0),
+            ParamDef::new("warpCurve", 1.0),
+            ParamDef::int("warpInvert", 0.0, 0.0, 1.0),
+            ParamDef::int("flowerPetals", 5.0, 2.0, 20.0),
+            ParamDef::int("starPoints", 5.0, 3.0, 20.0),
+            ParamDef::range("starDepth", 0.5, 0.0, 1.0),
+            ParamDef::new("cloudAmplitude", 0.2),
+            ParamDef::new("cloudFrequency", 5.0),
+        ],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            // d = [shape, size, aspect, centerX, centerY, innerRadius, outerRadius, warpMode, warpAmount,
+            //      warpAmountX, warpAmountY, warpCenterX, warpCenterY, warpCurve, warpInvert, flowerPetals,
+            //      starPoints, starDepth, cloudAmplitude, cloudFrequency]
+            let shape = d[0] as i32;
+            let size = d[1];
+            let aspect = if shape == 1 || shape == 2 || shape == 3 { d[2] } else { 1.0 };
+            let inner = java_max(0.0, d[5]);
+            let outer = java_max(inner + 1e-9, d[6]);
+            let curve = java_max(1e-6, d[13]);
+            let (rx, ry) = (a.x - d[3], a.y - d[4]);
+            let hw = java_max(1e-9, size * aspect * 0.5);
+            let hh = java_max(1e-9, size * 0.5);
+            let rr = java_max(1e-9, size * 0.5);
+            let radius = (rx * rx + ry * ry).sqrt();
+            let mut angle = 0.0;
+            if radius > 1e-9 {
+                angle = ry.atan2(rx);
+                while angle < 0.0 {
+                    angle += M_2PI;
+                }
+            }
+            let polygon = |n: f64, half: f64| {
+                if radius < 1e-9 {
+                    return 0.0;
+                }
+                let sector = M_2PI / n;
+                let diff = fmod(angle, sector) - half;
+                let boundary = rr * half.cos() / java_max(1e-9, diff.cos().abs());
+                radius / java_max(1e-9, boundary)
+            };
+            let dist = match shape {
+                2 => ((rx / hw) * (rx / hw) + (ry / hh) * (ry / hh)).sqrt(),
+                3 => (rx / hw).abs() + (ry / hh).abs(),
+                4 => polygon(3.0, M_PI / 3.0),
+                5 => polygon(5.0, M_PI / 5.0),
+                6 => polygon(6.0, M_PI / 6.0),
+                7 => {
+                    if radius < 1e-9 {
+                        0.0
+                    } else {
+                        radius / java_max(1e-9, rr * (d[15] * angle).cos().abs())
+                    }
+                }
+                8 => {
+                    if radius < 1e-9 {
+                        0.0
+                    } else {
+                        let k = d[16];
+                        let r_inner = rr * d[17];
+                        let apv = M_PI / k;
+                        let si = (angle / apv).floor() as i32;
+                        let t = (angle - si as f64 * apv) / apv;
+                        let tn = 2.0 * (t - 0.5).abs();
+                        let b = if si % 2 == 0 { r_inner + (rr - r_inner) * (1.0 - tn) } else { r_inner + (rr - r_inner) * tn };
+                        radius / java_max(1e-9, b)
+                    }
+                }
+                9 => {
+                    if radius < 1e-9 {
+                        0.0
+                    } else {
+                        let f = d[19];
+                        let noise = 0.6 * (f * angle).sin() + 0.3 * (2.1 * f * angle + 1.23).sin() + 0.1 * (4.3 * f * angle + 4.56).sin();
+                        let b = java_max(rr * 0.1, rr * (1.0 + d[18] * noise));
+                        radius / b
+                    }
+                }
+                _ => java_max((rx / hw).abs(), (ry / hh).abs()),
+            };
+            let range = outer - inner;
+            let mut wf = if dist <= inner {
+                0.0
+            } else if dist >= outer {
+                1.0
+            } else if range > 1e-9 {
+                (dist - inner) / range
+            } else {
+                1.0
+            };
+            wf = wf.powf(curve);
+            if d[14] != 0.0 {
+                wf = 1.0 - wf;
+            }
+            let (ew, ewx, ewy) = (wf * d[8], wf * d[9], wf * d[10]);
+            let (wx, wy) = (a.x - d[11], a.y - d[12]);
+            let (mut ox, mut oy) = (wx, wy);
+            match d[7] as i32 {
+                0 => {
+                    let (s, c) = (ew.sin(), ew.cos());
+                    (ox, oy) = (wx * c - wy * s, wx * s + wy * c);
+                }
+                1 => {
+                    let f = java_max(1e-9, 1.0 + ew);
+                    (ox, oy) = (wx * f, wy * f);
+                }
+                2 => {
+                    let an = wy.atan2(wx) + ew;
+                    let r = (wx * wx + wy * wy).sqrt();
+                    (ox, oy) = (r * an.cos(), r * an.sin());
+                }
+                3 => (ox, oy) = (wx * java_max(1e-9, 1.0 + ewx), wy * java_max(1e-9, 1.0 + ewy)),
+                4 => {
+                    let an = wy.atan2(wx);
+                    let r = (wx * wx + wy * wy).sqrt();
+                    if r > 1e-9 {
+                        let p = java_max(-5.0, java_min(5.0, 1.0 - ew));
+                        if (p - 1.0).abs() > 1e-9 {
+                            let nr = r.powf(p);
+                            (ox, oy) = (nr * an.cos(), nr * an.sin());
+                        }
+                    }
+                }
+                5 => (ox, oy) = (wx + ewx * wy, wy + ewy * wx),
+                _ => {}
+            }
+            v.x = (ox + d[11]) * amount;
+            v.y = (oy + d[12]) * amount;
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: Some(|p, _| {
+            let mut d = p.to_vec();
+            d[0] = (p[0] as i32).clamp(0, 9) as f64;
+            d[1] = java_max(1e-9, p[1]);
+            d[2] = java_max(1e-9, p[2]);
+            d[5] = java_max(0.0, p[5]);
+            d[6] = java_max(d[5], p[6]);
+            d[7] = (p[7] as i32).clamp(0, 5) as f64;
+            d[13] = java_max(1e-6, p[13]);
+            d[14] = if p[14] >= 0.5 { 1.0 } else { 0.0 };
+            d[15] = (p[15] as i32).max(2) as f64;
+            d[16] = (p[16] as i32).max(3) as f64;
+            d[17] = java_max(0.0, java_min(1.0, p[17]));
+            d[18] = java_max(0.0, p[18]);
+            d[19] = java_max(1e-6, p[19]);
+            d
+        }),
+        wgsl: "fn shape_warp_polygon(radius: f32, angle: f32, rr: f32, n: f32, half: f32) -> f32 {
+  if (radius < 1e-9) { return 0.0; }
+  let diff = fmod(angle, TWO_PI / n) - half;
+  return radius / max(1e-9, rr * cos(half) / max(1e-9, abs(cos(diff))));
+}
+@body
+let shape = i32(D(0));
+let size = D(1);
+var aspect = 1.0;
+if (shape == 1 || shape == 2 || shape == 3) { aspect = D(2); }
+let inner = max(0.0, D(5));
+let outer = max(inner + 1e-9, D(6));
+let rel = vec2<f32>(a.x - D(3), a.y - D(4));
+let hw = max(1e-9, size * aspect * 0.5);
+let hh = max(1e-9, size * 0.5);
+let rr = max(1e-9, size * 0.5);
+let radius = length(rel);
+var angle = 0.0;
+if (radius > 1e-9) {
+  angle = atan2(rel.y, rel.x);
+  if (angle < 0.0) { angle += TWO_PI; }
+}
+var dist = max(abs(rel.x / hw), abs(rel.y / hh));
+if (shape == 2) {
+  dist = length(vec2<f32>(rel.x / hw, rel.y / hh));
+} else if (shape == 3) {
+  dist = abs(rel.x / hw) + abs(rel.y / hh);
+} else if (shape == 4) {
+  dist = shape_warp_polygon(radius, angle, rr, 3.0, PI / 3.0);
+} else if (shape == 5) {
+  dist = shape_warp_polygon(radius, angle, rr, 5.0, PI / 5.0);
+} else if (shape == 6) {
+  dist = shape_warp_polygon(radius, angle, rr, 6.0, PI / 6.0);
+} else if (shape == 7) {
+  dist = 0.0;
+  if (radius >= 1e-9) { dist = radius / max(1e-9, rr * abs(cos(D(15) * angle))); }
+} else if (shape == 8) {
+  dist = 0.0;
+  if (radius >= 1e-9) {
+    let r_inner = rr * D(17);
+    let apv = PI / D(16);
+    let si = i32(floor(angle / apv));
+    let tn = 2.0 * abs((angle - f32(si) * apv) / apv - 0.5);
+    var b = r_inner + (rr - r_inner) * tn;
+    if (si % 2 == 0) { b = r_inner + (rr - r_inner) * (1.0 - tn); }
+    dist = radius / max(1e-9, b);
+  }
+} else if (shape == 9) {
+  dist = 0.0;
+  if (radius >= 1e-9) {
+    let f = D(19);
+    let noise = 0.6 * sin(f * angle) + 0.3 * sin(2.1 * f * angle + 1.23) + 0.1 * sin(4.3 * f * angle + 4.56);
+    dist = radius / max(rr * 0.1, rr * (1.0 + D(18) * noise));
+  }
+}
+var wf = 1.0;
+if (dist <= inner) { wf = 0.0; } else if (dist < outer && outer - inner > 1e-9) { wf = (dist - inner) / (outer - inner); }
+wf = pow(wf, max(1e-6, D(13)));
+if (D(14) != 0.0) { wf = 1.0 - wf; }
+let ew = wf * D(8);
+let ewx = wf * D(9);
+let ewy = wf * D(10);
+let w = vec2<f32>(a.x - D(11), a.y - D(12));
+var o = w;
+let mode = i32(D(7));
+if (mode == 0) {
+  o = vec2<f32>(w.x * cos(ew) - w.y * sin(ew), w.x * sin(ew) + w.y * cos(ew));
+} else if (mode == 1) {
+  o = w * max(1e-9, 1.0 + ew);
+} else if (mode == 2) {
+  let an = atan2(w.y, w.x) + ew;
+  o = length(w) * vec2<f32>(cos(an), sin(an));
+} else if (mode == 3) {
+  o = vec2<f32>(w.x * max(1e-9, 1.0 + ewx), w.y * max(1e-9, 1.0 + ewy));
+} else if (mode == 4) {
+  let r = length(w);
+  if (r > 1e-9) {
+    let p = clamp(1.0 - ew, -5.0, 5.0);
+    if (abs(p - 1.0) > 1e-9) {
+      let an = atan2(w.y, w.x);
+      o = pow(r, p) * vec2<f32>(cos(an), sin(an));
+    }
+  }
+} else if (mode == 5) {
+  o = vec2<f32>(w.x + ewx * w.y, w.y + ewy * w.x);
+}
+v.x = (o.x + D(11)) * AMOUNT;
+v.y = (o.y + D(12)) * AMOUNT;
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "shift",
+        params: &[ParamDef::new("shift_x", 0.10), ParamDef::new("shift_y", 0.06), ParamDef::range("angle", 12.25, -180.0, 180.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let ang = d[2] / 180.0 * M_PI;
+            let (sn, cs) = (ang.sin(), ang.cos());
+            v.x += amount * (a.x + cs * d[0] - sn * d[1]);
+            v.y += amount * (a.y - cs * d[1] - sn * d[0]);
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "let ang = D(2) / 180.0 * PI;
+let sn = sin(ang);
+let cs = cos(ang);
+v.x += AMOUNT * (a.x + cs * D(0) - sn * D(1));
+v.y += AMOUNT * (a.y - cs * D(1) - sn * D(0));
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "shredded",
+        params: &[
+            ParamDef::new("x1", 1.0),
+            ParamDef::new("x2", 3.0),
+            ParamDef::new("x3", 1.0),
+            ParamDef::new("x_blur_amount", 0.1),
+            ParamDef::new("y1", 1.0),
+            ParamDef::new("y2", 3.0),
+            ParamDef::new("y3", 1.0),
+            ParamDef::new("y_blur_amount", 0.1),
+            ParamDef::new("z1", 1.0),
+            ParamDef::new("z2", 3.0),
+            ParamDef::new("z3", 1.0),
+            ParamDef::new("z_blur_amount", 0.1),
+            ParamDef::int("type", 0.0, 0.0, 2.0),
+            ParamDef::int("blur", 0.0, 0.0, 1.0),
+        ],
+        kind: VarKind::Normal,
+        is_3d: true,
+        apply: |d, ctx, a, v, amount| {
+            // d = [x1, x2, x3, x_blur, y1, y2, y3, y_blur, z1, z2, z3, z_blur, type, blur]
+            let ty = d[12] as i32;
+            let sx = (d[0] * (d[1] * a.x).floor()).sin();
+            let cy = (d[4] * (d[5] * a.y).floor()).cos();
+            let sz = (d[8] * (d[9] * a.z).floor()).sin();
+            let (fx, fy, fz) = match ty {
+                0 => (sx + (d[0] * (d[1] * a.y).floor()).cos(), cy + (d[4] * (d[5] * a.x).floor()).sin(), sz + (d[8] * (d[9] * a.z).floor()).cos()),
+                _ => (sx, cy, sz),
+            };
+            // multipliers of the x / y terms and of the z blur term
+            let (mx, my, mz) = match ty {
+                2 => (a.x, a.y, 1.0),
+                1 => (a.y, a.x, 1.0),
+                _ => (a.y, a.x, a.z),
+            };
+            if d[13] != 0.0 {
+                v.x += amount * d[2] * fx + (d[3] * (M_2PI * ctx.random()).sin()) * mx;
+                v.y += amount * d[6] * fy + (d[7] * (M_2PI * ctx.random()).sin()) * my;
+                v.z += amount * d[10] * fz + (d[11] * (M_2PI * ctx.random()).sin()) * mz;
+            } else {
+                v.x += amount * d[2] * fx * mx;
+                v.y += amount * d[6] * fy * my;
+                v.z += amount * d[10] * fz * a.z;
+            }
+        },
+        prepare: Some(|p, _| {
+            let mut d = p.to_vec();
+            d[12] = limit_value(p[12], 0.0, 2.0) as i32 as f64;
+            d[13] = limit_value(p[13], 0.0, 1.0) as i32 as f64;
+            d
+        }),
+        wgsl: "let ty = i32(D(12));
+let sx = sin(D(0) * floor(D(1) * a.x));
+let cy = cos(D(4) * floor(D(5) * a.y));
+let sz = sin(D(8) * floor(D(9) * a.z));
+var f = vec3<f32>(sx, cy, sz);
+var m = vec3<f32>(a.y, a.x, a.z);
+if (ty == 0) {
+  f += vec3<f32>(cos(D(0) * floor(D(1) * a.y)), sin(D(4) * floor(D(5) * a.x)), cos(D(8) * floor(D(9) * a.z)));
+} else if (ty == 1) {
+  m = vec3<f32>(a.y, a.x, 1.0);
+} else {
+  m = vec3<f32>(a.x, a.y, 1.0);
+}
+if (D(13) != 0.0) {
+  v.x += AMOUNT * D(2) * f.x + (D(3) * sin(TWO_PI * rnd())) * m.x;
+  v.y += AMOUNT * D(6) * f.y + (D(7) * sin(TWO_PI * rnd())) * m.y;
+  v.z += AMOUNT * D(10) * f.z + (D(11) * sin(TWO_PI * rnd())) * m.z;
+} else {
+  v.x += AMOUNT * D(2) * f.x * m.x;
+  v.y += AMOUNT * D(6) * f.y * m.y;
+  v.z += AMOUNT * D(10) * f.z * a.z;
+}",
+    },
+    VarDef {
+        name: "shredlin",
+        params: &[ParamDef::new("xdistance", 1.0), ParamDef::range("xwidth", 0.5, -1.0, 1.0), ParamDef::new("ydistance", 1.0), ParamDef::range("ywidth", 0.5, -1.0, 1.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let (sxd, sxw, syd, syw) = (d[0], d[1], d[2], d[3]);
+            let xpos = if a.x < 0.0 { 1.0 } else { 0.0 };
+            let ypos = if a.y < 0.0 { 1.0 } else { 0.0 };
+            let (xr, yr) = (a.x / sxd, a.y / syd);
+            let (xi, yi) = ((xr as i32) as f64, (yr as i32) as f64);
+            v.x = amount * sxd * ((xr - xi) * sxw + xi + (0.5 - xpos) * (1.0 - sxw));
+            v.y = amount * syd * ((yr - yi) * syw + yi + (0.5 - ypos) * (1.0 - syw));
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: Some(|p, _| vec![p[0], limit_value(p[1], -1.0, 1.0), p[2], limit_value(p[3], -1.0, 1.0)]),
+        wgsl: "var xpos = 0.0;
+if (a.x < 0.0) { xpos = 1.0; }
+var ypos = 0.0;
+if (a.y < 0.0) { ypos = 1.0; }
+let xr = a.x / D(0);
+let yr = a.y / D(2);
+let xi = trunc(xr);
+let yi = trunc(yr);
+v.x = AMOUNT * D(0) * ((xr - xi) * D(1) + xi + (0.5 - xpos) * (1.0 - D(1)));
+v.y = AMOUNT * D(2) * ((yr - yi) * D(3) + yi + (0.5 - ypos) * (1.0 - D(3)));
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "shredrad",
+        params: &[ParamDef::new("n", 4.0), ParamDef::range("width", 0.5, -1.0, 1.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            // d = [n, width, alpha]
+            let (sa, sw) = (d[2], d[1]);
+            let ang = a.atan_yx();
+            let rad = a.rad();
+            let xang = (ang + 3.0 * M_PI + sa / 2.0) / sa;
+            let xi = (xang as i32) as f64;
+            let zang = ((xang - xi) * sw + xi) * sa - M_PI - sa / 2.0 * sw;
+            v.x += amount * rad * zang.cos();
+            v.y += amount * rad * zang.sin();
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: Some(|p, _| {
+            let n = if p[0] == 0.0 { EPSILON } else { p[0] };
+            vec![n, limit_value(p[1], -1.0, 1.0), M_2PI / n]
+        }),
+        wgsl: "let sa = D(2);
+let sw = D(1);
+let rad = sqrt(a.x * a.x + a.y * a.y);
+let xang = (atan2(a.y, a.x) + 3.0 * PI + sa / 2.0) / sa;
+let xi = trunc(xang);
+let zang = ((xang - xi) * sw + xi) * sa - PI - sa / 2.0 * sw;
+v.x += AMOUNT * rad * cos(zang);
+v.y += AMOUNT * rad * sin(zang);
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
         name: "post_ztranslate_wf",
         params: &[],
         kind: VarKind::Post,
