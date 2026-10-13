@@ -65,6 +65,8 @@ struct Filt { off: u32, size: u32, half: i32, sharpen: u32, radius: f32, ind: ve
 @group(0) @binding(3) var out_tex: texture_storage_2d<rgba8unorm, write>;
 // Channel mixer curves (9 x MIX_LUT samples over 0..25600), see rwf_core::mixer.
 @group(0) @binding(4) var<storage, read> mix_lut: array<f32>;
+/// Background xform colors (bg_kind 3), three per pixel.
+@group(0) @binding(5) var<storage, read> backdrop: array<i32>;
 
 const MIX_LUT: u32 = 4096u;
 
@@ -146,6 +148,10 @@ fn background(px: u32, py: u32) -> vec3<f32> {
     let w = T.image_w;
     let h = T.image_h;
     if (T.bg_kind == 0u) { return T.bg_single.xyz; }
+    if (T.bg_kind == 3u) {
+        let i = (py * w + px) * 3u;
+        return vec3<f32>(f32(backdrop[i]), f32(backdrop[i + 1u]), f32(backdrop[i + 2u]));
+    }
     if (T.bg_kind == 1u) {
         let fx = f32(px) / f32(max(w, 2u) - 1u);
         let fy = f32(py) / f32(max(h, 2u) - 1u);
@@ -288,7 +294,7 @@ fn tonemap(@builtin(global_invocation_id) gid: vec3<u32>) {
         }
         rgb = clamp(floor(raw + 0.5) + floor(inv_alpha * bg / 256.0), vec3<f32>(0.0), vec3<f32>(255.0));
     } else {
-        rgb = bg;
+        rgb = clamp(bg, vec3<f32>(0.0), vec3<f32>(255.0));
         alpha_out = select(255.0, 0.0, T.with_alpha != 0u);
     }
     if (T.mod_sat != 0.0) {

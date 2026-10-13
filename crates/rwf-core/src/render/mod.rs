@@ -20,6 +20,7 @@
 //! Rendering: compiled flame, camera, CPU iteration and tonemapping.
 
 pub mod analysis;
+pub mod background;
 pub mod cpu;
 pub mod de;
 pub mod denoise;
@@ -54,6 +55,10 @@ fn iteration_key(flame: &Flame) -> Flame {
     f.fg_opacity = 0.0;
     f.sample_density = 0.0;
     f.background = Background::default();
+    f.mixer = Default::default();
+    for l in &mut f.layers {
+        l.bg_xforms.clear();
+    }
     f.bg_transparency = false;
     f.extra_attrs.clear();
     f.animation = Default::default();

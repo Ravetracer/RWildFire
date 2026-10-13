@@ -160,13 +160,13 @@ fn affine_mode(xy: &Affine, yz: &Affine, zx: &Affine) -> AffineMode {
     }
 }
 
-fn colormap_index(colormap: &[[f64; 3]], color: f64) -> usize {
+pub(crate) fn colormap_index(colormap: &[[f64; 3]], color: f64) -> usize {
     let scl = colormap.len() as f64 - 2.0;
     let idx = (color * scl + 0.5) as i64;
     idx.clamp(0, colormap.len() as i64 - 1) as usize
 }
 
-fn prepare_xform(xf: &XForm, color_type: ColorType, colormap: &[[f64; 3]], frame: u32, missing: &mut Vec<String>) -> PreparedXForm {
+pub(crate) fn prepare_xform(xf: &XForm, color_type: ColorType, colormap: &[[f64; 3]], frame: u32, missing: &mut Vec<String>) -> PreparedXForm {
     let mut c1 = (1.0 + xf.color_symmetry) * 0.5;
     let mut c2 = xf.color * (1.0 - xf.color_symmetry) * 0.5;
     if color_type != ColorType::Diffusion && color_type != ColorType::TargetG {
@@ -439,6 +439,13 @@ impl PreparedXForm {
     /// Full transform chain of `XForm.transformPoint`: `src` -> returned destination point.
     #[inline]
     pub fn transform(&self, ctx: &mut Ctx, colormap: &[[f64; 3]], smooth: bool, src: &Pt) -> Pt {
+        self.transform_wmv(ctx, colormap, smooth, src).0
+    }
+
+    /// [`Self::transform`], also returning the weighting field value of the affine point
+    /// (`weightMapValue`, 0 without a weighting field).
+    #[inline]
+    pub fn transform_wmv(&self, ctx: &mut Ctx, colormap: &[[f64; 3]], smooth: bool, src: &Pt) -> (Pt, f64) {
         // Init step
         let mut a = Pt { do_hide: src.do_hide, ..Pt::default() };
         if self.color_type != ColorType::Cyclic {
@@ -532,7 +539,7 @@ impl PreparedXForm {
                 ColorType::None | ColorType::Unset => {}
             }
         }
-        dst
+        (dst, wmv)
     }
 
     #[inline]

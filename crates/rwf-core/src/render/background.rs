@@ -1,0 +1,240 @@
+// RWildFire - a fractal flame editor written in Rust
+// Copyright (C) 2026 Christian Nielebock
+//
+// Ported from JWildfire - an image and animation processor written in Java
+// Copyright (C) 1995-2026 Andreas Maschke
+//
+// This program is free software: you can redistribute it and/or modify it under the terms of
+// the GNU Lesser General Public License as published by the Free Software Foundation, either
+// version 3 of the License, or (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY;
+// without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+// See the GNU Lesser General Public License for more details.
+//
+// You should have received a copy of the GNU Lesser General Public License along with this
+// program. If not, see <https://www.gnu.org/licenses/>.
+//
+// SPDX-License-Identifier: LGPL-3.0-or-later
+
+//! Background xforms (`LogDensityFilter.calculateBGColor`): every output pixel is mapped into a
+//! fixed coordinate frame, sent through each background xform of each layer and the resulting
+//! colors, scaled by the xform weights, are added to the background color.
+
+use rayon::prelude::*;
+
+use super::prepared::{PreparedXForm, colormap_index, prepare_xform};
+use super::tonemap::background_color;
+use crate::math::EPSILON;
+use crate::model::{Flame, VariationInstance};
+use crate::variations::{Ctx, Pt};
+
+/// `DC_BaseFunc` subclasses: `prepareBackgroundRendering` sets `ColorOnly = 1`.
+const DC_COLOR_ONLY: &[&str] = &[
+    "dc_acrilic",
+    "dc_apollonian",
+    "dc_booleans",
+    "dc_cairotiles",
+    "dc_circlesblue",
+    "dc_circuits",
+    "dc_fingerprint",
+    "dc_fractaldots",
+    "dc_fractcolor",
+    "dc_gabornoise",
+    "dc_glypho",
+    "dc_gmandelbroot",
+    "dc_grid3D",
+    "dc_hexagons",
+    "dc_hoshi",
+    "dc_hyperbolictile",
+    "dc_inversion",
+    "dc_kaleidocomplex",
+    "dc_kaleidoscopic",
+    "dc_kaliset",
+    "dc_kaliset2",
+    "dc_layers",
+    "dc_mandala",
+    "dc_mandelbox2D",
+    "dc_menger",
+    "dc_moebiuslog",
+    "dc_pentatiles",
+    "dc_poincaredisc",
+    "dc_portal",
+    "dc_quadtree",
+    "dc_randomoctree",
+    "dc_rotations",
+    "dc_spacefold",
+    "dc_squares",
+    "dc_starsfield",
+    "dc_sunflower",
+    "dc_tesla",
+    "dc_tree",
+    "dc_triantess",
+    "dc_truchet",
+    "dc_turbulence",
+    "dc_voronoise",
+    "dc_vortex",
+    "dc_warping",
+    "dc_worley",
+];
+
+/// `AbstractFractWFFunc` subclasses: `color_only = 1`, `buddhabrot_mode = 0`.
+const FRACT_COLOR_ONLY: &[&str] =
+    &["fract_dragon_wf", "fract_julia_wf", "fract_mandelbrot_wf", "fract_meteors_wf", "fract_pearls_wf", "fract_salamander_wf"];
+
+/// `SupportsBackground.prepareBackgroundRendering`: switches variations into their color-only
+/// mode, which samples the pattern at the input point.
+fn prepare_for_background(var: &mut VariationInstance) {
+    let name = var.name.as_str();
+    if DC_COLOR_ONLY.contains(&name) {
+        var.set_param("ColorOnly", 1.0);
+    } else if name == "dc_perlin" {
+        var.set_param("color_only", 1.0);
+        var.set_param("shape", 0.0);
+    } else if FRACT_COLOR_ONLY.contains(&name) {
+        var.set_param("color_only", 1.0);
+        var.set_param("buddhabrot_mode", 0.0);
+    }
+}
+
+struct BgLayer {
+    xforms: Vec<(PreparedXForm, f64)>,
+    colormap: Vec<[f64; 3]>,
+    smooth: bool,
+}
+
+/// Background color of every output pixel: the flame background (single color or gradient)
+/// plus the contributions of the background xforms.
+pub struct Backdrop<'a> {
+    flame: &'a Flame,
+    width: u32,
+    height: u32,
+    /// Precomputed colors (row major), only with background xforms.
+    colors: Option<Vec<[i32; 3]>>,
+}
+
+impl<'a> Backdrop<'a> {
+    pub fn new(flame: &'a Flame, width: u32, height: u32) -> Self {
+        let colors = flame.has_bg_xforms().then(|| render_bg_xforms(flame, width, height));
+        Self { flame, width, height, colors }
+    }
+
+    #[inline]
+    pub fn get(&self, x: u32, y: u32) -> [i32; 3] {
+        match &self.colors {
+            Some(c) => c[(y * self.width + x) as usize],
+            None => background_color(self.flame, x, y, self.width, self.height),
+        }
+    }
+
+    /// The precomputed colors if the flame has background xforms.
+    pub fn colors(&self) -> Option<&[[i32; 3]]> {
+        self.colors.as_deref()
+    }
+}
+
+fn render_bg_xforms(flame: &Flame, w: u32, h: u32) -> Vec<[i32; 3]> {
+    let mut missing = Vec::new();
+    let layers: Vec<BgLayer> = flame
+        .layers
+        .iter()
+        .filter(|l| !l.bg_xforms.is_empty())
+        .map(|l| {
+            let colormap = l.gradient.render_colors();
+            let xforms = l
+                .bg_xforms
+                .iter()
+                .map(|xf| {
+                    let mut xf = xf.clone();
+                    xf.variations.iter_mut().for_each(prepare_for_background);
+                    // Unlike the other xform lists, an unset color type is kept (no color step).
+                    (prepare_xform(&xf, xf.color_type, &colormap, flame.frame, &mut missing), xf.weight)
+                })
+                .collect();
+            BgLayer { xforms, colormap, smooth: l.smooth_gradient }
+        })
+        .collect();
+
+    let img_size = ((w as f64) * (w as f64) + (h as f64) * (h as f64)).sqrt() * 0.5;
+    let coord_scale = 1.41 / flame.cam_zoom;
+    let mut out = vec![[0i32; 3]; (w * h) as usize];
+    out.par_chunks_mut(w as usize).enumerate().for_each(|(py, row)| {
+        let mut ctx = Ctx::new(0x6B67_7866 ^ py as u64, flame.preserve_z);
+        let y = (py as f64 - (h as f64 - 1.0) * 0.5) / img_size * coord_scale;
+        for (px, dst) in row.iter_mut().enumerate() {
+            let x = (px as f64 - (w as f64 - 1.0) * 0.5) / img_size * coord_scale;
+            let mut c = background_color(flame, px as u32, py as u32, w, h);
+            for layer in &layers {
+                let p = Pt { x, y, ..Pt::default() };
+                for (xf, weight) in &layer.xforms {
+                    let (q, wmv) = xf.transform_wmv(&mut ctx, &layer.colormap, layer.smooth, &p);
+                    let vai = xf.weighting.as_ref().map_or(0.0, |w| w.var_amount_intensity);
+                    let amount = if wmv.abs() > EPSILON && vai.abs() > EPSILON { weight * (1.0 + wmv * vai) } else { *weight };
+                    let rgb = if q.rgb_color { [q.red, q.green, q.blue] } else { layer.colormap[colormap_index(&layer.colormap, q.color)] };
+                    // Java `int += double`: the sum is truncated towards zero.
+                    for i in 0..3 {
+                        c[i] = (c[i] as f64 + rgb[i] * amount) as i32;
+                    }
+                }
+            }
+            *dst = c;
+        }
+    });
+    out
+}
+
+/// True if `a` and `b` have the same background colors (for caching a [`Backdrop`]).
+pub fn same_backdrop(a: &Flame, b: &Flame) -> bool {
+    a.background == b.background
+        && a.has_bg_xforms() == b.has_bg_xforms()
+        && (!a.has_bg_xforms()
+            || (a.cam_zoom == b.cam_zoom
+                && a.frame == b.frame
+                && a.preserve_z == b.preserve_z
+                && a.layers.len() == b.layers.len()
+                && a.layers.iter().zip(&b.layers).all(|(la, lb)| {
+                    la.bg_xforms == lb.bg_xforms
+                        && (la.bg_xforms.is_empty() || (la.gradient == lb.gradient && la.smooth_gradient == lb.smooth_gradient))
+                })))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{Layer, XForm};
+
+    fn flame_with_bg(xf: XForm) -> Flame {
+        let mut flame = Flame::default();
+        flame.background.kind = crate::model::BgColorType::SingleColor;
+        flame.background.color = [10, 20, 30];
+        let mut layer = Layer::default();
+        layer.bg_xforms.push(xf);
+        flame.layers = vec![layer];
+        flame
+    }
+
+    #[test]
+    fn linear_bg_xform_adds_the_weighted_palette_color() {
+        let mut xf = XForm::with_variation("linear", 1.0);
+        xf.weight = 0.5;
+        let flame = flame_with_bg(xf);
+        let c0 = flame.layers[0].gradient.render_colors()[0];
+        let b = Backdrop::new(&flame, 8, 6);
+        let expect = [10.0 + c0[0] * 0.5, 20.0 + c0[1] * 0.5, 30.0 + c0[2] * 0.5].map(|v| v as i32);
+        assert_eq!(b.get(3, 2), expect);
+        assert!(same_backdrop(&flame, &flame.clone()));
+        let mut other = flame.clone();
+        other.layers[0].bg_xforms[0].weight = 0.7;
+        assert!(!same_backdrop(&flame, &other));
+    }
+
+    #[test]
+    fn bg_xforms_survive_a_file_round_trip() {
+        let flame = flame_with_bg(XForm::with_variation("dc_hexagons", 0.8));
+        let text = crate::io::write_flame(&flame);
+        assert!(text.contains("<jwf-flame") && text.contains("<bgxform"));
+        let back = crate::io::read_flames(&text).unwrap().remove(0);
+        assert_eq!(back.layers[0].bg_xforms.len(), 1);
+        assert_eq!(back.layers[0].bg_xforms[0].variations[0].name, "dc_hexagons");
+    }
+}

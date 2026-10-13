@@ -225,6 +225,10 @@ pub struct GpuRenderer {
     resolve_uniforms: wgpu::Buffer,
     tone_uniforms: wgpu::Buffer,
     mixer_lut: wgpu::Buffer,
+    /// Background colors of the background xforms (three `i32` per pixel).
+    backdrop_buf: wgpu::Buffer,
+    /// Flame and image size the backdrop was computed for, plus the colors.
+    backdrop: Option<(Flame, u32, u32, Vec<[i32; 3]>)>,
     prm: Option<wgpu::Buffer>,
     nxt: Option<wgpu::Buffer>,
     cmap: Option<wgpu::Buffer>,
@@ -308,6 +312,8 @@ impl GpuRenderer {
             resolve_uniforms: uniform_buffer(device, "resolve-uniforms", std::mem::size_of::<ResolveUniforms>() as u64),
             tone_uniforms: uniform_buffer(device, "tone-uniforms", std::mem::size_of::<ToneUniforms>() as u64),
             mixer_lut: storage_buffer(device, "mixer-lut", (9 * rwf_core::mixer::LUT_SIZE * 4) as u64),
+            backdrop_buf: storage_buffer(device, "backdrop", 16),
+            backdrop: None,
             states: storage_buffer(device, "states", thread_count as u64 * STATE_SIZE),
             de_uniforms: uniform_buffer(device, "de-uniforms", std::mem::size_of::<DeUniforms>() as u64),
             resolve_pipeline,
@@ -748,14 +754,40 @@ impl GpuRenderer {
         added
     }
 
+    /// Computes the background xform colors on the CPU if the flame has background xforms and
+    /// they changed; returns true if the backdrop is in use.
+    fn update_backdrop(&mut self) -> bool {
+        let (Some(flame), Some(bufs)) = (&self.flame, &self.buffers) else {
+            return false;
+        };
+        if !flame.has_bg_xforms() {
+            self.backdrop = None;
+            return false;
+        }
+        let (w, h) = (bufs.image_w, bufs.image_h);
+        if self.backdrop.as_ref().is_some_and(|(f, bw, bh, _)| *bw == w && *bh == h && rwf_core::render::background::same_backdrop(f, flame)) {
+            return true;
+        }
+        let colors = rwf_core::render::background::Backdrop::new(flame, w, h).colors().map(<[_]>::to_vec).unwrap_or_default();
+        let bytes: &[u8] = bytemuck::cast_slice(&colors);
+        if self.backdrop_buf.size() < bytes.len() as u64 {
+            self.backdrop_buf = storage_buffer(&self.ctx.device, "backdrop", bytes.len() as u64);
+        }
+        self.ctx.queue.write_buffer(&self.backdrop_buf, 0, bytes);
+        self.backdrop = Some((flame.clone(), w, h, colors));
+        true
+    }
+
     /// Writes the current image into the output texture.
     pub fn tonemap(&mut self) {
+        let with_backdrop = self.update_backdrop();
         let (Some(flame), Some(view), Some(bufs), Some(filter)) = (&self.flame, &self.view, &self.buffers, &self.filter) else {
             return;
         };
         if flame.solid.enabled {
             let (flame, view, output) = (flame.clone(), view.clone(), bufs.output_view.clone());
-            self.solid.render(&self.ctx.device, &self.ctx.queue, &flame, &view, &output, self.with_alpha);
+            let backdrop = self.backdrop.as_ref().filter(|_| with_backdrop).map(|b| b.3.as_slice());
+            self.solid.render(&self.ctx.device, &self.ctx.queue, &flame, &view, &output, self.with_alpha, backdrop);
             return;
         }
         let Some(mut tone) = self.tone_base else {
@@ -776,6 +808,9 @@ impl GpuRenderer {
         tone.mod_sat = tp.mod_saturation as f32;
         tone.with_alpha = self.with_alpha as u32;
         tone.mb_scl = 1.0 / self.packets.max(1) as f32;
+        if with_backdrop {
+            tone.bg_kind = 3;
+        }
         tone.mix_mode = 0;
         if let Some(func) = flame.mixer.color_func() {
             tone.mix_mode = func.mode_index();
@@ -827,6 +862,7 @@ impl GpuRenderer {
                 wgpu::BindGroupEntry { binding: 2, resource: filter.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&bufs.output_view) },
                 wgpu::BindGroupEntry { binding: 4, resource: self.mixer_lut.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 5, resource: self.backdrop_buf.as_entire_binding() },
             ],
         });
 

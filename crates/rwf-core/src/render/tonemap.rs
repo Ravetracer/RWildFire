@@ -330,13 +330,14 @@ impl ToneMapper {
             } else {
                 (log_scl * f[1], log_scl * f[2], log_scl * f[3])
             };
-            red = ((rr + 0.5) as i32 + ((inv_alpha * bg[0]) >> 8)).clamp(0, 255);
-            green = ((gg + 0.5) as i32 + ((inv_alpha * bg[1]) >> 8)).clamp(0, 255);
-            blue = ((bb + 0.5) as i32 + ((inv_alpha * bg[2]) >> 8)).clamp(0, 255);
+            red = ((rr + 0.5) as i32 + (inv_alpha.wrapping_mul(bg[0]) >> 8)).clamp(0, 255);
+            green = ((gg + 0.5) as i32 + (inv_alpha.wrapping_mul(bg[1]) >> 8)).clamp(0, 255);
+            blue = ((bb + 0.5) as i32 + (inv_alpha.wrapping_mul(bg[2]) >> 8)).clamp(0, 255);
         } else {
-            red = bg[0];
-            green = bg[1];
-            blue = bg[2];
+            // Background xforms can leave the 0..255 range.
+            red = bg[0].clamp(0, 255);
+            green = bg[1].clamp(0, 255);
+            blue = bg[2].clamp(0, 255);
             alpha_out = if self.with_alpha { 0 } else { 255 };
         }
         if p.mod_saturation != 0.0 {
@@ -358,11 +359,12 @@ impl ToneMapper {
     }
 
     fn render_raster<R: Raster>(&self, flame: &Flame, raster: &R, w: u32, h: u32) -> Vec<u8> {
+        let backdrop = super::background::Backdrop::new(flame, w, h);
         let mut out = vec![0u8; (w * h * 4) as usize];
         out.par_chunks_mut((w * 4) as usize).enumerate().for_each(|(y, row)| {
             for x in 0..w {
                 let f = self.filtered(raster, x, y as u32);
-                let bg = background_color(flame, x, y as u32, w, h);
+                let bg = backdrop.get(x, y as u32);
                 let px = self.gamma_pixel(f, bg);
                 row[(x * 4) as usize..(x * 4 + 4) as usize].copy_from_slice(&px);
             }

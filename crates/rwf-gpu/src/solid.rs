@@ -95,7 +95,7 @@ struct SolidUniforms {
     aob_off: u32,
     smooth_off: u32,
     bokeh_off: u32,
-    _p1: u32,
+    bg_off: u32,
     _p2: u32,
 }
 
@@ -235,7 +235,18 @@ impl SolidGpu {
     }
 
     /// Runs all passes and writes the final image into `output`.
-    pub fn render(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, flame: &Flame, view: &View, output: &wgpu::TextureView, with_alpha: bool) {
+    /// `backdrop`: background xform colors (three per pixel), if any.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        flame: &Flame,
+        view: &View,
+        output: &wgpu::TextureView,
+        with_alpha: bool,
+        backdrop: Option<&[[i32; 3]]>,
+    ) {
         if self.buffers.is_none() {
             return;
         }
@@ -343,6 +354,11 @@ impl SolidGpu {
         for k in 0..BOKEH_TABLE {
             sp.push(kernel.coeff(k as f64 / (BOKEH_TABLE - 1) as f64 * rmax) as f32);
         }
+        // The backdrop shares the read-only u32 table with the reflection maps.
+        let bg_off = refl.len() as u32;
+        if let Some(b) = backdrop {
+            refl.extend(b.iter().flatten().map(|&c| c as u32));
+        }
         if refl.is_empty() {
             refl.push(0);
         }
@@ -379,6 +395,7 @@ impl SolidGpu {
             mod_sat: (flame.saturation - 1.0).max(-1.0) as f32,
             with_alpha: with_alpha as u32,
             bg_kind: match flame.background.kind {
+                _ if backdrop.is_some() => 3,
                 BgColorType::SingleColor => 0,
                 BgColorType::Gradient2x2 => 1,
                 BgColorType::Gradient2x2C => 2,
@@ -414,7 +431,7 @@ impl SolidGpu {
             aob_off,
             smooth_off,
             bokeh_off,
-            _p1: 0,
+            bg_off,
             _p2: 0,
         };
         let ubuf = self.uniforms.get_or_insert_with(|| {

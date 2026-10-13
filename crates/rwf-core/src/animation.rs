@@ -22,10 +22,10 @@
 //! Properties are addressed by string paths:
 //! * flame:     `centre_x`, `brightness`, ...                 (see [`FLAME_PROPS`])
 //! * layer:     `layer0.weight`, `layer0.density`
-//! * xform:     `layer0.xf2.weight`, `layer0.xf2.coefs.c20`, `layer0.final0.post.c00`, ...
+//! * xform:     `layer0.xf2.weight`, `layer0.xf2.coefs.c20`, `layer0.final0.post.c00`, `layer0.bg0.weight`, ...
 //! * variation: `layer0.xf2.var1.amount`, `layer0.xf2.var1.p.power`
 
-use crate::model::{Affine, Flame, XForm};
+use crate::model::{Affine, Flame, XForm, XFormKind};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum Interp {
@@ -234,17 +234,13 @@ fn index_after(s: &str, prefix: &str) -> Option<usize> {
     s.strip_prefix(prefix)?.parse().ok()
 }
 
-/// Splits `layer0.xf2.rest` into (layer, is_final, xform index, rest).
-fn xform_path(path: &str) -> Option<(usize, bool, usize, &str)> {
+/// Splits `layer0.xf2.rest` into (layer, xform list, xform index, rest).
+fn xform_path(path: &str) -> Option<(usize, XFormKind, usize, &str)> {
     let mut parts = path.splitn(3, '.');
     let l = index_after(parts.next()?, "layer")?;
     let x = parts.next()?;
     let rest = parts.next()?;
-    if let Some(i) = index_after(x, "xf") {
-        Some((l, false, i, rest))
-    } else {
-        Some((l, true, index_after(x, "final")?, rest))
-    }
+    XFormKind::ALL.into_iter().find_map(|k| Some((l, k, index_after(x, k.path_prefix())?, rest)))
 }
 
 fn get_xform_prop(xf: &XForm, rest: &str) -> Option<f64> {
@@ -339,9 +335,8 @@ pub fn get_prop(flame: &Flame, path: &str) -> Option<f64> {
             _ => None,
         };
     }
-    let (l, fin, x, rest) = xform_path(path)?;
-    let layer = flame.layers.get(l)?;
-    let xf = if fin { layer.final_xforms.get(x)? } else { layer.xforms.get(x)? };
+    let (l, kind, x, rest) = xform_path(path)?;
+    let xf = flame.layers.get(l)?.xforms_of(kind).get(x)?;
     get_xform_prop(xf, rest)
 }
 
@@ -365,10 +360,9 @@ pub fn set_prop(flame: &mut Flame, path: &str, v: f64) -> bool {
         }
         return true;
     }
-    let Some((l, fin, x, rest)) = xform_path(path) else { return false };
+    let Some((l, kind, x, rest)) = xform_path(path) else { return false };
     let Some(layer) = flame.layers.get_mut(l) else { return false };
-    let xf = if fin { layer.final_xforms.get_mut(x) } else { layer.xforms.get_mut(x) };
-    xf.is_some_and(|xf| set_xform_prop(xf, rest, v))
+    layer.xforms_of_mut(kind).get_mut(x).is_some_and(|xf| set_xform_prop(xf, rest, v))
 }
 
 /// All animatable properties of a flame with their current values.
@@ -384,9 +378,9 @@ pub fn all_props(flame: &Flame) -> Vec<(String, f64)> {
     for (li, layer) in flame.layers.iter().enumerate() {
         out.push((format!("layer{li}.weight"), layer.weight));
         out.push((format!("layer{li}.density"), layer.density));
-        for (fin, list) in [(false, &layer.xforms), (true, &layer.final_xforms)] {
-            for (xi, xf) in list.iter().enumerate() {
-                let p = if fin { format!("layer{li}.final{xi}") } else { format!("layer{li}.xf{xi}") };
+        for kind in XFormKind::ALL {
+            for (xi, xf) in layer.xforms_of(kind).iter().enumerate() {
+                let p = format!("layer{li}.{}{xi}", kind.path_prefix());
                 for s in XFORM_SCALARS {
                     out.push((format!("{p}.{s}"), get_xform_prop(xf, s).unwrap_or(0.0)));
                 }
@@ -412,15 +406,19 @@ pub fn all_props(flame: &Flame) -> Vec<(String, f64)> {
 
 /// Human readable label for a property path (for the timeline).
 pub fn label(flame: &Flame, path: &str) -> String {
-    if let Some((l, fin, x, rest)) = xform_path(path) {
+    if let Some((l, kind, x, rest)) = xform_path(path) {
         let layer_prefix = if flame.layers.len() > 1 { format!("L{} ", l + 1) } else { String::new() };
-        let xf_name = if fin { format!("Final {}", x + 1) } else { format!("Transform {}", x + 1) };
+        let xf_name = match kind {
+            XFormKind::Normal => format!("Transform {}", x + 1),
+            XFormKind::Final => format!("Final {}", x + 1),
+            XFormKind::Background => format!("Background {}", x + 1),
+        };
         let rest_label = if let Some(r) = rest.strip_prefix("var") {
             let (vi, tail) = r.split_once('.').unwrap_or((r, ""));
             let var_name = vi
                 .parse::<usize>()
                 .ok()
-                .and_then(|i| flame.layers.get(l).and_then(|ly| if fin { ly.final_xforms.get(x) } else { ly.xforms.get(x) }).and_then(|xf| xf.variations.get(i)))
+                .and_then(|i| flame.layers.get(l).and_then(|ly| ly.xforms_of(kind).get(x)).and_then(|xf| xf.variations.get(i)))
                 .map(|v| v.name.clone())
                 .unwrap_or_else(|| format!("var{vi}"));
             format!("{var_name} {}", tail.trim_start_matches("p."))

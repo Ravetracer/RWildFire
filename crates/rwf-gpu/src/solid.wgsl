@@ -35,7 +35,7 @@ struct SolidU {
     dof_amount: f32, bokeh_int: f32, bokeh_bright: f32, bokeh_size: f32,
     bokeh_act: f32, bokeh_rmax: f32, img_diag: f32, bokeh_support: f32,
     light_off: u32, mat_off: u32, filt_off: u32, aob_off: u32,
-    smooth_off: u32, bokeh_off: u32, _p1: u32, _p2: u32,
+    smooth_off: u32, bokeh_off: u32, bg_off: u32, _p2: u32,
 }
 
 const ZMIN: f32 = -3.4028235e38;
@@ -410,6 +410,10 @@ fn background(px: u32, py: u32) -> vec3<f32> {
     let w = S.image_w;
     let h = S.image_h;
     if (S.bg_kind == 0u) { return S.bg_single.xyz; }
+    if (S.bg_kind == 3u) {
+        let i = S.bg_off + (py * w + px) * 3u;
+        return vec3<f32>(f32(bitcast<i32>(refl[i])), f32(bitcast<i32>(refl[i + 1u])), f32(bitcast<i32>(refl[i + 2u])));
+    }
     if (S.bg_kind == 1u) {
         let fx = f32(px) / f32(max(w, 2u) - 1u);
         let fy = f32(py) / f32(max(h, 2u) - 1u);
@@ -541,7 +545,7 @@ fn sld_shade(@builtin(global_invocation_id) gid: vec3<u32>) {
         alpha = select(255.0, alpha_int, S.with_alpha != 0u);
         rgb = clamp(floor(col + 0.5) + floor(inv * bg / 256.0), vec3<f32>(0.0), vec3<f32>(255.0));
     } else {
-        rgb = bg;
+        rgb = clamp(bg, vec3<f32>(0.0), vec3<f32>(255.0));
         alpha = select(255.0, 0.0, S.with_alpha != 0u);
     }
     if (S.mod_sat != 0.0) {

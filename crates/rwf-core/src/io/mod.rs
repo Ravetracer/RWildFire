@@ -321,9 +321,9 @@ fn import_jwf_curves(flame: &mut Flame) {
     // XForm and variation parameter curves
     let mut tracks = Vec::new();
     for (li, layer) in flame.layers.iter_mut().enumerate() {
-        for (fin, list) in [(false, &mut layer.xforms), (true, &mut layer.final_xforms)] {
-            for (xi, xf) in list.iter_mut().enumerate() {
-                let base = if fin { format!("layer{li}.final{xi}") } else { format!("layer{li}.xf{xi}") };
+        for kind in XFormKind::ALL {
+            for (xi, xf) in layer.xforms_of_mut(kind).iter_mut().enumerate() {
+                let base = format!("layer{li}.{}{xi}", kind.path_prefix());
                 let names: Vec<String> = xf.extra_attrs.iter().filter_map(|(k, _)| k.strip_suffix("Curve_enabled").map(str::to_string)).collect();
                 for n in names {
                     let prefix = format!("{n}Curve_");
@@ -364,6 +364,7 @@ fn parse_layer_content(el: &Element) -> Layer {
     let mut layer = Layer::default();
     layer.xforms = el.children_named("xform").map(parse_xform).collect();
     layer.final_xforms = el.children_named("finalxform").map(parse_xform).collect();
+    layer.bg_xforms = el.children_named("bgxform").map(parse_xform).collect();
     layer.gradient = parse_gradient(el).unwrap_or_default();
     layer
 }
@@ -521,7 +522,8 @@ fn attr(out: &mut String, k: &str, v: impl AsRef<str>) {
 }
 
 pub fn write_flame(flame: &Flame) -> String {
-    let multi_layer = flame.layers.len() > 1;
+    // JWildfire writes the layer format also for a single layer with background xforms.
+    let multi_layer = flame.layers.len() > 1 || flame.has_bg_xforms();
     let tag = if multi_layer { "jwf-flame" } else { "flame" };
     let mut s = String::new();
     let _ = write!(s, "<{tag}");
@@ -670,6 +672,11 @@ fn write_layer_content(s: &mut String, layer: &Layer, indent: &str) {
     }
     for xf in &layer.final_xforms {
         let _ = write!(s, "{indent}<finalxform");
+        write_xform_attrs(s, xf);
+        s.push_str(" />\n");
+    }
+    for xf in &layer.bg_xforms {
+        let _ = write!(s, "{indent}<bgxform");
         write_xform_attrs(s, xf);
         s.push_str(" />\n");
     }

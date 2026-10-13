@@ -27,7 +27,6 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use rayon::prelude::*;
 
 use super::filter::{FilterKernel, FilterMatrix};
-use super::tonemap::background_color;
 use crate::math::{EPSILON, ftoi, hsl_to_rgb, rgb_to_hsl, round_color};
 use crate::model::Flame;
 use crate::rng::Rng;
@@ -684,9 +683,10 @@ impl<'a> SolidShader<'a> {
         let mod_sat = (flame.saturation - 1.0).max(-1.0);
         let mut img = vec![0u8; (w * h * 4) as usize];
         let mut dofs = vec![0f32; (w * h) as usize];
+        let backdrop = super::background::Backdrop::new(flame, w, h);
         img.par_chunks_mut((w * 4) as usize).zip(dofs.par_chunks_mut(w as usize)).enumerate().for_each(|(y, (row, drow))| {
             for x in 0..w {
-                let bg = background_color(flame, x, y as u32, w, h);
+                let bg = backdrop.get(x, y as u32);
                 let (col, intensity, dof) = self.pixel(x, y as u32, bg);
                 drow[x as usize] = dof as f32;
                 let (mut red, mut green, mut blue, alpha);
@@ -695,11 +695,11 @@ impl<'a> SolidShader<'a> {
                     let alpha_int = ((a * 255.0 * alpha_scale + 0.5) as i32).clamp(0, 255);
                     let inv = 255 - alpha_int;
                     alpha = if self.with_alpha { alpha_int } else { 255 };
-                    red = ((col[0] + 0.5) as i32 + ((inv * bg[0]) >> 8)).clamp(0, 255);
-                    green = ((col[1] + 0.5) as i32 + ((inv * bg[1]) >> 8)).clamp(0, 255);
-                    blue = ((col[2] + 0.5) as i32 + ((inv * bg[2]) >> 8)).clamp(0, 255);
+                    red = ((col[0] + 0.5) as i32 + (inv.wrapping_mul(bg[0]) >> 8)).clamp(0, 255);
+                    green = ((col[1] + 0.5) as i32 + (inv.wrapping_mul(bg[1]) >> 8)).clamp(0, 255);
+                    blue = ((col[2] + 0.5) as i32 + (inv.wrapping_mul(bg[2]) >> 8)).clamp(0, 255);
                 } else {
-                    (red, green, blue) = (bg[0], bg[1], bg[2]);
+                    (red, green, blue) = (bg[0].clamp(0, 255), bg[1].clamp(0, 255), bg[2].clamp(0, 255));
                     alpha = if self.with_alpha { 0 } else { 255 };
                 }
                 if mod_sat != 0.0 {

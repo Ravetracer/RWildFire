@@ -222,8 +222,8 @@ impl VariationInstance {
         if let Some(def) = variations::find(&self.name)
             && let Some(i) = def.params.iter().position(|p| p.name == name)
         {
-            if self.params.len() <= i {
-                self.params.resize(def.params.len(), 0.0);
+            for k in self.params.len()..def.params.len() {
+                self.params.push(def.params[k].default);
             }
             self.params[i] = value;
             return true;
@@ -323,7 +323,48 @@ pub struct Layer {
     pub smooth_gradient: bool,
     pub xforms: Vec<XForm>,
     pub final_xforms: Vec<XForm>,
+    /// Background xforms (`<bgxform>`): evaluated once per output pixel to color the background.
+    pub bg_xforms: Vec<XForm>,
     pub extra_attrs: Vec<(String, String)>,
+}
+
+/// The three xform lists of a layer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum XFormKind {
+    Normal,
+    Final,
+    Background,
+}
+
+impl XFormKind {
+    pub const ALL: [XFormKind; 3] = [XFormKind::Normal, XFormKind::Final, XFormKind::Background];
+
+    /// Prefix of the xform segment in property paths (`layer0.xf2`, `layer0.final0`, `layer0.bg1`).
+    pub fn path_prefix(self) -> &'static str {
+        match self {
+            XFormKind::Normal => "xf",
+            XFormKind::Final => "final",
+            XFormKind::Background => "bg",
+        }
+    }
+}
+
+impl Layer {
+    pub fn xforms_of(&self, kind: XFormKind) -> &Vec<XForm> {
+        match kind {
+            XFormKind::Normal => &self.xforms,
+            XFormKind::Final => &self.final_xforms,
+            XFormKind::Background => &self.bg_xforms,
+        }
+    }
+
+    pub fn xforms_of_mut(&mut self, kind: XFormKind) -> &mut Vec<XForm> {
+        match kind {
+            XFormKind::Normal => &mut self.xforms,
+            XFormKind::Final => &mut self.final_xforms,
+            XFormKind::Background => &mut self.bg_xforms,
+        }
+    }
 }
 
 impl Default for Layer {
@@ -337,6 +378,7 @@ impl Default for Layer {
             smooth_gradient: false,
             xforms: Vec::new(),
             final_xforms: Vec::new(),
+            bg_xforms: Vec::new(),
             extra_attrs: Vec::new(),
         }
     }
@@ -606,6 +648,11 @@ impl Default for Flame {
 }
 
 impl Flame {
+    /// True if any layer has background xforms (`Flame.hasBGTransforms`).
+    pub fn has_bg_xforms(&self) -> bool {
+        self.layers.iter().any(|l| !l.bg_xforms.is_empty())
+    }
+
     /// Selects a bokeh shape and applies its default parameters (JWildfire `setDefaultParams`).
     pub fn set_dof_shape(&mut self, shape: crate::render::dof::DofShape) {
         let (fade, scale, angle, p) = shape.defaults();
