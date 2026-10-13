@@ -115,6 +115,8 @@ mod tests {
   acc += res_mesh(ub, 3u, mp, x).x;
   acc += f32(res_wrap_tile(n, 3)) + res_cm_rgba(ub, n, n, x > 0.0).w + res_nearest_color_idx(v3);
   acc += res_colormap(ub, x, y, mp).x + res_displacemap(ub, x, y, z, mp).y;
+  acc += res_discret_noise(n) + res_brush(ub, mp, mp, x, y, z, x > 0.0).x;
+  acc += res_metaballs(ub, mp, x).z;
   prm[4] = acc;
 "#;
 

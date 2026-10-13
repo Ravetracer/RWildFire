@@ -349,8 +349,8 @@ pub enum ResKind {
     ObjFile,
     /// Image file embedded in the flame (raw file bytes).
     ImageData,
-    /// Informational text (JWildfire `HREF`: image source / description links).
-    Href,
+    /// Free text (e.g. a brush list, or JWildfire `HREF` source/description links).
+    Text,
 }
 
 /// A resource parameter: a string value (e.g. a file name), stored hex-encoded in `.flame` files.
@@ -358,6 +358,8 @@ pub enum ResKind {
 pub struct ResDef {
     pub name: &'static str,
     pub kind: ResKind,
+    /// Value of new instances.
+    pub default: &'static str,
 }
 
 /// What resource loading may depend on besides the resource values.

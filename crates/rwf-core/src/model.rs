@@ -166,13 +166,21 @@ pub struct VariationInstance {
 impl VariationInstance {
     pub fn new(name: &str, amount: f64) -> Self {
         match variations::find(name) {
-            Some(def) => Self {
-                name: def.name.to_string(),
-                amount,
-                priority: def.kind.default_priority(),
-                params: def.params.iter().map(|p| p.default).collect(),
-                raw_params: Vec::new(),
-            },
+            Some(def) => {
+                let mut inst = Self {
+                    name: def.name.to_string(),
+                    amount,
+                    priority: def.kind.default_priority(),
+                    params: def.params.iter().map(|p| p.default).collect(),
+                    raw_params: Vec::new(),
+                };
+                for r in variations::resources_of(name).map_or(&[][..], |rv| rv.resources) {
+                    if !r.default.is_empty() {
+                        inst.set_resource(r.name, r.default);
+                    }
+                }
+                inst
+            }
             None => Self { name: name.to_string(), amount, priority: 0, params: Vec::new(), raw_params: Vec::new() },
         }
     }

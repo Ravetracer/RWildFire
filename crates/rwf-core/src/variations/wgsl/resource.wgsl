@@ -219,3 +219,126 @@ fn res_displacemap(base: u32, inx: f32, iny: f32, amount: f32, v_in: Pt) -> Pt {
   }
   return v;
 }
+
+// AbstractBrushStrokeWFFunc.discretNoise (i32 arithmetic wraps as in Java).
+fn res_discret_noise(x: i32) -> f32 {
+  let n = (x << 13u) ^ x;
+  let v = n * (n * n * 15731 + 789221) + 1376312589;
+  return f32(v & 0x7fffffff) * (1.0 / 2147483647.0);
+}
+
+// AbstractBrushStrokeWFFunc.transform: params at base, point set header at base + 20.
+fn res_brush(base: u32, a: Pt, v_in: Pt, amount: f32, inx: f32, iny: f32, preserve_z: bool) -> Pt {
+  var v = v_in;
+  let nsg = 32768.0 * 0.666;
+  let nsx = 32768.0;
+  let nsy = nsx * 0.42 + PI;
+  let blend = prm[base];
+  let grid = prm[base + 1u];
+  var gx = inx - fmod(inx, grid);
+  var gy = iny - fmod(iny, grid);
+  let batch = i32(prm[base + 9u]);
+  let generation = max(min(ftoi(f32(batch + 1) * 0.5 * (a.color + res_discret_noise(ftoi(nsg * (gx + 1235.767 * gy))))), batch), 0);
+  if (generation < i32(prm[base + 20u])) {
+    let t = base + u32(prm[base + 21u]) + 3u * u32(generation);
+    let start = base + u32(prm[t]);
+    let n = u32(prm[t + 1u]);
+    let total = prm[t + 2u];
+    let total_blend = blend * (1.0 + (0.5 - res_discret_noise(ftoi(nsy * (gy + 17.85263 * gx)))) * prm[base + 5u]);
+    var draw = total > 1.0;
+    if (draw && blend >= EPSILON) { draw = rnd() > total_blend; }
+    if (draw) {
+      let k = floor(rnd() * total);
+      var lo = 0u;
+      var hi = n - 1u;
+      loop {
+        if (lo >= hi) { break; }
+        let mid = (lo + hi) / 2u;
+        if (prm[start + 3u * mid + 2u] > k) { hi = mid; } else { lo = mid + 1u; }
+      }
+      let px = prm[start + 3u * lo];
+      let py = prm[start + 3u * lo + 1u];
+      let alpha = res_discret_noise(ftoi(nsx * (gx - 73.547321 * gy))) * prm[base + 3u];
+      let scl = 1.0 + (0.5 - res_discret_noise(ftoi(nsy * (gy + 31.67891 * gx)))) * prm[base + 4u];
+      var rx = (cos(alpha) * px - sin(alpha) * py) * scl;
+      var ry = (sin(alpha) * px + cos(alpha) * py) * scl;
+      if (prm[base + 16u] > 0.01) {
+        let dr = (exp(prm[base + 16u] * sqrt(-log(max(rnd(), 1.0e-30)))) - 1.0) * 0.001;
+        let da = rnd() * TWO_PI;
+        rx += dr * cos(da);
+        ry += dr * sin(da);
+      }
+      if (grid <= EPSILON) {
+        v.x = amount * rx;
+        v.y = amount * ry;
+      } else {
+        gx += (0.5 - res_discret_noise(ftoi(nsx * (gx - 17.236612 * gy)))) * prm[base + 2u];
+        gy += (0.5 - res_discret_noise(ftoi(nsy * (gy + 76.32561 * gx)))) * prm[base + 2u];
+        v.x = gx + amount * rx;
+        v.y = gy + amount * ry;
+      }
+    }
+  }
+  if (abs(v.x) < EPSILON && abs(v.y) < EPSILON) { v.hide = 1.0; } else { v.hide = 0.0; }
+  if (preserve_z) { v.z += amount * a.z; }
+  return v;
+}
+
+// Metaballs3DWFFunc.transform: params at base, box at base + 18, colormap at base + 24,
+// ball count at base + 27, balls [x, y, z, r] from base + 28.
+fn res_metaballs(base: u32, v_in: Pt, amount: f32) -> Pt {
+  var v = v_in;
+  let x0 = prm[base + 18u];
+  let dx = prm[base + 19u];
+  let y0 = prm[base + 20u];
+  let dy = prm[base + 21u];
+  let z0 = prm[base + 22u];
+  let dz = prm[base + 23u];
+  let n = u32(prm[base + 27u]);
+  let iters = i32(prm[base + 14u]);
+  var hit = false;
+  var p = vec3<f32>(0.0);
+  for (var i = 0; i < iters; i++) {
+    p = vec3<f32>(x0 + rnd() * dx, y0 + rnd() * dy, z0 + rnd() * dz);
+    var e = 0.0;
+    for (var k = 0u; k < n; k++) {
+      let o = base + 28u + 4u * k;
+      let d = p - vec3<f32>(prm[o], prm[o + 1u], prm[o + 2u]);
+      let r = prm[o + 3u];
+      let q = r * r / dot(d, d);
+      if (r < 0.0) { e -= q; } else { e += q; }
+    }
+    if (e > prm[base + 6u]) {
+      v.x += amount * p.x;
+      v.y += amount * p.y;
+      v.z += amount * p.z;
+      hit = true;
+      break;
+    }
+  }
+  if (!hit) { v.hide = 1.0; return v; }
+  v.hide = 0.0;
+  if (prm[base + 15u] <= 0.0) { return v; }
+  let f = vec3<f32>((p.x - x0) / dx, (p.y - y0) / dy, (p.z - z0) / dz);
+  let mode = i32(prm[base + 16u]);
+  if (mode == 3) { v.color = f.x; }
+  else if (mode == 4) { v.color = f.y; }
+  else if (mode == 5) { v.color = f.z; }
+  else if (mode <= 2) {
+    if (prm[base + 24u] > 0.0) {
+      let iw = prm[base + 24u] - 1.0;
+      let ih = prm[base + 25u] - 1.0;
+      var uw = f.xy;
+      if (mode == 0) { uw = f.yz; } else if (mode == 1) { uw = vec2<f32>(f.z, f.x); }
+      let rgb = res_image_color(base, 24u, prm[base + 17u] > 0.0, clamp(uw.x * iw, 0.0, iw), clamp(ih - uw.y * ih, 0.0, ih));
+      v.rgbc = 1.0; v.r = rgb.x; v.g = rgb.y; v.b = rgb.z;
+      v.color = res_uv_color_idx(rgb);
+    }
+  }
+  else if (mode == 6) { v.color = f.x * f.y; }
+  else if (mode == 7) { v.color = f.y * f.z; }
+  else if (mode == 8) { v.color = f.z * f.x; }
+  else { v.color = f.x * f.y * f.z; }
+  v.color = clamp(v.color, 0.0, 1.0);
+  return v;
+}
