@@ -3774,4 +3774,89 @@ if (weight > 0.75) {
 v.x += (-r0 * sin(w) / 2.0 + c.x) * AMOUNT;
 v.y += (-r0 * cos(w) / 2.0 + c.y) * AMOUNT;",
     ),
+    VarDef {
+        name: "lagrange",
+        params: &[ParamDef::new("separation", 0.5), ParamDef::new("strength", 0.2)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let sep = java_max(d[0].abs(), 0.01);
+            let (dx1, dx2) = (a.x + sep * 0.5, a.x - sep * 0.5);
+            let r1 = (dx1 * dx1 + a.y * a.y).sqrt() + 0.1;
+            let r2 = (dx2 * dx2 + a.y * a.y).sqrt() + 0.1;
+            let px = -d[1] * (dx1 / (r1 * r1 * r1) + dx2 / (r2 * r2 * r2));
+            let py = -d[1] * (a.y / (r1 * r1 * r1) + a.y / (r2 * r2 * r2));
+            v.x += amount * (a.x + px);
+            v.y += amount * (a.y + py);
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "let sep = max(abs(D(0)), 0.01);
+let dx1 = a.x - (-sep * 0.5);
+let dx2 = a.x - sep * 0.5;
+let r1 = sqrt(dx1 * dx1 + a.y * a.y) + 0.1;
+let r2 = sqrt(dx2 * dx2 + a.y * a.y) + 0.1;
+let px = -D(1) * (dx1 / (r1 * r1 * r1) + dx2 / (r2 * r2 * r2));
+let py = -D(1) * (a.y / (r1 * r1 * r1) + a.y / (r2 * r2 * r2));
+v.x += AMOUNT * (a.x + px);
+v.y += AMOUNT * (a.y + py);
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "laminar",
+        params: &[ParamDef::new("shear", 0.5), ParamDef::new("amp", 0.1), ParamDef::new("freq", 2.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            v.x += amount * (d[0] * (1.0 - a.y * a.y) + d[1] * (d[2] * a.y).sin());
+            v.y += amount * a.y;
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "v.x += AMOUNT * (D(0) * (1.0 - a.y * a.y) + D(1) * sin(D(2) * a.y));
+v.y += AMOUNT * a.y;
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "lattice",
+        params: &[ParamDef::new("freq", 3.0), ParamDef::new("pull", 0.5), ParamDef::new("shear", 0.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let freq = java_max(d[0].abs(), 0.01);
+            let pull = java_max(0.0, java_min(1.0, d[1]));
+            let dx = java_round(a.x * freq) / freq - a.x;
+            let dy = java_round(a.y * freq) / freq - a.y;
+            v.x += amount * (a.x + pull * dx + d[2] * dy);
+            v.y += amount * (a.y + pull * dy + d[2] * dx);
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "let freq = max(abs(D(0)), 0.01);
+let pull = clamp(D(1), 0.0, 1.0);
+let dx = java_round(a.x * freq) / freq - a.x;
+let dy = java_round(a.y * freq) / freq - a.y;
+v.x += AMOUNT * (a.x + pull * dx + D(2) * dy);
+v.y += AMOUNT * (a.y + pull * dy + D(2) * dx);
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "layered_spiral",
+        params: &[ParamDef::new("radius", 1.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let r = a.x * d[0];
+            let t = a.x * a.x + a.y * a.y + EPSILON;
+            v.x += amount * r * t.cos();
+            v.y += amount * r * t.sin();
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "let r = a.x * D(0);
+let t = a.x * a.x + a.y * a.y + EPSILON;
+v.x += AMOUNT * r * cos(t);
+v.y += AMOUNT * r * sin(t);
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
 ];
