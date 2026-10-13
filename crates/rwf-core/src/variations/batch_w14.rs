@@ -872,9 +872,9 @@ v.y += AMOUNT * y0;",
         },
         prepare: Some(|p, _| {
             let mut d = p.to_vec();
-            for i in 0..3 {
-                if d[i] < EPSILON {
-                    d[i] = EPSILON;
+            for k in &mut d[0..3] {
+                if *k < EPSILON {
+                    *k = EPSILON;
                 }
             }
             if d[3] < 0.1 {
