@@ -168,7 +168,9 @@ impl Preview {
             if ms < 14.0 {
                 self.gpu_iters = (self.gpu_iters + self.gpu_iters / 4 + 1).min(2048);
             } else if ms > 24.0 {
-                self.gpu_iters = (self.gpu_iters * 3 / 4).max(4);
+                // Scale with the measured frame time so expensive flames (e.g. metaballs3d_wf)
+                // get back to an interactive frame rate within a frame or two.
+                self.gpu_iters = ((self.gpu_iters as f64 * 16.0 / ms) as u32).min(self.gpu_iters * 3 / 4).max(1);
             }
             gpu.iterate(1, self.gpu_iters);
             gpu.tonemap();
