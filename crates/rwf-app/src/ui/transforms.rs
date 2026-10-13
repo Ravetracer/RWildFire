@@ -483,23 +483,61 @@ fn primitive_combo(ui: &mut Ui, vi: usize, v: &mut f64) {
     });
 }
 
-/// File name of a variation resource (image or OBJ mesh), typed or picked.
+/// A variation resource: a file name (typed or picked), an embedded image or a text field.
+/// As in JWildfire, a file name and an embedded image of the same variation exclude each other.
 fn resource_picker(ui: &mut Ui, var: &mut VariationInstance, r: &variations::ResDef) {
-    let (kind, exts): (&str, &[&str]) = match r.kind {
-        variations::ResKind::ImageFile => ("Image", &["png", "jpg", "jpeg"]),
-        variations::ResKind::ObjFile => ("Wavefront OBJ", &["obj"]),
+    use variations::ResKind;
+    let siblings = variations::resources_of(&var.name).map_or(&[][..], |rv| rv.resources);
+    let clear_kind = |var: &mut VariationInstance, kind: ResKind| {
+        for s in siblings.iter().filter(|s| s.kind == kind) {
+            if !var.resource_bytes(s.name).is_empty() {
+                var.set_resource_bytes(s.name, &[]);
+            }
+        }
     };
-    let mut value = var.resource(r.name);
-    ui.horizontal(|ui| {
-        let mut changed = ui.add(egui::TextEdit::singleline(&mut value).desired_width(140.0).hint_text(format!("{kind} file"))).changed();
-        if ui.small_button("…").clicked()
-            && let Some(p) = rfd::FileDialog::new().add_filter(kind, exts).pick_file()
-        {
-            value = p.display().to_string();
-            changed = true;
+    let image_filter = ("Image", &["png", "jpg", "jpeg"][..]);
+    match r.kind {
+        ResKind::ImageData => {
+            let len = var.resource_bytes(r.name).len();
+            ui.horizontal(|ui| {
+                let txt = if len == 0 { "none".to_string() } else { format!("embedded, {} KB", len.div_ceil(1024)) };
+                ui.label(RichText::new(txt).color(theme::TEXT_MUTED));
+                if ui.small_button("Embed…").clicked()
+                    && let Some(p) = rfd::FileDialog::new().add_filter(image_filter.0, image_filter.1).pick_file()
+                    && let Ok(bytes) = std::fs::read(&p)
+                {
+                    var.set_resource_bytes(r.name, &bytes);
+                    clear_kind(var, ResKind::ImageFile);
+                }
+                if len > 0 && ui.small_button("Remove").clicked() {
+                    var.set_resource_bytes(r.name, &[]);
+                }
+            });
         }
-        if changed {
-            var.set_resource(r.name, &value);
+        _ => {
+            let file: Option<(&str, &[&str])> = match r.kind {
+                ResKind::ImageFile => Some(image_filter),
+                ResKind::ObjFile => Some(("Wavefront OBJ", &["obj"])),
+                _ => None,
+            };
+            let mut value = var.resource(r.name);
+            ui.horizontal(|ui| {
+                let hint = file.map_or("Text".to_string(), |(kind, _)| format!("{kind} file"));
+                let mut changed = ui.add(egui::TextEdit::singleline(&mut value).desired_width(140.0).hint_text(hint)).changed();
+                if let Some((kind, exts)) = file
+                    && ui.small_button("…").clicked()
+                    && let Some(p) = rfd::FileDialog::new().add_filter(kind, exts).pick_file()
+                {
+                    value = p.display().to_string();
+                    changed = true;
+                }
+                if changed {
+                    var.set_resource(r.name, &value);
+                    if r.kind == ResKind::ImageFile && !value.is_empty() {
+                        clear_kind(var, ResKind::ImageData);
+                    }
+                }
+            });
         }
-    });
+    }
 }

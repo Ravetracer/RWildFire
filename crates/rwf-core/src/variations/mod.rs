@@ -165,7 +165,8 @@ pub struct Ctx {
     /// Gradient (0..255 RGB) of the layer currently being iterated. Set it with
     /// [`Ctx::set_palette`], which also resets the palette lookup cache.
     pub palette: Vec<[u8; 3]>,
-    uv_idx_cache: HashMap<(i32, i32, i32), f64>,
+    /// `(r, g, b, unit scale)` -> gradient position.
+    uv_idx_cache: HashMap<(i32, i32, i32, bool), f64>,
 }
 
 impl Ctx {
@@ -180,25 +181,40 @@ impl Ctx {
     /// Gradient position (0..1) of the gradient color nearest to an RGB color
     /// (`UVColorMapper.getUVColorIdx`; compares against the render palette, 0..200 scale).
     pub fn uv_color_idx(&mut self, r: i32, g: i32, b: i32) -> f64 {
-        if let Some(&v) = self.uv_idx_cache.get(&(r, g, b)) {
+        if let Some(&v) = self.uv_idx_cache.get(&(r, g, b, false)) {
             return v;
         }
+        let v = self.nearest_color_idx([r as f64, g as f64, b as f64]);
+        self.uv_idx_cache.insert((r, g, b, false), v);
+        v
+    }
+    /// [`Ctx::uv_color_idx`] for an RGB color of 0..1 components, compared unscaled against the
+    /// render palette, as `AbstractDisplacementMapWFFunc.getColorIdx` does.
+    pub fn unit_color_idx(&mut self, rgb: [f64; 3]) -> f64 {
+        let ftoi = crate::math::ftoi;
+        let key = (ftoi(rgb[0] * 255.0), ftoi(rgb[1] * 255.0), ftoi(rgb[2] * 255.0), true);
+        if let Some(&v) = self.uv_idx_cache.get(&key) {
+            return v;
+        }
+        let v = self.nearest_color_idx(rgb);
+        self.uv_idx_cache.insert(key, v);
+        v
+    }
+    fn nearest_color_idx(&self, rgb: [f64; 3]) -> f64 {
         let scale = 200.0 / 256.0;
         let mut nearest = 0;
         let mut nearest_dist = f64::MAX;
         for (i, c) in self.palette.iter().enumerate() {
-            let dr = c[0] as f64 * scale - r as f64;
-            let dg = c[1] as f64 * scale - g as f64;
-            let db = c[2] as f64 * scale - b as f64;
+            let dr = c[0] as f64 * scale - rgb[0];
+            let dg = c[1] as f64 * scale - rgb[1];
+            let db = c[2] as f64 * scale - rgb[2];
             let dist = dr * dr + dg * dg + db * db;
             if dist < nearest_dist {
                 nearest_dist = dist;
                 nearest = i;
             }
         }
-        let v = nearest as f64 / (self.palette.len().max(2) - 1) as f64;
-        self.uv_idx_cache.insert((r, g, b), v);
-        v
+        nearest as f64 / (self.palette.len().max(2) - 1) as f64
     }
     /// Gradient color `i` (clamped to 0..255) as 0..255 floats (JWildfire `RGBPalette.getColor`).
     #[inline]
@@ -331,6 +347,10 @@ pub enum ResKind {
     ImageFile,
     /// Wavefront OBJ file name.
     ObjFile,
+    /// Image file embedded in the flame (raw file bytes).
+    ImageData,
+    /// Informational text (JWildfire `HREF`: image source / description links).
+    Href,
 }
 
 /// A resource parameter: a string value (e.g. a file name), stored hex-encoded in `.flame` files.
@@ -340,9 +360,16 @@ pub struct ResDef {
     pub kind: ResKind,
 }
 
-/// Completes prepared data with loaded resources. `res` holds the decoded resource values,
-/// aligned with [`ResourceVar::resources`] (empty strings for unset ones).
-pub type LoadFn = fn(d: &mut Vec<f64>, res: &[String]);
+/// What resource loading may depend on besides the resource values.
+#[derive(Clone, Copy, Debug)]
+pub struct LoadEnv {
+    /// Current animation frame (1-based, `FlameTransformationContext.getFrame`).
+    pub frame: u32,
+}
+
+/// Completes prepared data with loaded resources. `res` holds the raw resource values,
+/// aligned with [`ResourceVar::resources`] (empty for unset ones).
+pub type LoadFn = fn(d: &mut Vec<f64>, res: &[Vec<u8>], env: &LoadEnv);
 
 /// Resource declaration of a variation. Resources are loaded on the CPU and packed into the
 /// prepared data array, so both renderers read them like ordinary parameters.
@@ -359,11 +386,11 @@ pub fn resources_of(name: &str) -> Option<&'static ResourceVar> {
 }
 
 /// Prepared data of a variation instance, including its resources.
-pub fn prepare_instance(def: &VarDef, inst: &crate::model::VariationInstance, coefs: &Affine) -> Vec<f64> {
+pub fn prepare_instance(def: &VarDef, inst: &crate::model::VariationInstance, coefs: &Affine, frame: u32) -> Vec<f64> {
     let mut d = def.prepare_data(&inst.params, coefs);
     if let Some(rv) = resources_of(def.name) {
-        let res: Vec<String> = rv.resources.iter().map(|r| inst.resource(r.name)).collect();
-        (rv.load)(&mut d, &res);
+        let res: Vec<Vec<u8>> = rv.resources.iter().map(|r| inst.resource_bytes(r.name)).collect();
+        (rv.load)(&mut d, &res, &LoadEnv { frame });
     }
     d
 }

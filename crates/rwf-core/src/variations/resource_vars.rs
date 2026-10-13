@@ -27,10 +27,10 @@
 
 use std::sync::{Arc, OnceLock};
 
-use super::{Ctx, ParamDef, Pt, ResDef, ResKind, ResourceVar, VarDef, VarKind};
+use super::{Ctx, LoadEnv, ParamDef, Pt, ResDef, ResKind, ResourceVar, VarDef, VarKind};
 use crate::math::*;
 use crate::mesh::{self, Mesh, MeshSource, Refinement};
-use crate::resources;
+use crate::resources::{self, ImageMap};
 
 /// `limitIntVal(Tools.FTOI(x), lo, hi)` as `f64`.
 fn ftoi_limit(x: f64, lo: i32, hi: i32) -> f64 {
@@ -41,13 +41,29 @@ fn ftoi_limit(x: f64, lo: i32, hi: i32) -> f64 {
 const IMG: usize = 3;
 
 /// Fills the image block at `d[o..o + 3]` and appends the pixels (no-op if the image is missing).
-fn load_image(d: &mut Vec<f64>, o: usize, path: &str) {
-    if let Some(img) = resources::image(path) {
-        d[o] = img.width as f64;
-        d[o + 1] = img.height as f64;
-        d[o + 2] = d.len() as f64;
-        d.extend(img.pixels.iter().map(|&p| p as f64));
+fn load_image(d: &mut Vec<f64>, o: usize, path: &[u8]) {
+    if let Some(img) = resources::image(&text(path)) {
+        push_image(d, o, &img);
     }
+}
+
+fn push_image(d: &mut Vec<f64>, o: usize, img: &ImageMap) {
+    d[o] = img.width as f64;
+    d[o + 1] = img.height as f64;
+    d[o + 2] = d.len() as f64;
+    d.extend(img.pixels.iter().map(|&p| p as f64));
+}
+
+/// Image block of the alpha plane (alpha in the blue channel of the packed pixels).
+fn push_alpha(d: &mut Vec<f64>, o: usize, img: &ImageMap) {
+    d[o] = img.width as f64;
+    d[o + 1] = img.height as f64;
+    d[o + 2] = d.len() as f64;
+    d.extend(img.alpha.iter().map(|&a| a as f64));
+}
+
+fn text(b: &[u8]) -> String {
+    String::from_utf8_lossy(b).into_owned()
 }
 
 #[inline]
@@ -135,7 +151,7 @@ fn plane_wf_apply(d: &[f64], ctx: &mut Ctx, _: &mut Pt, v: &mut Pt, amount: f64)
     v.z += amount * z;
 }
 
-fn plane_wf_load(d: &mut Vec<f64>, res: &[String]) {
+fn plane_wf_load(d: &mut Vec<f64>, res: &[Vec<u8>], _: &LoadEnv) {
     load_image(d, PW_CM, &res[0]);
     load_image(d, PW_DM, &res[1]);
 }
@@ -202,7 +218,7 @@ fn default_mesh() -> Arc<Mesh> {
 }
 
 /// Loads the images and the mesh (the cube if `src` is unavailable) and packs them into `d`.
-fn mesh_load(d: &mut Vec<f64>, p: usize, src: Option<MeshSource>, colormap: &str, displ_map: &str) {
+fn mesh_load(d: &mut Vec<f64>, p: usize, src: Option<MeshSource>, colormap: &[u8], displ_map: &[u8]) {
     let o = p + MESH_PARAMS.len();
     load_image(d, o, colormap);
     load_image(d, o + M_DISPL, displ_map);
@@ -291,6 +307,257 @@ fn mesh_apply(d: &[f64], p: usize, ctx: &mut Ctx, v: &mut Pt, amount: f64) {
 }
 
 // ---------------------------------------------------------------------------------------------
+// colormap_wf / post_colormap_wf (AbstractColorMapWFFunc),
+// displacemap_wf / post_displacemap_wf (AbstractDisplacementMapWFFunc)
+
+/// `getCurrImageFilename`: the frame's file of an image sequence (`name0001.png`, ...).
+fn sequence_filename(name: &str, frame: u32, start: i32, digits: i32) -> String {
+    let chars: Vec<char> = name.chars().collect();
+    let Some(p) = chars.iter().rposition(|&c| c == '.') else {
+        return name.to_string();
+    };
+    if p as i32 <= digits || p == chars.len() - 1 {
+        return name.to_string();
+    }
+    let base: String = chars[..p - digits as usize].iter().collect();
+    let ext: String = chars[p..].iter().collect();
+    let mut number = (frame as i32 - 1 + start).to_string();
+    while (number.chars().count() as i32) < digits {
+        number.insert(0, '0');
+    }
+    format!("{base}{number}{ext}")
+}
+
+/// The image of an image-based variation: the embedded image, else the (sequence) file, else
+/// the default gradient.
+fn source_image(filename: &[u8], inlined: &[u8], sequence: Option<(i32, i32)>, frame: u32) -> Arc<ImageMap> {
+    let img = if !inlined.is_empty() {
+        resources::image_from_bytes(inlined)
+    } else if !filename.is_empty() {
+        let name = text(filename);
+        resources::image(&match sequence {
+            Some((start, digits)) => sequence_filename(&name, frame, start, digits),
+            None => name,
+        })
+    } else {
+        None
+    };
+    img.unwrap_or_else(ImageMap::default_gradient)
+}
+
+/// Tiling of an image index as in JWildfire (note: `-n` maps to `n`, outside the image).
+fn wrap_tile(i: i32, n: i32) -> i32 {
+    if i < 0 {
+        i.wrapping_sub((i / n - 1).wrapping_mul(n))
+    } else if i >= n {
+        i - (i / n) * n
+    } else {
+        i
+    }
+}
+
+/// `colormap_wf` data: 15 parameters, image, alpha plane (only with `with_alpha`).
+const CM_IMG: usize = 15;
+const CM_ALPHA: usize = CM_IMG + IMG;
+
+const COLORMAP_PARAMS: [ParamDef; 15] = [
+    ParamDef::new("scale_x", 1.0),
+    ParamDef::new("scale_y", 1.0),
+    ParamDef::new("scale_z", 0.0),
+    ParamDef::new("offset_x", 0.0),
+    ParamDef::new("offset_y", 0.0),
+    ParamDef::new("offset_z", 0.0),
+    ParamDef::int("tile_x", 1.0, 0.0, 1.0),
+    ParamDef::int("tile_y", 1.0, 0.0, 1.0),
+    ParamDef::int("reset_z", 1.0, 0.0, 1.0),
+    ParamDef::int("dc_color", 1.0, 0.0, 1.0),
+    ParamDef::int("blend_colormap", 0.0, 0.0, 1.0),
+    ParamDef::int("with_alpha", 0.0, 0.0, 1.0),
+    ParamDef::int("is_sequence", 0.0, 0.0, 1.0),
+    ParamDef::int("sequence_start", 1.0, 0.0, 9999.0),
+    ParamDef::int("sequence_digits", 4.0, 1.0, 8.0),
+];
+
+fn colormap_prepare(p: &[f64]) -> Vec<f64> {
+    let mut d = p.to_vec();
+    for v in &mut d[6..15] {
+        *v = ftoi(*v) as f64;
+    }
+    d.extend([0.0; 2 * IMG]);
+    d
+}
+
+fn colormap_load(d: &mut Vec<f64>, res: &[Vec<u8>], env: &LoadEnv) {
+    let sequence = (d[12] > 0.0).then_some((d[13] as i32, d[14] as i32));
+    let img = source_image(&res[0], &res[1], sequence, env.frame);
+    push_image(d, CM_IMG, &img);
+    if d[11] > 0.0 {
+        push_alpha(d, CM_ALPHA, &img);
+    }
+}
+
+/// `AbstractColorMapWFFunc.transform`: colors (and optionally lifts or hides) the point by the
+/// image pixel at `(inx, iny)`.
+fn colormap_apply(d: &[f64], ctx: &mut Ctx, v: &mut Pt, inx: f64, iny: f64) {
+    // d = [scale_x, scale_y, scale_z, offset_x, offset_y, offset_z, tile_x, tile_y, reset_z,
+    //      dc_color, blend_colormap, with_alpha, is_sequence, sequence_start, sequence_digits,
+    //      image (3), alpha (3), ..]
+    let (w, h) = (d[CM_IMG] as i32, d[CM_IMG + 1] as i32);
+    let x = (inx - (d[3] + 0.5) + 1.0) / d[0] * (w - 2) as f64;
+    let y = (iny - (d[4] + 0.5) + 1.0) / d[1] * (h - 2) as f64;
+    let blend = d[10] > 0.0;
+    let (mut ix, mut iy) = if blend { (x.trunc() as i32, y.trunc() as i32) } else { (ftoi(x), ftoi(y)) };
+    if d[6] as i32 == 1 {
+        ix = wrap_tile(ix, w);
+    }
+    if d[7] as i32 == 1 {
+        iy = wrap_tile(iy, h);
+    }
+    let with_alpha = d[11] > 0.0;
+    let rgba = |ix: i32, iy: i32| {
+        let c = pixel(d, CM_IMG, ix as i64, iy as i64);
+        let a = if with_alpha { pixel(d, CM_ALPHA, ix as i64, iy as i64)[2] } else { 255.0 };
+        [c[0], c[1], c[2], a]
+    };
+    let c = if ix >= 0 && ix < w && iy >= 0 && iy < h {
+        if blend {
+            // neighbours beyond the border are transparent black
+            let at = |ok: bool, ix: i32, iy: i32| if ok { rgba(ix, iy) } else { [0.0; 4] };
+            let (lu, ru, lb, rb) = (rgba(ix, iy), at(ix < w - 1, ix + 1, iy), at(iy < h - 1, ix, iy + 1), at(ix < w - 1 && iy < h - 1, ix + 1, iy + 1));
+            let (fu, fv) = (frac(x), frac(y));
+            [0, 1, 2, 3].map(|k| blerp(lu[k], ru[k], lb[k], rb[k], fu, fv))
+        } else {
+            rgba(ix, iy)
+        }
+    } else {
+        [0.0; 4]
+    };
+    let dc_color = d[9] as i32;
+    if dc_color == 0 {
+        v.rgb_color = true;
+        v.red = c[0];
+        v.green = c[1];
+        v.blue = c[2];
+    }
+    v.do_hide = with_alpha && c[3] <= 0.1;
+    let mut dz = d[5];
+    if d[2].abs() > EPSILON {
+        dz += d[2] * (0.299 * c[0] + 0.588 * c[1] + 0.113 * c[2]) / 255.0;
+    }
+    if d[8] as i32 != 0 {
+        v.z = dz;
+    } else {
+        v.z += dz;
+    }
+    if dc_color > 0 {
+        v.color = ctx.uv_color_idx(ftoi(c[0]), ftoi(c[1]), ftoi(c[2]));
+    }
+}
+
+/// `displacemap_wf` data: 9 parameters, image.
+const DM_IMG: usize = 9;
+
+const DISPLACEMAP_PARAMS: [ParamDef; 9] = [
+    ParamDef::int("mode", 0.0, 0.0, 3.0),
+    ParamDef::int("color_mode", 0.0, 0.0, 1.0),
+    ParamDef::range("bias", 0.0, 0.0, 1.0),
+    ParamDef::new("scale_x", 1.0),
+    ParamDef::new("scale_y", 1.0),
+    ParamDef::new("offset_x", 0.0),
+    ParamDef::new("offset_y", 0.0),
+    ParamDef::int("tile_x", 1.0, 0.0, 1.0),
+    ParamDef::int("tile_y", 1.0, 0.0, 1.0),
+];
+
+fn displacemap_prepare(p: &[f64]) -> Vec<f64> {
+    let mut d = p.to_vec();
+    for i in [0, 1, 7, 8] {
+        d[i] = ftoi(p[i]) as f64;
+    }
+    d.extend([0.0; IMG]);
+    d
+}
+
+fn displacemap_load(d: &mut Vec<f64>, res: &[Vec<u8>], _: &LoadEnv) {
+    push_image(d, DM_IMG, &source_image(&res[0], &res[1], None, 1));
+}
+
+/// `AbstractDisplacementMapWFFunc.transform`: rotates, translates, scales or shears the
+/// accumulated point by the image pixel at `(inx, iny)`.
+fn displacemap_apply(d: &[f64], ctx: &mut Ctx, v: &mut Pt, amount: f64, inx: f64, iny: f64) {
+    // d = [mode, color_mode, bias, scale_x, scale_y, offset_x, offset_y, tile_x, tile_y, image (3), ..]
+    let (w, h) = (d[DM_IMG] as i32, d[DM_IMG + 1] as i32);
+    let mut ix = ftoi((inx - (d[5] + 0.5) + 1.0) / d[3] * (w - 1) as f64);
+    let mut iy = ftoi((iny - (d[6] + 0.5) + 1.0) / d[4] * (h - 1) as f64);
+    if d[7] as i32 == 1 {
+        ix = wrap_tile(ix, w);
+    }
+    if d[8] as i32 == 1 {
+        iy = wrap_tile(iy, h);
+    }
+    if ix < 0 || ix >= w || iy < 0 || iy >= h {
+        return;
+    }
+    let c = pixel(d, DM_IMG, ix as i64, iy as i64).map(|c| c / 255.0);
+    let intensity = 0.299 * c[0] + 0.588 * c[1] + 0.113 * c[2] - d[2];
+    match d[0] as i32 {
+        1 => {
+            v.x += (c[0] - 0.5) * amount;
+            v.y += (c[1] - 0.5) * amount;
+        }
+        2 => {
+            if intensity > 0.0 {
+                let scl = 1.0 + (intensity - 0.5) * amount;
+                v.x *= scl;
+                v.y *= scl;
+            }
+        }
+        3 => {
+            let (ax, ay) = ((c[0] - 0.5) * amount, (c[1] - 0.5) * amount);
+            let nx = v.x * ax * ay + v.y * ay;
+            let ny = v.x * ay - v.y * ax * ay;
+            v.x = nx;
+            v.y = ny;
+        }
+        _ => {
+            if intensity > 0.0 {
+                let (sa, ca) = (intensity * M_2PI * amount).sin_cos();
+                let nx = v.x * ca - v.y * sa;
+                let ny = v.x * sa + v.y * ca;
+                v.x = nx;
+                v.y = ny;
+            }
+        }
+    }
+    if d[1] as i32 == 1 {
+        v.rgb_color = true;
+        v.red = c[0] * 255.0;
+        v.green = c[1] * 255.0;
+        v.blue = c[2] * 255.0;
+        // as in JWildfire: 0..1 components against the 0..200 render palette
+        v.color = ctx.unit_color_idx(c);
+    }
+}
+
+/// `post_bumpmap_wf` data: 7 parameters, image (black 320x256 if none, as in JWildfire).
+const BM_IMG: usize = 7;
+
+fn bumpmap_load(d: &mut Vec<f64>, res: &[Vec<u8>], _: &LoadEnv) {
+    static BLACK: OnceLock<Arc<ImageMap>> = OnceLock::new();
+    let img = if !res[1].is_empty() {
+        resources::image_from_bytes(&res[1])
+    } else if !res[0].is_empty() {
+        resources::image(&text(&res[0]))
+    } else {
+        None
+    };
+    let img = img.unwrap_or_else(|| {
+        BLACK.get_or_init(|| Arc::new(ImageMap { width: 320, height: 256, pixels: vec![0; 320 * 256], alpha: vec![255; 320 * 256] })).clone()
+    });
+    push_image(d, BM_IMG, &img);
+}
+
+// ---------------------------------------------------------------------------------------------
 
 pub static DEFS: &[VarDef] = &[
     VarDef {
@@ -374,12 +641,113 @@ v.z += AMOUNT * z;",
         }),
         wgsl: "v = res_mesh(base, 1u, v, AMOUNT);",
     },
+    VarDef {
+        name: "colormap_wf",
+        params: &COLORMAP_PARAMS,
+        kind: VarKind::Normal,
+        is_3d: true,
+        apply: |d, ctx, a, v, _| colormap_apply(d, ctx, v, a.x, a.y),
+        prepare: Some(|p, _| colormap_prepare(p)),
+        wgsl: "v = res_colormap(base, a.x, a.y, v);",
+    },
+    VarDef {
+        name: "post_colormap_wf",
+        params: &COLORMAP_PARAMS,
+        kind: VarKind::Post,
+        is_3d: true,
+        apply: |d, ctx, _, v, _| {
+            let (x, y) = (v.x, v.y);
+            colormap_apply(d, ctx, v, x, y)
+        },
+        prepare: Some(|p, _| colormap_prepare(p)),
+        wgsl: "v = res_colormap(base, v.x, v.y, v);",
+    },
+    VarDef {
+        name: "displacemap_wf",
+        params: &DISPLACEMAP_PARAMS,
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| displacemap_apply(d, ctx, v, amount, a.x, a.y),
+        prepare: Some(|p, _| displacemap_prepare(p)),
+        wgsl: "v = res_displacemap(base, a.x, a.y, AMOUNT, v);",
+    },
+    VarDef {
+        name: "post_displacemap_wf",
+        params: &DISPLACEMAP_PARAMS,
+        kind: VarKind::Post,
+        is_3d: false,
+        apply: |d, ctx, _, v, amount| {
+            let (x, y) = (v.x, v.y);
+            displacemap_apply(d, ctx, v, amount, x, y)
+        },
+        prepare: Some(|p, _| displacemap_prepare(p)),
+        wgsl: "v = res_displacemap(base, v.x, v.y, AMOUNT, v);",
+    },
+    VarDef {
+        name: "post_bumpmap_wf",
+        params: &[
+            ParamDef::new("scale_x", 1.0),
+            ParamDef::new("scale_y", 1.0),
+            ParamDef::new("scale_z", 0.2),
+            ParamDef::new("offset_x", 0.0),
+            ParamDef::new("offset_y", 0.0),
+            ParamDef::new("offset_z", 0.0),
+            ParamDef::int("reset_z", 0.0, 0.0, 1.0),
+        ],
+        kind: VarKind::Post,
+        is_3d: true,
+        apply: |d, _, a, v, _| {
+            // d = [scale_x, scale_y, scale_z, offset_x, offset_y, offset_z, reset_z, image (3), ..]
+            let (w, h) = (d[BM_IMG] as i32, d[BM_IMG + 1] as i32);
+            let ix = ftoi((a.x - d[3] + 1.0) / d[0] * 0.5 * (w - 1) as f64);
+            let iy = ftoi((a.y - d[4] + 1.0) / d[1] * 0.5 * (h - 1) as f64);
+            if ix >= 0 && ix < w && iy >= 0 && iy < h {
+                let c = pixel(d, BM_IMG, ix as i64, iy as i64);
+                let dz = d[5] + d[2] * (0.299 * c[0] + 0.588 * c[1] + 0.113 * c[2]) / 255.0;
+                if d[6] as i32 != 0 {
+                    v.z = dz;
+                } else {
+                    v.z += dz;
+                }
+            }
+        },
+        prepare: Some(|p, _| {
+            let mut d = p.to_vec();
+            d[6] = ftoi(p[6]) as f64;
+            d.extend([0.0; IMG]);
+            d
+        }),
+        wgsl: "let w = i32(D(7));
+let h = i32(D(8));
+let ix = ftoi((a.x - D(3) + 1.0) / D(0) * 0.5 * f32(w - 1));
+let iy = ftoi((a.y - D(4) + 1.0) / D(1) * 0.5 * f32(h - 1));
+if (ix >= 0 && ix < w && iy >= 0 && iy < h) {
+  let c = res_pixel(base, 7u, ix, iy);
+  let dz = D(5) + D(2) * (0.299 * c.x + 0.588 * c.y + 0.113 * c.z) / 255.0;
+  if (i32(D(6)) != 0) { v.z = dz; } else { v.z += dz; }
+}",
+    },
 ];
+
+const COLORMAP_RESOURCES: [ResDef; 4] = [
+    ResDef { name: "image_filename", kind: ResKind::ImageFile },
+    ResDef { name: "inlined_image", kind: ResKind::ImageData },
+    ResDef { name: "image_desc_src", kind: ResKind::Href },
+    ResDef { name: "image_src", kind: ResKind::Href },
+];
+
+const DISPLACEMAP_RESOURCES: [ResDef; 2] =
+    [ResDef { name: "image_filename", kind: ResKind::ImageFile }, ResDef { name: "inlined_image", kind: ResKind::ImageData }];
 
 const IMAGE_RESOURCES: [ResDef; 2] =
     [ResDef { name: "colormap_filename", kind: ResKind::ImageFile }, ResDef { name: "displ_map_filename", kind: ResKind::ImageFile }];
 
 pub static RESOURCES: &[ResourceVar] = &[
+    ResourceVar { name: "colormap_wf", resources: &COLORMAP_RESOURCES, load: colormap_load },
+    ResourceVar { name: "post_colormap_wf", resources: &COLORMAP_RESOURCES, load: colormap_load },
+    ResourceVar { name: "displacemap_wf", resources: &DISPLACEMAP_RESOURCES, load: displacemap_load },
+    ResourceVar { name: "post_displacemap_wf", resources: &DISPLACEMAP_RESOURCES, load: displacemap_load },
+    ResourceVar { name: "post_bumpmap_wf", resources: &DISPLACEMAP_RESOURCES, load: bumpmap_load },
     ResourceVar { name: "plane_wf", resources: &IMAGE_RESOURCES, load: plane_wf_load },
     ResourceVar {
         name: "obj_mesh_wf",
@@ -388,15 +756,15 @@ pub static RESOURCES: &[ResourceVar] = &[
             ResDef { name: "colormap_filename", kind: ResKind::ImageFile },
             ResDef { name: "displ_map_filename", kind: ResKind::ImageFile },
         ],
-        load: |d, res| {
-            let src = (!res[0].is_empty()).then(|| MeshSource::File(res[0].clone()));
+        load: |d, res, _| {
+            let src = (!res[0].is_empty()).then(|| MeshSource::File(text(&res[0])));
             mesh_load(d, 0, src, &res[1], &res[2]);
         },
     },
     ResourceVar {
         name: "obj_mesh_primitive_wf",
         resources: &IMAGE_RESOURCES,
-        load: |d, res| {
+        load: |d, res, _| {
             let i = d[0] as i64;
             let src = (0..mesh::PRIMITIVES.len() as i64).contains(&i).then_some(MeshSource::Primitive(i as usize));
             mesh_load(d, 1, src, &res[0], &res[1]);
@@ -418,7 +786,7 @@ mod tests {
 
     fn run(inst: &VariationInstance, n: usize) -> Vec<Pt> {
         let def = find(&inst.name).unwrap();
-        let d = prepare_instance(def, inst, &Affine::IDENTITY);
+        let d = prepare_instance(def, inst, &Affine::IDENTITY, 1);
         let mut ctx = Ctx::new(7, false);
         (0..n)
             .map(|_| {
@@ -493,5 +861,66 @@ mod tests {
         // Missing file: the default cube.
         inst.set_resource("obj_filename", "/nonexistent.obj");
         assert!(run(&inst, 20).iter().all(|v| v.x.abs() <= 1.0 && v.y.abs() <= 1.0 && v.z.abs() <= 1.0));
+    }
+
+    #[test]
+    fn sequence_file_names() {
+        assert_eq!(sequence_filename("/x/img0001.png", 1, 1, 4), "/x/img0001.png");
+        assert_eq!(sequence_filename("/x/img0001.png", 12, 1, 4), "/x/img0012.png");
+        assert_eq!(sequence_filename("/x/img0001.png", 3, 100, 4), "/x/img0102.png");
+        assert_eq!(sequence_filename("a.png", 3, 1, 4), "a.png");
+    }
+
+    #[test]
+    fn colormap_wf_default_image() {
+        let mut inst = VariationInstance::new("colormap_wf", 1.0);
+        inst.set_param("dc_color", 0.0);
+        let def = find("colormap_wf").unwrap();
+        let d = prepare_instance(def, &inst, &Affine::IDENTITY, 1);
+        let mut ctx = Ctx::new(1, false);
+        // (0, 0) maps to pixel (127, 127) of the default gradient
+        let mut a = Pt::default();
+        let mut v = Pt { z: 5.0, ..Pt::default() };
+        (def.apply)(&d, &mut ctx, &mut a, &mut v, 1.0);
+        let img = ImageMap::default_gradient();
+        let p = img.pixels[127 * 256 + 127];
+        assert!(v.rgb_color && [v.red, v.green, v.blue] == [(p >> 16 & 255) as f64, (p >> 8 & 255) as f64, (p & 255) as f64]);
+        assert_eq!(v.z, 0.0); // reset_z
+        assert!(!v.do_hide);
+    }
+
+    #[test]
+    fn colormap_wf_alpha_hides_transparent_pixels() {
+        let path = std::env::temp_dir().join(format!("rwf_res_{}_alpha.png", std::process::id()));
+        image::RgbaImage::from_fn(8, 8, |x, _| image::Rgba([200, 10, 10, if x < 4 { 0 } else { 255 }])).save(&path).unwrap();
+        let mut inst = VariationInstance::new("colormap_wf", 1.0);
+        inst.set_param("with_alpha", 1.0);
+        inst.set_param("tile_x", 0.0);
+        inst.set_resource("image_filename", &path.display().to_string());
+        let def = find("colormap_wf").unwrap();
+        let d = prepare_instance(def, &inst, &Affine::IDENTITY, 1);
+        let mut ctx = Ctx::new(1, false);
+        // x = (in + 0.5) * 6: in = -0.3 -> 1.2 (transparent), in = 0.3 -> 4.8 (opaque)
+        for (inx, hidden) in [(-0.3, true), (0.3, false)] {
+            let mut a = Pt { x: inx, ..Pt::default() };
+            let mut v = Pt::default();
+            (def.apply)(&d, &mut ctx, &mut a, &mut v, 1.0);
+            assert_eq!(v.do_hide, hidden, "{inx}");
+        }
+    }
+
+    #[test]
+    fn displacemap_wf_translates_by_red_green() {
+        let png = write_png("dmap", 4, 4, |_, _| [255, 0, 0]);
+        let mut inst = VariationInstance::new("post_displacemap_wf", 1.0);
+        inst.set_param("mode", 1.0);
+        inst.set_resource("image_filename", &png);
+        let def = find("post_displacemap_wf").unwrap();
+        let d = prepare_instance(def, &inst, &Affine::IDENTITY, 1);
+        let mut ctx = Ctx::new(1, false);
+        let mut a = Pt::default();
+        let mut v = Pt { x: 0.1, y: 0.2, ..Pt::default() };
+        (def.apply)(&d, &mut ctx, &mut a, &mut v, 2.0);
+        assert!((v.x - 1.1).abs() < 1e-12 && (v.y - (0.2 - 1.0)).abs() < 1e-12, "{v:?}");
     }
 }

@@ -131,7 +131,7 @@ fn colormap_index(colormap: &[[f64; 3]], color: f64) -> usize {
     idx.clamp(0, colormap.len() as i64 - 1) as usize
 }
 
-fn prepare_xform(xf: &XForm, color_type: ColorType, colormap: &[[f64; 3]], missing: &mut Vec<String>) -> PreparedXForm {
+fn prepare_xform(xf: &XForm, color_type: ColorType, colormap: &[[f64; 3]], frame: u32, missing: &mut Vec<String>) -> PreparedXForm {
     let mut c1 = (1.0 + xf.color_symmetry) * 0.5;
     let mut c2 = xf.color * (1.0 - xf.color_symmetry) * 0.5;
     if color_type != ColorType::Diffusion && color_type != ColorType::TargetG {
@@ -158,7 +158,7 @@ fn prepare_xform(xf: &XForm, color_type: ColorType, colormap: &[[f64; 3]], missi
             }
             continue;
         };
-        let data = variations::prepare_instance(def, var, &xf.coefs);
+        let data = variations::prepare_instance(def, var, &xf.coefs, frame);
         let step = |def, mode| VarStep { def, mode, amount: var.amount, data: data.clone() };
         // Slot selection of `XForm.createTransformations`: priority 2 and -2 put a variation into
         // both the pre and the post slot.
@@ -212,14 +212,14 @@ fn prepare_xform(xf: &XForm, color_type: ColorType, colormap: &[[f64; 3]], missi
     }
 }
 
-fn prepare_layer(layer: &Layer, missing: &mut Vec<String>) -> PreparedLayer {
+fn prepare_layer(layer: &Layer, frame: u32, missing: &mut Vec<String>) -> PreparedLayer {
     let colormap = layer.gradient.render_colors();
     let mut xforms: Vec<PreparedXForm> = layer
         .xforms
         .iter()
         .map(|xf| {
             let ct = if xf.color_type == ColorType::Unset { ColorType::Diffusion } else { xf.color_type };
-            prepare_xform(xf, ct, &colormap, missing)
+            prepare_xform(xf, ct, &colormap, frame, missing)
         })
         .collect();
     let finals = layer
@@ -227,7 +227,7 @@ fn prepare_layer(layer: &Layer, missing: &mut Vec<String>) -> PreparedLayer {
         .iter()
         .map(|xf| {
             let ct = if xf.color_type == ColorType::Unset { ColorType::None } else { xf.color_type };
-            prepare_xform(xf, ct, &colormap, missing)
+            prepare_xform(xf, ct, &colormap, frame, missing)
         })
         .collect();
 
@@ -274,7 +274,7 @@ impl PreparedFlame {
             .layers
             .iter()
             .filter(|l| l.visible && !l.xforms.is_empty())
-            .map(|l| prepare_layer(l, &mut missing))
+            .map(|l| prepare_layer(l, flame.frame, &mut missing))
             .collect();
         Self { layers, preserve_z: flame.preserve_z, missing_variations: missing }
     }
@@ -430,7 +430,7 @@ mod tests {
         let mut inst = VariationInstance::new(var, 1.0);
         inst.priority = priority;
         xf.variations.push(inst);
-        let p = prepare_xform(&xf, ColorType::Diffusion, &[[0.0; 3]; 256], &mut Vec::new());
+        let p = prepare_xform(&xf, ColorType::Diffusion, &[[0.0; 3]; 256], 1, &mut Vec::new());
         let names = |l: &[VarStep]| l.iter().map(|s| (s.def.name.to_string(), s.mode)).collect();
         (names(&p.pre), names(&p.normal), names(&p.post_vars))
     }

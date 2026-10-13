@@ -182,13 +182,23 @@ impl VariationInstance {
         def.params.iter().position(|p| p.name == name).and_then(|i| self.params.get(i).copied())
     }
 
-    /// Decoded value of a resource parameter (empty if unset).
+    /// Decoded value of a text resource parameter (empty if unset).
     pub fn resource(&self, name: &str) -> String {
+        String::from_utf8_lossy(&self.resource_bytes(name)).into_owned()
+    }
+
+    /// Raw bytes of a resource parameter (empty if unset or malformed).
+    pub fn resource_bytes(&self, name: &str) -> Vec<u8> {
         self.raw_params.iter().find(|(k, _)| k == name).and_then(|(_, v)| crate::resources::hex_decode(v)).unwrap_or_default()
     }
 
-    /// Sets a resource parameter (stored hex-encoded in `raw_params`, as in JWildfire files).
+    /// Sets a text resource parameter (stored hex-encoded in `raw_params`, as in JWildfire files).
     pub fn set_resource(&mut self, name: &str, value: &str) {
+        self.set_resource_bytes(name, value.as_bytes());
+    }
+
+    /// Sets a binary resource parameter (e.g. an embedded image file).
+    pub fn set_resource_bytes(&mut self, name: &str, value: &[u8]) {
         let hex = crate::resources::hex_encode(value);
         match self.raw_params.iter_mut().find(|(k, _)| k == name) {
             Some(e) => e.1 = hex,
@@ -485,6 +495,9 @@ pub struct Flame {
 
     /// When set, 2D variations pass the z coordinate through (`preserve_z`).
     pub preserve_z: bool,
+    /// Current animation frame, 1-based as in JWildfire (set by `apply_animation`; used by
+    /// image sequences of variations).
+    pub frame: u32,
     pub background: Background,
     pub bg_transparency: bool,
     pub post_symmetry: PostSymmetry,
@@ -565,6 +578,7 @@ impl Default for Flame {
             de_curve: 0.8,
             de_comparison_line: 0.0,
             preserve_z: false,
+            frame: 1,
             background: Background::default(),
             bg_transparency: true,
             post_symmetry: PostSymmetry::default(),

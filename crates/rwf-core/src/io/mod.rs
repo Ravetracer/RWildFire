@@ -237,8 +237,7 @@ fn parse_flame(el: &Element) -> Flame {
             "motion_blur_length" => flame.animation.motion_blur_length = f.unwrap_or(0.0).max(0.0) as u32,
             "motion_blur_timestep" => flame.animation.motion_blur_time_step = f.unwrap_or(0.05),
             "motion_blur_decay" => flame.animation.motion_blur_decay = f.unwrap_or(0.03),
-            // The current frame is not stored by this port.
-            "frame" => {}
+            "frame" => flame.frame = f.unwrap_or(1.0).max(1.0) as u32,
             // Regenerated on save.
             "version" => {}
             _ => known = false,
@@ -610,6 +609,7 @@ pub fn write_flame(flame: &Flame) -> String {
         attr(&mut s, "smooth_gradient", if flame.first_layer().smooth_gradient { "1" } else { "0" });
     }
     let anim = &flame.animation;
+    attr(&mut s, "frame", flame.frame.to_string());
     attr(&mut s, "frame_count", anim.frame_count.to_string());
     attr(&mut s, "fps", fmt_f(anim.fps));
     attr(&mut s, "motion_blur_length", anim.motion_blur_length.to_string());

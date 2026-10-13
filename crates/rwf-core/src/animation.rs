@@ -440,6 +440,7 @@ pub fn label(flame: &Flame, path: &str) -> String {
 impl Flame {
     /// Applies all animation tracks for `frame` (in place; un-animated values stay untouched).
     pub fn apply_animation(&mut self, frame: f64) {
+        self.frame = frame.max(0.0).floor() as u32 + 1;
         let tracks = std::mem::take(&mut self.animation.tracks);
         for t in &tracks {
             if let Some(v) = t.eval(frame) {

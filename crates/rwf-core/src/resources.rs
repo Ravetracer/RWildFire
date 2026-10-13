@@ -27,44 +27,86 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::SystemTime;
 
-/// `Tools.byteArrayToHexString` of the UTF-8 bytes of `s`.
-pub fn hex_encode(s: &str) -> String {
+/// `Tools.byteArrayToHexString`.
+pub fn hex_encode(bytes: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789ABCDEF";
-    let mut out = String::with_capacity(s.len() * 2);
-    for b in s.bytes() {
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for &b in bytes {
         out.push(HEX[(b >> 4) as usize] as char);
         out.push(HEX[(b & 15) as usize] as char);
     }
     out
 }
 
-/// `Tools.hexStringToByteArray`, decoded as UTF-8 (lossy). `None` for malformed input.
-pub fn hex_decode(s: &str) -> Option<String> {
+/// `Tools.hexStringToByteArray`. `None` for malformed input.
+pub fn hex_decode(s: &str) -> Option<Vec<u8>> {
     if !s.len().is_multiple_of(2) {
         return None;
     }
     let digit = |c: u8| (c as char).to_digit(16);
     let bytes: Option<Vec<u8>> = s.as_bytes().chunks(2).map(|p| Some((digit(p[0])? * 16 + digit(p[1])?) as u8)).collect();
-    Some(String::from_utf8_lossy(&bytes?).into_owned())
+    bytes
 }
 
-/// An 8-bit RGB image with pixels packed as `r << 16 | g << 8 | b` (exact in `f32` as well).
+/// An 8-bit RGBA image with pixels packed as `r << 16 | g << 8 | b` (exact in `f32` as well)
+/// and a separate alpha plane.
 #[derive(Debug)]
 pub struct ImageMap {
     pub width: u32,
     pub height: u32,
     pub pixels: Vec<u32>,
+    pub alpha: Vec<u8>,
 }
 
 impl ImageMap {
-    pub fn from_rgb8(img: &image::RgbImage) -> Self {
+    pub fn from_rgba8(img: &image::RgbaImage) -> Self {
         let (width, height) = img.dimensions();
         let pixels = img.pixels().map(|p| (p[0] as u32) << 16 | (p[1] as u32) << 8 | p[2] as u32).collect();
-        Self { width, height, pixels }
+        let alpha = img.pixels().map(|p| p[3]).collect();
+        Self { width, height, pixels, alpha }
+    }
+
+    fn from_dynamic(img: image::DynamicImage) -> Option<Self> {
+        let img = img.into_rgba8();
+        (img.width() > 0 && img.height() > 0).then(|| Self::from_rgba8(&img))
+    }
+
+    /// `GradientCreator.createImage(256, 256)` with its default corner colors (red, yellow,
+    /// cyan, blue): the fallback image of the image-based variations.
+    pub fn default_gradient() -> Arc<Self> {
+        static IMG: OnceLock<Arc<ImageMap>> = OnceLock::new();
+        IMG.get_or_init(|| {
+            const N: i32 = 256;
+            const SPREC: i32 = 10;
+            let (ul, ur, ll, lr) = ([255, 0, 0], [255, 255, 0], [0, 255, 255], [0, 0, 255]);
+            let slope = |a: [i32; 3], b: [i32; 3], n: i32| [0, 1, 2].map(|k| ((b[k] - a[k]) << SPREC) / (n - 1));
+            let (lm, rm) = (slope(ul, ll, N), slope(ur, lr, N));
+            let mut pixels = vec![0u32; (N * N) as usize];
+            let pack = |c: [i32; 3]| (c[0] as u32 & 255) << 16 | (c[1] as u32 & 255) << 8 | (c[2] as u32 & 255);
+            for i in 0..N {
+                let (l, r) = match i {
+                    0 => (ul, ur),
+                    _ if i == N - 1 => (ll, lr),
+                    _ => ([0, 1, 2].map(|k| ((i * lm[k]) >> SPREC) + ul[k]), [0, 1, 2].map(|k| ((i * rm[k]) >> SPREC) + ur[k])),
+                };
+                let hm = slope(l, r, N);
+                let row = &mut pixels[(i * N) as usize..((i + 1) * N) as usize];
+                row[0] = pack(l);
+                let mut t = [0; 3];
+                for px in row.iter_mut().take(N as usize - 1).skip(1) {
+                    t = [0, 1, 2].map(|k| t[k] + hm[k]);
+                    *px = pack([0, 1, 2].map(|k| (t[k] >> SPREC) + l[k]));
+                }
+                row[N as usize - 1] = pack(r);
+            }
+            Arc::new(ImageMap { width: N as u32, height: N as u32, pixels, alpha: vec![255; (N * N) as usize] })
+        })
+        .clone()
     }
 }
 
 type Cache<T> = Mutex<HashMap<PathBuf, (Option<SystemTime>, Arc<T>)>>;
+type ContentCache = HashMap<(u64, usize), Arc<ImageMap>>;
 
 fn mtime(path: &PathBuf) -> Option<SystemTime> {
     std::fs::metadata(path).and_then(|m| m.modified()).ok()
@@ -85,12 +127,29 @@ pub fn image(path: &str) -> Option<Arc<ImageMap>> {
     {
         return Some(img.clone());
     }
-    let img = image::open(&key).ok()?.into_rgb8();
-    if img.width() == 0 || img.height() == 0 {
+    let img = Arc::new(ImageMap::from_dynamic(image::open(&key).ok()?)?);
+    cache.lock().unwrap().insert(key, (modified, img.clone()));
+    Some(img)
+}
+
+/// Decodes an image file embedded in a flame (`RessourceManager.getImage(hash, bytes)`), cached
+/// by content.
+pub fn image_from_bytes(bytes: &[u8]) -> Option<Arc<ImageMap>> {
+    use std::hash::{Hash, Hasher};
+    // key: (content hash, length)
+    static CACHE: OnceLock<Mutex<ContentCache>> = OnceLock::new();
+    if bytes.is_empty() {
         return None;
     }
-    let img = Arc::new(ImageMap::from_rgb8(&img));
-    cache.lock().unwrap().insert(key, (modified, img.clone()));
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    bytes.hash(&mut h);
+    let key = (h.finish(), bytes.len());
+    let cache = CACHE.get_or_init(Default::default);
+    if let Some(img) = cache.lock().unwrap().get(&key) {
+        return Some(img.clone());
+    }
+    let img = Arc::new(ImageMap::from_dynamic(image::load_from_memory(bytes).ok()?)?);
+    cache.lock().unwrap().insert(key, img.clone());
     Some(img)
 }
 
@@ -99,11 +158,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn default_gradient_corners() {
+        let img = ImageMap::default_gradient();
+        let px = |x: usize, y: usize| img.pixels[y * 256 + x];
+        assert_eq!([px(0, 0), px(255, 0), px(0, 255), px(255, 255)], [0xFF0000, 0xFFFF00, 0x00FFFF, 0x0000FF]);
+        // halfway down the left edge: between red and cyan
+        assert_eq!(px(0, 128) >> 16 & 255, 127);
+    }
+
+    #[test]
     fn hex_round_trip() {
-        assert_eq!(hex_encode("/tmp/a.png"), "2F746D702F612E706E67");
-        assert_eq!(hex_decode("2F746D702F612E706E67").as_deref(), Some("/tmp/a.png"));
-        assert_eq!(hex_decode("2f746d70").as_deref(), Some("/tmp"));
-        assert_eq!(hex_decode(""), Some(String::new()));
+        assert_eq!(hex_encode(b"/tmp/a.png"), "2F746D702F612E706E67");
+        assert_eq!(hex_decode("2F746D702F612E706E67").as_deref(), Some(&b"/tmp/a.png"[..]));
+        assert_eq!(hex_decode("2f746d70").as_deref(), Some(&b"/tmp"[..]));
+        assert_eq!(hex_decode(""), Some(Vec::new()));
         assert_eq!(hex_decode("2F7"), None);
         assert_eq!(hex_decode("ZZ"), None);
     }

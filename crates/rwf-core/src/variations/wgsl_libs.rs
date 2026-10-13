@@ -113,6 +113,8 @@ mod tests {
   acc += res_image_displ(ub, 2u, false, x, y) + res_uv_color_idx(v3);
   var mp: Pt;
   acc += res_mesh(ub, 3u, mp, x).x;
+  acc += f32(res_wrap_tile(n, 3)) + res_cm_rgba(ub, n, n, x > 0.0).w + res_nearest_color_idx(v3);
+  acc += res_colormap(ub, x, y, mp).x + res_displacemap(ub, x, y, z, mp).y;
   prm[4] = acc;
 "#;
 

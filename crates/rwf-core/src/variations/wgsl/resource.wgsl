@@ -41,7 +41,11 @@ fn res_image_displ(base: u32, o: u32, blend: bool, iu: f32, iv: f32) -> f32 {
 // UVColorMapper.getUVColorIdx: gradient position of the nearest color of the current layer's
 // color map (render palette scale 0..200, like cmap).
 fn res_uv_color_idx(rgb: vec3<f32>) -> f32 {
-  let t = vec3<f32>(f32(ftoi(rgb.x)), f32(ftoi(rgb.y)), f32(ftoi(rgb.z)));
+  return res_nearest_color_idx(vec3<f32>(f32(ftoi(rgb.x)), f32(ftoi(rgb.y)), f32(ftoi(rgb.z))));
+}
+
+// Gradient position of the color map entry nearest to t (no rounding).
+fn res_nearest_color_idx(t: vec3<f32>) -> f32 {
   var best = 0u;
   var best_d = 3.0e38;
   for (var i = 0u; i < 256u; i++) {
@@ -117,5 +121,101 @@ fn res_mesh(base: u32, p: u32, v_in: Pt, amount: f32) -> Pt {
     }
   }
   if (prm[base + p + 13u] == 1.0) { v.rso = 1.0; }
+  return v;
+}
+
+// Image index tiling as in JWildfire (-n maps to n, outside the image).
+fn res_wrap_tile(i: i32, n: i32) -> i32 {
+  if (i < 0) { return i - (i / n - 1) * n; }
+  if (i >= n) { return i - (i / n) * n; }
+  return i;
+}
+
+// colormap_wf pixel: RGB + alpha (255 unless with_alpha, alpha plane at base + 18).
+fn res_cm_rgba(base: u32, ix: i32, iy: i32, with_alpha: bool) -> vec4<f32> {
+  var a = 255.0;
+  if (with_alpha) { a = res_pixel(base, 18u, ix, iy).z; }
+  return vec4<f32>(res_pixel(base, 15u, ix, iy), a);
+}
+
+// AbstractColorMapWFFunc.transform: params at base, image block at base + 15.
+fn res_colormap(base: u32, inx: f32, iny: f32, v_in: Pt) -> Pt {
+  var v = v_in;
+  let w = i32(prm[base + 15u]);
+  let h = i32(prm[base + 16u]);
+  let x = (inx - (prm[base + 3u] + 0.5) + 1.0) / prm[base] * f32(w - 2);
+  let y = (iny - (prm[base + 4u] + 0.5) + 1.0) / prm[base + 1u] * f32(h - 2);
+  let blend = prm[base + 10u] > 0.0;
+  var ix = ftoi(x);
+  var iy = ftoi(y);
+  if (blend) { ix = i32(trunc(x)); iy = i32(trunc(y)); }
+  if (i32(prm[base + 6u]) == 1) { ix = res_wrap_tile(ix, w); }
+  if (i32(prm[base + 7u]) == 1) { iy = res_wrap_tile(iy, h); }
+  let with_alpha = prm[base + 11u] > 0.0;
+  var c = vec4<f32>(0.0);
+  if (ix >= 0 && ix < w && iy >= 0 && iy < h) {
+    c = res_cm_rgba(base, ix, iy, with_alpha);
+    if (blend) {
+      var ru = vec4<f32>(0.0);
+      var lb = vec4<f32>(0.0);
+      var rb = vec4<f32>(0.0);
+      if (ix < w - 1) { ru = res_cm_rgba(base, ix + 1, iy, with_alpha); }
+      if (iy < h - 1) { lb = res_cm_rgba(base, ix, iy + 1, with_alpha); }
+      if (ix < w - 1 && iy < h - 1) { rb = res_cm_rgba(base, ix + 1, iy + 1, with_alpha); }
+      let fu = x - trunc(x);
+      let fv = y - trunc(y);
+      c = mix(mix(c, ru, fu), mix(lb, rb, fu), fv);
+    }
+  }
+  let dc_color = i32(prm[base + 9u]);
+  if (dc_color == 0) { v.rgbc = 1.0; v.r = c.x; v.g = c.y; v.b = c.z; }
+  if (with_alpha && c.w <= 0.1) { v.hide = 1.0; } else { v.hide = 0.0; }
+  var dz = prm[base + 5u];
+  if (abs(prm[base + 2u]) > EPSILON) { dz += prm[base + 2u] * (0.299 * c.x + 0.588 * c.y + 0.113 * c.z) / 255.0; }
+  if (i32(prm[base + 8u]) != 0) { v.z = dz; } else { v.z += dz; }
+  if (dc_color > 0) { v.color = res_uv_color_idx(c.xyz); }
+  return v;
+}
+
+// AbstractDisplacementMapWFFunc.transform: params at base, image block at base + 9.
+fn res_displacemap(base: u32, inx: f32, iny: f32, amount: f32, v_in: Pt) -> Pt {
+  var v = v_in;
+  let w = i32(prm[base + 9u]);
+  let h = i32(prm[base + 10u]);
+  var ix = ftoi((inx - (prm[base + 5u] + 0.5) + 1.0) / prm[base + 3u] * f32(w - 1));
+  var iy = ftoi((iny - (prm[base + 6u] + 0.5) + 1.0) / prm[base + 4u] * f32(h - 1));
+  if (i32(prm[base + 7u]) == 1) { ix = res_wrap_tile(ix, w); }
+  if (i32(prm[base + 8u]) == 1) { iy = res_wrap_tile(iy, h); }
+  if (ix < 0 || ix >= w || iy < 0 || iy >= h) { return v; }
+  let c = res_pixel(base, 9u, ix, iy) / 255.0;
+  let intensity = 0.299 * c.x + 0.588 * c.y + 0.113 * c.z - prm[base + 2u];
+  let mode = i32(prm[base]);
+  if (mode == 1) {
+    v.x += (c.x - 0.5) * amount;
+    v.y += (c.y - 0.5) * amount;
+  } else if (mode == 2) {
+    if (intensity > 0.0) {
+      let scl = 1.0 + (intensity - 0.5) * amount;
+      v.x *= scl;
+      v.y *= scl;
+    }
+  } else if (mode == 3) {
+    let ax = (c.x - 0.5) * amount;
+    let ay = (c.y - 0.5) * amount;
+    let nx = v.x * ax * ay + v.y * ay;
+    let ny = v.x * ay - v.y * ax * ay;
+    v.x = nx;
+    v.y = ny;
+  } else if (intensity > 0.0) {
+    let ang = intensity * TWO_PI * amount;
+    let nx = v.x * cos(ang) - v.y * sin(ang);
+    let ny = v.x * sin(ang) + v.y * cos(ang);
+    v.x = nx;
+    v.y = ny;
+  }
+  if (i32(prm[base + 1u]) == 1) {
+    v.rgbc = 1.0; v.r = c.x * 255.0; v.g = c.y * 255.0; v.b = c.z * 255.0;
+    v.color = res_nearest_color_idx(c);
+  }
   return v;
 }
