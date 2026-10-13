@@ -17,10 +17,10 @@
 //
 // SPDX-License-Identifier: LGPL-3.0-or-later
 
+//! Variations ported from the JWildfire sources (batch w14).
 
 // Some variations use JWildfire's truncated pi literals.
 #![allow(clippy::approx_constant)]
-//! Variations ported from the JWildfire sources (batch w14).
 
 #[allow(unused_imports)]
 use super::{Ctx, ParamDef, Pt, VarDef, VarKind, simple};
