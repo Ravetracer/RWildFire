@@ -517,6 +517,37 @@ fn resource_picker(ui: &mut Ui, var: &mut VariationInstance, r: &variations::Res
                 }
             });
         }
+        ResKind::FlameXml => {
+            let len = var.resource_bytes(r.name).len();
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(format!("flame, {} KB", len.div_ceil(1024))).color(theme::TEXT_MUTED));
+                if ui.small_button("Load…").clicked()
+                    && let Some(p) = rfd::FileDialog::new().add_filter("Flame", &["flame"]).pick_file()
+                    && let Ok(text) = std::fs::read_to_string(&p)
+                {
+                    var.set_resource(r.name, &text);
+                }
+            });
+        }
+        ResKind::FlameFile => {
+            let mut value = var.resource(r.name);
+            ui.horizontal(|ui| {
+                let mut changed = ui.add(egui::TextEdit::singleline(&mut value).desired_width(140.0).hint_text("Flame file")).changed();
+                if ui.small_button("…").clicked()
+                    && let Some(p) = rfd::FileDialog::new().add_filter("Flame", &["flame"]).pick_file()
+                {
+                    value = p.display().to_string();
+                    changed = true;
+                    // as in JWildfire, the file is also copied into the flame resource
+                    if let Ok(text) = std::fs::read_to_string(&p) {
+                        var.set_resource("flame", &text);
+                    }
+                }
+                if changed {
+                    var.set_resource(r.name, &value);
+                }
+            });
+        }
         ResKind::Font => {
             let mut value = var.resource(r.name);
             let before = value.clone();

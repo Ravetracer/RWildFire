@@ -622,6 +622,41 @@ static NOISE_GRAD3: [[f64; 3]; 1024] = [
 
 pub static DEFS: &[VarDef] = &[
     VarDef {
+        name: "waves2_wf",
+        params: &[
+            ParamDef::new("scalex", 0.25),
+            ParamDef::new("scaley", 0.5),
+            ParamDef::new("freqx", M_PI / 2.0),
+            ParamDef::new("freqy", M_PI / 4.0),
+            ParamDef::int("use_cos_x", 1.0, 0.0, 1.0),
+            ParamDef::int("use_cos_y", 0.0, 0.0, 1.0),
+            ParamDef::new("dampx", 0.0),
+            ParamDef::new("dampy", 0.0),
+        ],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            // d = [scalex, scaley, freqx, freqy, use_cos_x, use_cos_y, damping_x, damping_y]
+            let (dx, dy) = (d[6], d[7]);
+            let wx = if d[4] as i32 == 1 { (a.y * d[2]).cos() } else { (a.y * d[2]).sin() };
+            let wy = if d[5] as i32 == 1 { (a.x * d[3]).cos() } else { (a.x * d[3]).sin() };
+            v.x += amount * (a.x + dx * d[0] * wx) * dx;
+            v.y += amount * (a.y + dy * d[1] * wy) * dy;
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: Some(|p, _| {
+            let damping = |v: f64| if v.abs() < EPSILON { 1.0 } else { v.exp() };
+            vec![p[0], p[1], p[2], p[3], ftoi(p[4]) as f64, ftoi(p[5]) as f64, damping(p[6]), damping(p[7])]
+        }),
+        wgsl: "var wx = sin(a.y * D(2));
+if (i32(D(4)) == 1) { wx = cos(a.y * D(2)); }
+var wy = sin(a.x * D(3));
+if (i32(D(5)) == 1) { wy = cos(a.x * D(3)); }
+v.x += AMOUNT * (a.x + D(6) * D(0) * wx) * D(6);
+v.y += AMOUNT * (a.y + D(7) * D(1) * wy) * D(7);
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
         name: "mobius",
         params: &[
             ParamDef::new("re_a", 0.1),
@@ -2020,6 +2055,7 @@ mod tests {
     use crate::model::Affine;
 
     const NAMES: &[&str] = &[
+        "waves2_wf",
         "mobius",
         "spherical3D",
         "julia3D",
