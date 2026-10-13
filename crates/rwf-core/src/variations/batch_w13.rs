@@ -19,6 +19,9 @@
 
 //! Variations ported from the JWildfire sources (batch w13).
 
+// Some JWildfire defaults are truncated pi literals (e.g. 1.5708).
+#![allow(clippy::approx_constant)]
+
 #[allow(unused_imports)]
 use super::{Ctx, ParamDef, Pt, VarDef, VarKind, simple};
 #[allow(unused_imports)]
@@ -3337,6 +3340,232 @@ let ny = a.y - D(1) * s * sign(a.y);
 let scale = sqrt(a.x * a.x + a.y * a.y) / (sqrt(nx * nx + ny * ny) + 1e-6);
 v.x += AMOUNT * nx * scale;
 v.y += AMOUNT * ny * scale;
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "vogel",
+        params: &[ParamDef::int("n", 20.0, 1.0, 1000.0), ParamDef::new("scale", 1.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            const M_PHI: f64 = 1.618_033_988_749_895;
+            let i = ctx.random_int(d[0] as usize) + 1;
+            let ang = i as f64 * (M_2PI / (M_PHI * M_PHI));
+            let r = amount * (a.rad() + (i as f64).sqrt());
+            v.x += r * (ang.cos() + (d[1] * a.x));
+            v.y += r * (ang.sin() + (d[1] * a.y));
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: Some(|p, _| vec![limit_value(ftoi(p[0]), 1, i32::MAX) as f64, p[1]]),
+        wgsl: "let phi = 1.618033988749895;
+let i = f32(min(i32(rnd() * D(0)), i32(D(0)) - 1) + 1);
+let ang = i * (TWO_PI / (phi * phi));
+let r = AMOUNT * (rad(a) + sqrt(i));
+v.x += r * (cos(ang) + (D(1) * a.x));
+v.y += r * (sin(ang) + (D(1) * a.y));
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "voron",
+        params: &[ParamDef::new("k", 0.99), ParamDef::new("step", 0.25), ParamDef::int("num", 1.0, 1.0, 25.0), ParamDef::int("xseed", 3.0, 1.0, 100.0), ParamDef::int("yseed", 7.0, 1.0, 100.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let (k, step, num, xseed, yseed) = (d[0], d[1], d[2] as i32, d[3] as i32, d[4] as i32);
+            let mut rmin = 20.0;
+            let (mut x0, mut y0) = (0.0, 0.0);
+            let m = (a.x / step).floor() as i32;
+            let n = (a.y / step).floor() as i32;
+            for i in -1..2 {
+                let m1 = m.wrapping_add(i);
+                for j in -1..2 {
+                    let n1 = n.wrapping_add(j);
+                    let kk = (1.0 + (num as f64 * truchet_ae_dn1(19i32.wrapping_mul(m1).wrapping_add(257i32.wrapping_mul(n1)).wrapping_add(xseed))).floor()) as i32;
+                    for l in 0..kk {
+                        let x = (truchet_ae_dn1(l.wrapping_add(64i32.wrapping_mul(m1)).wrapping_add(15i32.wrapping_mul(n1)).wrapping_add(xseed)) + m1 as f64) * step;
+                        let y = (truchet_ae_dn1(l.wrapping_add(21i32.wrapping_mul(m1)).wrapping_add(33i32.wrapping_mul(n1)).wrapping_add(yseed)) + n1 as f64) * step;
+                        let (ox, oy) = (a.x - x, a.y - y);
+                        let r = (ox * ox + oy * oy).sqrt();
+                        if r < rmin {
+                            rmin = r;
+                            x0 = x;
+                            y0 = y;
+                        }
+                    }
+                }
+            }
+            v.x += amount * (k * (a.x - x0) + x0);
+            v.y += amount * (k * (a.y - y0) + y0);
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: Some(|p, _| vec![p[0], p[1], limit_value(ftoi(p[2]), 1, 25) as f64, ftoi(p[3]).max(1) as f64, ftoi(p[4]).max(1) as f64]),
+        wgsl: "fn voron_noise(x: i32) -> f32 {
+  let n = (x << 13u) ^ x;
+  let h = n * (n * n * 15731 + 789221) + 1376312589;
+  return f32(h & 0x7fffffff) * (1.0 / 2147483647.0);
+}
+@body
+let step = D(1);
+let num = f32(i32(D(2)));
+let xseed = i32(D(3));
+let yseed = i32(D(4));
+var rmin = 20.0;
+var x0 = 0.0;
+var y0 = 0.0;
+let m = i32(floor(a.x / step));
+let n = i32(floor(a.y / step));
+for (var i = -1; i < 2; i++) {
+  let m1 = m + i;
+  for (var j = -1; j < 2; j++) {
+    let n1 = n + j;
+    let kk = i32(1.0 + floor(num * voron_noise(19 * m1 + 257 * n1 + xseed)));
+    for (var l = 0; l < kk; l++) {
+      let x = (voron_noise(l + 64 * m1 + 15 * n1 + xseed) + f32(m1)) * step;
+      let y = (voron_noise(l + 21 * m1 + 33 * n1 + yseed) + f32(n1)) * step;
+      let r = length(vec2<f32>(a.x - x, a.y - y));
+      if (r < rmin) {
+        rmin = r;
+        x0 = x;
+        y0 = y;
+      }
+    }
+  }
+}
+v.x += AMOUNT * (D(0) * (a.x - x0) + x0);
+v.y += AMOUNT * (D(0) * (a.y - y0) + y0);
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "voronoi_fold",
+        params: &[ParamDef::new("scale", 1.0), ParamDef::new("fold", 0.5)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let scale = java_max(d[0].abs(), 0.01);
+            let cx = (a.x / scale).floor();
+            let cy = (a.y / scale).floor();
+            let (mut nx, mut ny) = (0.0, 0.0);
+            let mut min_d = 1e10;
+            for di in -1..=1 {
+                for dj in -1..=1 {
+                    let cell_x = cx + di as f64;
+                    let cell_y = cy + dj as f64;
+                    let mut hx = (cell_x * 127.1 + cell_y * 311.7).sin() * 43758.5453;
+                    hx -= hx.floor();
+                    let mut hy = (cell_x * 269.5 + cell_y * 183.3).sin() * 43758.5453;
+                    hy -= hy.floor();
+                    let sx = (cell_x + hx) * scale;
+                    let sy = (cell_y + hy) * scale;
+                    let (dx, dy) = (a.x - sx, a.y - sy);
+                    let dd = (dx * dx + dy * dy).sqrt();
+                    if dd < min_d {
+                        min_d = dd;
+                        nx = sx;
+                        ny = sy;
+                    }
+                }
+            }
+            v.x += amount * (nx + (a.x - nx) * (1.0 - d[1]));
+            v.y += amount * (ny + (a.y - ny) * (1.0 - d[1]));
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "let scale = max(abs(D(0)), 0.01);
+let cx = floor(a.x / scale);
+let cy = floor(a.y / scale);
+var nx = 0.0;
+var ny = 0.0;
+var min_d = 1e10;
+for (var di = -1; di <= 1; di++) {
+  for (var dj = -1; dj <= 1; dj++) {
+    let cell_x = cx + f32(di);
+    let cell_y = cy + f32(dj);
+    let hx = fract(sin(cell_x * 127.1 + cell_y * 311.7) * 43758.5453);
+    let hy = fract(sin(cell_x * 269.5 + cell_y * 183.3) * 43758.5453);
+    let sx = (cell_x + hx) * scale;
+    let sy = (cell_y + hy) * scale;
+    let dd = length(vec2<f32>(a.x - sx, a.y - sy));
+    if (dd < min_d) {
+      min_d = dd;
+      nx = sx;
+      ny = sy;
+    }
+  }
+}
+v.x += AMOUNT * (nx + (a.x - nx) * (1.0 - D(1)));
+v.y += AMOUNT * (ny + (a.y - ny) * (1.0 - D(1)));
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "vortex",
+        params: &[
+            ParamDef::int("randomize", 0.0, 0.0, 1000.0),
+            ParamDef::new("time", 0.0),
+            ParamDef::int("flowVel", 20.0, 1.0, 50.0),
+            ParamDef::range("zoom", 4.0, 0.0, 9.0),
+            ParamDef::new("UpDown", 0.0),
+            ParamDef::new("vSep", 0.6),
+            ParamDef::new("v_viDistance", 4.0),
+            ParamDef::new("vDiameter", 1.0),
+        ],
+        kind: VarKind::Normal,
+        is_3d: false,
+        // d = [seed (unused), time, strength, zoom, updown, p1, p2, p3]
+        apply: |d, ctx, a, v, amount| {
+            let (time, strength, zoom, updown, p1, p2, p3) = (d[1], d[2] as i32, d[3], d[4], d[5], d[6], d[7]);
+            let flow = |qx: f64, qy: f64| {
+                let (mut cx, mut cy) = (time - 10.0 * (time / 10.0).floor() - 20.0, p1);
+                let (mut vx, mut vy, mut dir) = (0.0, 0.0, 1.0);
+                let (sx, sy) = (qx * (10.0 - zoom), qy * (10.0 - zoom));
+                for _ in 0..30 {
+                    let (dx, dy) = (sx - cx, sy - cy);
+                    let den = dx * dx + dy * dy + 0.05;
+                    vx += dy / den * p3 * dir;
+                    vy += -dx / den * p3 * dir;
+                    cx += p2;
+                    cy = -cy;
+                    dir = -dir;
+                }
+                (vx, vy)
+            };
+            let (mut px, mut py) = (a.x + 0.0, a.y + updown);
+            for _ in 0..strength {
+                let (fx, fy) = flow(px, py);
+                px -= fx * 0.03;
+                py -= fy * 0.03;
+            }
+            v.x += amount * px;
+            v.y += amount * py;
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: Some(|p, _| {
+            let mut d = p.to_vec();
+            d[0] = p[0] as i32 as f64;
+            d[2] = limit_value(p[2], 1.0, 50.0) as i32 as f64;
+            d[3] = limit_value(p[3], 0.0, 9.0);
+            d
+        }),
+        wgsl: "fn vortex_flow(q: vec2<f32>, time: f32, zoom: f32, p1: f32, p2: f32, p3: f32) -> vec2<f32> {
+  var c = vec2<f32>(time - 10.0 * floor(time / 10.0) - 20.0, p1);
+  var vr = vec2<f32>(0.0);
+  var dir = 1.0;
+  let s = q * (10.0 - zoom);
+  for (var k = 0; k < 30; k++) {
+    let dd = s - c;
+    vr += vec2<f32>(dd.y, -dd.x) / (dot(dd, dd) + 0.05) * p3 * dir;
+    c = vec2<f32>(c.x + p2, -c.y);
+    dir = -dir;
+  }
+  return vr;
+}
+@body
+var p = vec2<f32>(a.x, a.y + D(4));
+let strength = i32(D(2));
+for (var i = 0; i < strength; i++) {
+  p -= vortex_flow(p, D(1), D(3), D(5), D(6), D(7)) * 0.03;
+}
+v.x += AMOUNT * p.x;
+v.y += AMOUNT * p.y;
 if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
     },
     // @@NEXT@@
