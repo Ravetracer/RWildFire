@@ -4322,4 +4322,107 @@ v.x += r * a.x;
 v.y += r * a.y;
 if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
     },
+    simple(
+        "loonie3",
+        false,
+        |_, ctx, a, v, amount| {
+            let sqrvvar = amount * amount;
+            let mut r2 = 2.0 * sqrvvar;
+            if a.x > SMALL_EPSILON {
+                let t = (a.x * a.x + a.y * a.y) / a.x;
+                r2 = t * t;
+            }
+            let r = if r2 < sqrvvar { amount * (sqrvvar / r2 - 1.0).sqrt() } else { amount };
+            v.x += r * a.x;
+            v.y += r * a.y;
+            ctx.pass_z(a, v, amount);
+        },
+        "let sqrvvar = AMOUNT * AMOUNT;
+var r2 = 2.0 * sqrvvar;
+if (a.x > 0.0) {
+  let t = (a.x * a.x + a.y * a.y) / a.x;
+  r2 = t * t;
+}
+var r = AMOUNT;
+if (r2 < sqrvvar) { r = AMOUNT * sqrt(sqrvvar / r2 - 1.0); }
+v.x += r * a.x;
+v.y += r * a.y;
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    ),
+    simple(
+        "loonie_3D",
+        true,
+        |_, _, a, v, amount| {
+            let sqrvvar = amount * amount;
+            let ez = if a.z == 0.0 { a.y.atan2(a.x) } else { a.z };
+            let r2 = a.x * a.x + a.y * a.y + ez * ez;
+            if r2 < EPSILON {
+                return;
+            }
+            let r = if r2 < sqrvvar { amount * (sqrvvar / r2 - 1.0).sqrt() } else { amount };
+            v.x += r * a.x;
+            v.y += r * a.y;
+            v.z += r * ez * 0.5;
+        },
+        "var ez = a.z;
+if (ez == 0.0) { ez = atan2(a.y, a.x); }
+let r2 = a.x * a.x + a.y * a.y + ez * ez;
+if (r2 >= EPSILON) {
+  let sqrvvar = AMOUNT * AMOUNT;
+  var r = AMOUNT;
+  if (r2 < sqrvvar) { r = AMOUNT * sqrt(sqrvvar / r2 - 1.0); }
+  v.x += r * a.x;
+  v.y += r * a.y;
+  v.z += r * ez * 0.5;
+}",
+    ),
+    VarDef {
+        name: "loq",
+        params: &[ParamDef::new("base", std::f64::consts::E)],
+        kind: VarKind::Normal,
+        is_3d: true,
+        apply: |d, _, a, v, amount| {
+            let abs_v = a.y.hypot(a.z);
+            let c = amount * abs_v.atan2(a.x) / abs_v;
+            v.x += (a.x * a.x + abs_v * abs_v).ln() * (0.5 * amount / d[0].ln());
+            v.y += c * a.y;
+            v.z += c * a.z;
+        },
+        prepare: None,
+        wgsl: "let abs_v = length(vec2<f32>(a.y, a.z));
+let c = AMOUNT * atan2(abs_v, a.x) / abs_v;
+v.x += log(a.x * a.x + abs_v * abs_v) * (0.5 * AMOUNT / log(D(0)));
+v.y += c * a.y;
+v.z += c * a.z;",
+    },
+    VarDef {
+        name: "lorenz_js",
+        params: &[
+            ParamDef::new("a", 10.0),
+            ParamDef::new("b", 28.0),
+            ParamDef::new("c", 1.66),
+            ParamDef::new("h", 0.00001),
+            ParamDef::new("centerx", 0.0),
+            ParamDef::new("centery", 0.0),
+            ParamDef::new("scale", 1000.0),
+        ],
+        kind: VarKind::Normal,
+        is_3d: true,
+        apply: |d, _, a, v, amount| {
+            let (pa, pb, pc, h) = (d[0], d[1], d[2], d[3]);
+            v.x += (a.x + h * pa * (a.y - a.x)) * amount;
+            v.y += (a.y + h * (a.x * (pb - a.z) - a.y)) * amount;
+            v.z += (a.z + h * (a.x * a.y - pc * a.z)) * amount;
+            let bdcs = 1.0 / if d[6] == 0.0 { 10E-6 } else { d[6] };
+            v.color = fmod((bdcs * ((v.x + d[4]) * (v.x + d[4]) + (v.y + d[5]) * (v.y + d[5]))).abs(), 1.0);
+        },
+        prepare: None,
+        wgsl: "let h = D(3);
+v.x += (a.x + h * D(0) * (a.y - a.x)) * AMOUNT;
+v.y += (a.y + h * (a.x * (D(1) - a.z) - a.y)) * AMOUNT;
+v.z += (a.z + h * (a.x * a.y - D(2) * a.z)) * AMOUNT;
+var sc = D(6);
+if (sc == 0.0) { sc = 10E-6; }
+v.color = abs((1.0 / sc) * ((v.x + D(4)) * (v.x + D(4)) + (v.y + D(5)) * (v.y + D(5)))) % 1.0;",
+    },
 ];
