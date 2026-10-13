@@ -4322,6 +4322,263 @@ v.x += AMOUNT * (a.x + D(0) * sin(a.y * D(2) / sx2 + D(4)));
 v.y += AMOUNT * (a.y + D(1) * sin(a.x * D(3) / sy2 + D(5)));
 if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
     },
+    simple(
+        "wdisc",
+        false,
+        |_, ctx, a, v, amount| {
+            let mut ang = M_PI / ((sqr(a.x) + sqr(a.y)).sqrt() + 1.0);
+            let r = a.y.atan2(a.x) * M_1_PI;
+            if r > 0.0 {
+                ang = M_PI - ang;
+            }
+            v.x += amount * r * ang.cos();
+            v.y += amount * r * ang.sin();
+            ctx.pass_z(a, v, amount);
+        },
+        "var ang = PI / (sqrt(sqr(a.x) + sqr(a.y)) + 1.0);
+let r = atan2(a.y, a.x) / PI;
+if (r > 0.0) { ang = PI - ang; }
+v.x += AMOUNT * r * cos(ang);
+v.y += AMOUNT * r * sin(ang);
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    ),
+    VarDef {
+        name: "weave",
+        params: &[ParamDef::new("scale", 0.5), ParamDef::new("warp", 0.3)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let scale = java_max(d[0].abs(), 0.01);
+            let col = (a.x / scale).floor();
+            let row = (a.y / scale).floor();
+            let lx = a.x / scale - col - 0.5;
+            let ly = a.y / scale - row - 0.5;
+            let mut m = (col + row) % 2.0;
+            if m < 0.0 {
+                m += 2.0;
+            }
+            let over = 2.0 * m - 1.0;
+            let dx = d[1] * over * (M_PI * ly).sin();
+            let dy = d[1] * (-over) * (M_PI * lx).sin();
+            v.x += amount * (a.x + dx * scale);
+            v.y += amount * (a.y + dy * scale);
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "let scale = max(abs(D(0)), 0.01);
+let col = floor(a.x / scale);
+let row = floor(a.y / scale);
+let lx = a.x / scale - col - 0.5;
+let ly = a.y / scale - row - 0.5;
+var m = fmod(col + row, 2.0);
+if (m < 0.0) { m += 2.0; }
+let over = 2.0 * m - 1.0;
+v.x += AMOUNT * (a.x + D(1) * over * sin(PI * ly) * scale);
+v.y += AMOUNT * (a.y + D(1) * (-over) * sin(PI * lx) * scale);
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "weld_seam",
+        params: &[ParamDef::new("pitch", 0.5), ParamDef::new("height", 0.2), ParamDef::new("width", 0.2)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let bx = (a.x / d[0] + 0.5).floor() * d[0];
+            let dx = a.x - bx;
+            let dist2 = dx * dx + a.y * a.y;
+            let push = d[1] * (-dist2 / (d[2] * d[2] + 0.001)).exp();
+            let len = dist2.sqrt() + 0.001;
+            v.x += amount * (a.x + push * dx / len);
+            v.y += amount * (a.y + push * a.y / len);
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "let dx = a.x - floor(a.x / D(0) + 0.5) * D(0);
+let dist2 = dx * dx + a.y * a.y;
+let push = D(1) * exp(-dist2 / (D(2) * D(2) + 0.001));
+let len = sqrt(dist2) + 0.001;
+v.x += AMOUNT * (a.x + push * dx / len);
+v.y += AMOUNT * (a.y + push * a.y / len);
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "whirligig",
+        params: &[ParamDef::int("Mode", 0.0, 0.0, 15.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let (csin, ccos) = (a.x.sin(), a.x.cos());
+            let (csinh, ccosh) = (a.y.sinh(), a.y.cosh());
+            ctx.pass_z(a, v, amount);
+            let mode = d[0] as i32;
+            let (tx, ty) = match mode / 4 {
+                0 => (amount * ccos / ccosh, amount * csin / csinh),
+                1 => (amount * csin / ccosh, amount * ccos / csinh),
+                2 => (amount * csin / csinh, amount * ccos / ccosh),
+                _ => (amount * ccos / csinh, amount * csin / ccosh),
+            };
+            let (sx, sy) = [(1.0, -1.0), (-1.0, 1.0), (1.0, 1.0), (-1.0, -1.0)][(mode % 4) as usize];
+            v.x += sx * tx;
+            v.y += sy * ty;
+        },
+        prepare: Some(|p, _| vec![limit_value(ftoi(p[0]), 0, 15) as f64]),
+        wgsl: "let csin = sin(a.x);
+let ccos = cos(a.x);
+let csinh = sinh(a.y);
+let ccosh = cosh(a.y);
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }
+let mode = i32(D(0));
+let g = mode / 4;
+var t = vec2<f32>(ccos / ccosh, csin / csinh);
+if (g == 1) { t = vec2<f32>(csin / ccosh, ccos / csinh); }
+else if (g == 2) { t = vec2<f32>(csin / csinh, ccos / ccosh); }
+else if (g == 3) { t = vec2<f32>(ccos / csinh, csin / ccosh); }
+let s = mode % 4;
+let sx = select(-1.0, 1.0, s == 0 || s == 2);
+let sy = select(-1.0, 1.0, s == 1 || s == 2);
+v.x += sx * AMOUNT * t.x;
+v.y += sy * AMOUNT * t.y;",
+    },
+    simple(
+        "whitney_umbrella",
+        true,
+        |_, _ctx, a, v, amount| {
+            v.x += amount * a.x * a.y;
+            v.y += amount * a.x;
+            v.z += amount * a.y * a.y;
+        },
+        "v.x += AMOUNT * a.x * a.y;
+v.y += AMOUNT * a.x;
+v.z += AMOUNT * a.y * a.y;",
+    ),
+    VarDef {
+        name: "woggle_js",
+        params: &[ParamDef::int("m", 2.0, 2.0, 12.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        // d = [m, a[0..12], b[0..12]]
+        apply: |d, ctx, a, v, amount| {
+            let m = d[0] as i32;
+            let r = 1.25f64.sqrt() * (m as f64).sqrt();
+            let c = (m as f64 * ctx.random()) as usize;
+            let ra = 1.0 / (3f64.sqrt() * (a.x * a.x + a.y * a.y).sqrt());
+            let (x, y) = if c % 2 == 0 {
+                (-a.x / r + ra * a.y / r + d[1 + c], -ra * a.x / r - a.y / r + d[13 + c])
+            } else {
+                (a.x / r + ra * a.y / r + d[1 + c], -ra * a.x / r + a.y / r + d[13 + c])
+            };
+            v.x += x * amount;
+            v.y += y * amount;
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: Some(|p, _| {
+            let m = (p[0] as i32).clamp(2, 12);
+            let mut d = vec![0.0; 25];
+            d[0] = m as f64;
+            for i in 0..m as usize {
+                d[1 + i] = (2.0 * M_PI * i as f64 / m as f64).cos();
+                d[13 + i] = (2.0 * M_PI * i as f64 / m as f64).sin();
+            }
+            d
+        }),
+        wgsl: "let m = D(0);
+let r = sqrt(1.25) * sqrt(m);
+let c = u32(min(floor(m * rnd()), m - 1.0));
+let ra = 1.0 / (sqrt(3.0) * sqrt(a.x * a.x + a.y * a.y));
+var x = a.x / r + ra * a.y / r + prm[base + 1u + c];
+var y = -ra * a.x / r + a.y / r + prm[base + 13u + c];
+if (c % 2u == 0u) {
+  x = -a.x / r + ra * a.y / r + prm[base + 1u + c];
+  y = -ra * a.x / r - a.y / r + prm[base + 13u + c];
+}
+v.x += x * AMOUNT;
+v.y += y * AMOUNT;
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "wood_grain",
+        params: &[ParamDef::new("freq", 5.0), ParamDef::new("amp", 0.2), ParamDef::new("grain", 0.5), ParamDef::new("grain_freq", 6.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let r = (a.x * a.x + a.y * a.y).sqrt();
+            let theta = a.y.atan2(a.x);
+            let disp = d[1] * (d[0] * r + d[2] * (d[3] * theta).cos()).sin();
+            v.x += amount * (a.x + disp * theta.cos());
+            v.y += amount * (a.y + disp * theta.sin());
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "let r = sqrt(a.x * a.x + a.y * a.y);
+let theta = atan2(a.y, a.x);
+let disp = D(1) * sin(D(0) * r + D(2) * cos(D(3) * theta));
+v.x += AMOUNT * (a.x + disp * cos(theta));
+v.y += AMOUNT * (a.y + disp * sin(theta));
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "worley",
+        params: &[ParamDef::new("scale", 1.0), ParamDef::range("jitter", 0.8, 0.0, 1.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let s = java_max(d[0].abs(), 0.01);
+            let j = java_max(0.0, java_min(1.0, d[1]));
+            let cx = (a.x / s).floor();
+            let cy = (a.y / s).floor();
+            let mut min_d = 1e10;
+            let (mut nx, mut ny) = (0.0, 0.0);
+            for di in -1..=1 {
+                for dj in -1..=1 {
+                    let cell_x = cx + di as f64;
+                    let cell_y = cy + dj as f64;
+                    let mut hx = (cell_x * 127.1 + cell_y * 311.7).sin() * 43758.5453;
+                    hx -= hx.floor();
+                    let mut hy = (cell_x * 269.5 + cell_y * 183.3).sin() * 43758.5453;
+                    hy -= hy.floor();
+                    let sx = (cell_x + hx * j + (1.0 - j) * 0.5) * s;
+                    let sy = (cell_y + hy * j + (1.0 - j) * 0.5) * s;
+                    let (dx, dy) = (a.x - sx, a.y - sy);
+                    let dd = (dx * dx + dy * dy).sqrt();
+                    if dd < min_d {
+                        min_d = dd;
+                        nx = sx;
+                        ny = sy;
+                    }
+                }
+            }
+            v.x += amount * ((a.x - nx) / (s + 1e-6));
+            v.y += amount * ((a.y - ny) / (s + 1e-6));
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "let s = max(abs(D(0)), 0.01);
+let j = max(0.0, min(1.0, D(1)));
+let cx = floor(a.x / s);
+let cy = floor(a.y / s);
+var min_d = 1e10;
+var nx = 0.0;
+var ny = 0.0;
+for (var di = -1; di <= 1; di++) {
+  for (var dj = -1; dj <= 1; dj++) {
+    let cell_x = cx + f32(di);
+    let cell_y = cy + f32(dj);
+    let hx = fract(sin(cell_x * 127.1 + cell_y * 311.7) * 43758.5453);
+    let hy = fract(sin(cell_x * 269.5 + cell_y * 183.3) * 43758.5453);
+    let sx = (cell_x + hx * j + (1.0 - j) * 0.5) * s;
+    let sy = (cell_y + hy * j + (1.0 - j) * 0.5) * s;
+    let dd = length(vec2<f32>(a.x - sx, a.y - sy));
+    if (dd < min_d) {
+      min_d = dd;
+      nx = sx;
+      ny = sy;
+    }
+  }
+}
+v.x += AMOUNT * ((a.x - nx) / (s + 1e-6));
+v.y += AMOUNT * ((a.y - ny) / (s + 1e-6));
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
     // @@NEXT@@
 ];
 
