@@ -26,6 +26,7 @@
 use super::{Ctx, ParamDef, Pt, VarDef, VarKind, simple};
 #[allow(unused_imports)]
 use crate::math::*;
+use super::complex::Complex;
 #[allow(unused_imports)]
 use crate::model::Affine;
 
@@ -2735,5 +2736,82 @@ let alpha = (atan2(y, x) + TWO_PI * trunc(rnd() * D(8))) / D(0);
 let gamma = rout * sqrt(rsq);
 v.x += gamma * cos(alpha);
 v.y += gamma * sin(alpha);",
+    },
+    VarDef {
+        name: "julia_outside",
+        params: &[ParamDef::new("re_div", 1.0), ParamDef::new("im_div", 0.0), ParamDef::int("mode", 0.0, 0.0, 2.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let mode = d[2] as i32;
+            let (outer, inner) = (mode == 0 || mode == 2, mode == 0 || mode == 1);
+            let mut z = Complex::new(a.x, a.y);
+            let mut z2 = Complex::new(a.x, a.y);
+            if outer {
+                z.sqrt();
+            }
+            z.inc();
+            if outer {
+                z.sqr();
+                z2.sqrt();
+            }
+            z2.dec();
+            if outer {
+                z2.sqr();
+            }
+            z.div(&z2);
+            if inner {
+                z.sqrt();
+            }
+            z.div(&Complex::new(d[0], d[1]));
+            let s = if inner && ctx.random() >= 0.5 { -1.0 } else { 1.0 };
+            v.x += amount * s * z.re;
+            v.y += amount * s * z.im;
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: Some(|p, _| vec![p[0], p[1], limit_value(p[2], 0.0, 2.0).trunc()]),
+        wgsl: "let mode = i32(D(2));
+let outer = mode == 0 || mode == 2;
+let inner = mode == 0 || mode == 1;
+var z = vec2<f32>(a.x, a.y);
+var z2 = z;
+if (outer) { z = cx_sqrt(z); }
+z.x += 1.0;
+if (outer) { z = cx_sqr(z); z2 = cx_sqrt(z2); }
+z2.x -= 1.0;
+if (outer) { z2 = cx_sqr(z2); }
+z = cx_div(z, z2);
+if (inner) { z = cx_sqrt(z); }
+z = cx_div(z, vec2<f32>(D(0), D(1)));
+var s = 1.0;
+if (inner && rnd() >= 0.5) { s = -1.0; }
+v.x += AMOUNT * s * z.x;
+v.y += AMOUNT * s * z.y;
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "juliaq",
+        // Default power: JWildfire picks a random one (+-2..7) for new instances
+        params: &[ParamDef::int("power", 3.0, -10.0, 10.0), ParamDef::int("divisor", 2.0, -10.0, 10.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        // d = [power, divisor, half_inv_power, inv_power, inv_power_2pi]
+        apply: |d, ctx, a, v, amount| {
+            let ang = a.y.atan2(a.x) * d[3] + ctx.random_int(i32::MAX as usize) as f64 * d[4];
+            let r = amount * (a.x * a.x + a.y * a.y).powf(d[2]);
+            v.x += r * ang.cos();
+            v.y += r * ang.sin();
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: Some(|p, _| {
+            let (power, divisor) = (ftoi(p[0]) as f64, ftoi(p[1]) as f64);
+            vec![power, divisor, 0.5 * divisor / power, divisor / power, M_2PI / power]
+        }),
+        // GPU: random multiple of 2 pi / power reduced modulo |power| (same angles)
+        wgsl: "let ang = atan2(a.y, a.x) * D(3) + floor(rnd() * abs(D(0))) * D(4);
+let r = AMOUNT * java_pow(a.x * a.x + a.y * a.y, D(2));
+v.x += r * cos(ang);
+v.y += r * sin(ang);
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
     },
 ];
