@@ -149,13 +149,22 @@ fn triantruchet_load(d: &mut Vec<f64>, res: &[Vec<u8>], _: &LoadEnv) {
         }
     }
     d[4..8].copy_from_slice(&n);
+    // state of the tile picker after the setup (continued by `transform`)
+    d.truncate(8);
+    d.push(rnd.seed as f64);
 }
 
 fn triantruchet_apply(d: &[f64], ctx: &mut Ctx, a: &Pt, v: &mut Pt, amount: f64) {
     let (rows, cols) = (d[2] as i32, d[3] as i32);
     let ts = d[1] as f32 / rows as f32;
-    let i = (ctx.random() * rows as f64) as i32;
-    let j = (ctx.random() * cols as f64) as i32;
+    // the tile picker continues the seeded java.util.Random of the setup, per render thread
+    // (JWildfire: per instance); the GPU picks tiles with the shared random generator
+    let key = d.as_ptr() as usize;
+    let seed = ctx.states.get(&key).map_or(d[8], |st| st[0]);
+    let mut picker = JavaRandom { seed: seed as u64 };
+    let i = (picker.next_double() * rows as f64) as i32;
+    let j = (picker.next_double() * cols as f64) as i32;
+    ctx.states.insert(key, vec![picker.seed as f64]);
     let rot = match (i % 2 == 0, j % 2 == 0) {
         (true, true) => d[4],
         (true, false) => d[6],
