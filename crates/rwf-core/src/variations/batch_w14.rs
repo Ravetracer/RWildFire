@@ -17,6 +17,9 @@
 //
 // SPDX-License-Identifier: LGPL-3.0-or-later
 
+
+// Some variations use JWildfire's truncated pi literals.
+#![allow(clippy::approx_constant)]
 //! Variations ported from the JWildfire sources (batch w14).
 
 #[allow(unused_imports)]
@@ -164,6 +167,150 @@ fn hypertile3d2_apply(d: &[f64], o: usize, ctx: &mut Ctx, a: &Pt, v: &mut Pt, am
     v.x += vr * (x * cosa + y * sina);
     v.y += vr * (y * cosa - x * sina);
     v.z += vr * (a.z * s2z);
+}
+
+/// `InversionFunc` shape point `(r, x, y)` at angle `tin`; d = [scale, rotation, shape, imode,
+/// hide_uninverted, a, b, c, d, e, f, ring_mode, ring_scale, pnorm_point, pnorm_shape, pnorm_pmod,
+/// pnorm_smod, draw_shape, shape_thickness, passthrough, guides_enabled, color_measure,
+/// color_gradient, color_low_threshold, color_high_threshold, rotation (radians), ring_rmin,
+/// ring_rmax, period].
+fn inversion_curve(d: &[f64], tin: f64) -> (f64, f64, f64) {
+    let (scale, a, b, c) = (d[0], d[5], d[6], d[7]);
+    let t = tin - d[25];
+    let r = match d[2] as i32 {
+        1 => (a * b) / ((b * t.cos()) * (b * t.cos()) + (a * t.sin()) * (a * t.sin())).sqrt(),
+        2 => ((a * a * b * b) / ((b * b * t.cos() * t.cos()) - (a * a * t.sin() * t.sin()))).sqrt(),
+        3 => {
+            let theta = ((tin - d[25]) % M_2PI).abs();
+            let n = a.floor();
+            (M_PI / n).cos() / (theta % (M_2PI / n) - M_PI / n).cos()
+        }
+        4 => (a / b * t).cos() + c,
+        5 => (a * b) / ((a * t.sin()).abs().powf(c) + (b * t.cos()).abs().powf(c)).powf(1.0 / c),
+        6 => (((t * c / 4.0).cos() / a).abs().powf(d[9]) + ((t * c / 4.0).sin() / b).abs().powf(d[10])).powf(-1.0 / d[8]),
+        _ => 1.0,
+    } * scale;
+    (r, r * tin.cos(), r * tin.sin())
+}
+
+/// `Rhodonea.calcPeriod`
+fn inversion_rhodonea_period(a: f64, b: f64, c: f64) -> f64 {
+    let k = a / b;
+    if k % 1.0 == 0.0 {
+        if k % 2.0 == 0.0 || c != 0.0 { M_2PI } else { M_PI }
+    } else if a % 1.0 == 0.0 && b % 1.0 == 0.0 {
+        let (mut kn, mut kd) = (a, b);
+        let (mut x, mut y) = ((kn as i64).abs(), (kd as i32 as i64).abs());
+        while y != 0 {
+            (x, y) = (y, x % y);
+        }
+        let gcd = x as f64;
+        if gcd != 1.0 {
+            kn /= gcd;
+            kd /= gcd;
+        }
+        if kn % 2.0 == 0.0 || kd % 2.0 == 0.0 { kd * M_2PI } else { kd * M_PI }
+    } else {
+        M_2PI
+    }
+}
+
+fn inversion_apply(d: &[f64], ctx: &mut Ctx, a: &Pt, v: &mut Pt, amount: f64) {
+    let (xin, yin) = (a.x, a.y);
+    if d[17] > 0.0 && ctx.random() < d[17] {
+        let (_, cx, cy) = inversion_curve(d, ctx.random() * d[28]);
+        v.x += cx;
+        v.y += cy;
+        if d[18] != 0.0 {
+            v.x += 0.01 * (ctx.random() - 0.5) * d[18];
+            v.y += 0.01 * (ctx.random() - 0.5) * d[18];
+        }
+        return;
+    }
+    if d[19] > 0.0 && ctx.random() < d[19] {
+        v.x += xin;
+        v.y += yin;
+        return;
+    }
+    let tin = yin.atan2(xin);
+    let rin = (xin * xin + yin * yin).sqrt();
+    // getMaxCurvePoint
+    let (rc, xc, yc) = if d[2] as i32 == 4 {
+        let mut best = (-0.0001, 0.0, 0.0);
+        for i in 0..(d[28] / M_2PI) as i32 {
+            let (r, x, y) = inversion_curve(d, tin + i as f64 * M_PI);
+            if r.abs() > best.0 {
+                best = (r.abs(), x, y);
+            }
+        }
+        best
+    } else {
+        inversion_curve(d, tin)
+    };
+    let mut invert = match d[3] as i32 {
+        1 => rin > rc,
+        2 => rin < rc,
+        _ => true,
+    };
+    let (ring_mode, rmin, rmax) = (d[11] as i32, d[26], d[27]);
+    if invert && ring_mode != 0 && d[12] != 1.0 {
+        if ring_mode == 1 {
+            invert = rin >= rmin && rin <= rmax;
+        } else if ring_mode == 2 {
+            invert = rin <= rmin || rin >= rmax;
+        }
+    }
+    if !invert {
+        v.x += xin;
+        v.y += yin;
+        if ctx.preserve_z {
+            v.z += a.z;
+        }
+        v.do_hide = d[4] == 1.0;
+        return;
+    }
+    let (ps, pp) = (d[14], d[13]);
+    let num = if ps == 2.0 && d[16] == 1.0 { rc * rc } else { (xc.abs().powf(ps) + yc.abs().powf(ps)).powf(2.0 / (ps * d[16])) };
+    let den = if pp == 2.0 && d[15] == 1.0 { xin * xin + yin * yin } else { (xin.abs().powf(pp) + yin.abs().powf(pp)).powf(2.0 / (pp * d[15])) };
+    let iscale = num / den;
+    v.x += amount * iscale * xin;
+    v.y += amount * iscale * yin;
+    ctx.pass_z(a, v, amount);
+    v.do_hide = false;
+    // setColor
+    let val = match d[21] as i32 {
+        1 => ((v.x - xc) * (v.x - xc) + (v.y - yc) * (v.y - yc)).sqrt(),
+        2 => ((a.x - xc) * (a.x - xc) + (a.y - yc) * (a.y - yc)).sqrt(),
+        3 => ((v.x - a.x) * (v.x - a.x) + (v.y - a.y) * (v.y - a.y)).sqrt(),
+        4 => {
+            let r_shape = (v.x * v.x + v.y * v.y).sqrt();
+            let is = (d[0] * d[0]) / (a.x * a.x + a.y * a.y);
+            let (cx, cy) = (is * a.x * amount, is * a.y * amount);
+            r_shape / (cx * cx + cy * cy).sqrt()
+        }
+        _ => return,
+    };
+    let (mut lo, mut hi) = (d[23], d[24]);
+    if lo > hi {
+        std::mem::swap(&mut lo, &mut hi);
+    }
+    let base = if d[22] as i32 == 2 {
+        let mut w = val;
+        if w < lo {
+            w = hi - ((lo - w) % (hi - lo));
+        } else if w > hi {
+            w = lo + ((w - lo) % (hi - lo));
+        }
+        ((w - lo) / (hi - lo)) * 255.0
+    } else if val < lo {
+        0.0
+    } else if val >= hi {
+        255.0
+    } else {
+        ((val - lo) / (hi - lo)) * 255.0
+    };
+    v.rgb_color = false;
+    v.color = (base / 255.0).clamp(0.0, 1.0);
 }
 
 pub static DEFS: &[VarDef] = &[
@@ -1505,4 +1652,266 @@ v.z += AMOUNT * val * 0.25;",
 let kik = ang * sin(a.y - a.x);
 v.z += AMOUNT * (1.5 - acos(sin(ang) * kik * 0.5));",
     ),
+    VarDef {
+        name: "intersection",
+        params: &[
+            ParamDef::new("xwidth", 5.0),
+            ParamDef::new("xtilesize", 0.5),
+            ParamDef::new("xmod1", 0.3),
+            ParamDef::new("xmod2", 1.0),
+            ParamDef::new("xheight", 0.5),
+            ParamDef::new("yheight", 5.0),
+            ParamDef::new("ytilesize", 0.5),
+            ParamDef::new("ymod1", 0.3),
+            ParamDef::new("ymod2", 1.0),
+            ParamDef::new("ywidth", 0.5),
+        ],
+        kind: VarKind::Normal,
+        is_3d: false,
+        // d = [<params>, xr1, yr1]
+        apply: |d, ctx, a, v, amount| {
+            // fold of the coordinate `c` with mod1 `m` and period `r`
+            let fold = |c: f64, m: f64, r: f64| if c > m { -m + fmod(c + m, r) } else if c < -m { m - fmod(m - c, r) } else { c };
+            if ctx.random() < 0.5 {
+                let x = if ctx.random() < 0.5 { d[0] } else { -d[0] };
+                v.x += d[1] * (a.x + java_round(x * ctx.random().ln()));
+                v.y += d[4] * fold(a.y, d[2], d[10]);
+            } else {
+                let y = if ctx.random() < 0.5 { d[5] } else { -d[5] };
+                v.y += d[6] * (a.y + java_round(y * ctx.random().ln()));
+                v.x += d[9] * fold(a.x, d[7], d[11]);
+            }
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: Some(|p, _| {
+            let mut d = p.to_vec();
+            d.extend([p[3] * p[2], p[8] * p[7]]);
+            d
+        }),
+        wgsl: "fn intersection_fold(c: f32, m: f32, r: f32) -> f32 {
+  if (c > m) { return -m + (c + m) % r; }
+  if (c < -m) { return m - (m - c) % r; }
+  return c;
+}
+@body
+if (rnd() < 0.5) {
+  var x = -D(0);
+  if (rnd() < 0.5) { x = D(0); }
+  v.x += D(1) * (a.x + java_round(x * log(rnd())));
+  v.y += D(4) * intersection_fold(a.y, D(2), D(10));
+} else {
+  var y = -D(5);
+  if (rnd() < 0.5) { y = D(5); }
+  v.y += D(6) * (a.y + java_round(y * log(rnd())));
+  v.x += D(9) * intersection_fold(a.x, D(7), D(11));
+}
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "inversion",
+        params: &[
+            ParamDef::new("scale", 1.0),
+            ParamDef::new("rotation", 0.0),
+            ParamDef::int("shape", 0.0, 0.0, 6.0),
+            ParamDef::int("imode", 0.0, 0.0, 4.0),
+            ParamDef::int("hide_uninverted", 0.0, 0.0, 1.0),
+            ParamDef::new("a", 1.0),
+            ParamDef::new("b", 1.0),
+            ParamDef::new("c", 0.0),
+            ParamDef::new("d", 0.0),
+            ParamDef::new("e", 0.0),
+            ParamDef::new("f", 0.0),
+            ParamDef::int("ring_mode", 0.0, 0.0, 2.0),
+            ParamDef::new("ring_scale", 1.0),
+            ParamDef::new("pnorm_point", 2.0),
+            ParamDef::new("pnorm_shape", 2.0),
+            ParamDef::new("pnorm_pmod", 1.0),
+            ParamDef::new("pnorm_smod", 1.0),
+            ParamDef::new("draw_shape", 0.0),
+            ParamDef::new("shape_thickness", 0.0),
+            ParamDef::new("passthrough", 0.0),
+            ParamDef::int("guides_enabled", 1.0, 0.0, 1.0),
+            ParamDef::int("color_measure", 0.0, 0.0, 4.0),
+            ParamDef::int("color_gradient", 1.0, 0.0, 2.0),
+            ParamDef::new("color_low_threshold", 0.0),
+            ParamDef::new("color_high_threshold", 1.0)
+        ],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| inversion_apply(d, ctx, a, v, amount),
+        prepare: Some(|p, _| {
+            let mut d = p.to_vec();
+            for i in [2, 3, 11, 21, 22] {
+                d[i] = p[i].trunc();
+            }
+            let (scale, ring_scale) = (p[0], p[12]);
+            let (rmin, rmax) = if ring_scale <= scale {
+                let rmin = ring_scale * scale;
+                (rmin, scale * scale / rmin)
+            } else {
+                let rmax = ring_scale * scale;
+                (scale * scale / rmax, rmax)
+            };
+            let period = if d[2] as i32 == 4 { inversion_rhodonea_period(p[5], p[6], p[7]) } else { M_2PI };
+            d.extend([M_PI * p[1], rmin, rmax, period]);
+            d
+        }),
+        wgsl: "fn inversion_curve(base: u32, tin: f32) -> vec3<f32> {
+  let scale = prm[base];
+  let a = prm[base + 5u];
+  let b = prm[base + 6u];
+  let c = prm[base + 7u];
+  let t = tin - prm[base + 25u];
+  var r = 1.0;
+  switch (i32(prm[base + 2u])) {
+    case 1: { r = (a * b) / sqrt((b * cos(t)) * (b * cos(t)) + (a * sin(t)) * (a * sin(t))); }
+    case 2: { r = sqrt((a * a * b * b) / ((b * b * cos(t) * cos(t)) - (a * a * sin(t) * sin(t)))); }
+    case 3: {
+      let theta = abs(t % TWO_PI);
+      let n = floor(a);
+      r = cos(PI / n) / cos(theta % (TWO_PI / n) - PI / n);
+    }
+    case 4: { r = cos(a / b * t) + c; }
+    case 5: { r = (a * b) / java_pow(java_pow(abs(a * sin(t)), c) + java_pow(abs(b * cos(t)), c), 1.0 / c); }
+    case 6: {
+      r = java_pow(java_pow(abs(cos(t * c / 4.0) / a), prm[base + 9u]) + java_pow(abs(sin(t * c / 4.0) / b), prm[base + 10u]), -1.0 / prm[base + 8u]);
+    }
+    default: {}
+  }
+  r *= scale;
+  return vec3<f32>(r, r * cos(tin), r * sin(tin));
+}
+@body
+let xin = a.x;
+let yin = a.y;
+var done = false;
+if (D(17) > 0.0 && rnd() < D(17)) {
+  let cp = inversion_curve(base, rnd() * D(28));
+  v.x += cp.y;
+  v.y += cp.z;
+  if (D(18) != 0.0) {
+    v.x += 0.01 * (rnd() - 0.5) * D(18);
+    v.y += 0.01 * (rnd() - 0.5) * D(18);
+  }
+  done = true;
+}
+if (!done && D(19) > 0.0 && rnd() < D(19)) {
+  v.x += xin;
+  v.y += yin;
+  done = true;
+}
+if (!done) {
+  let tin = atan2(yin, xin);
+  let rin = sqrt(xin * xin + yin * yin);
+  var cp = vec3<f32>(-0.0001, 0.0, 0.0);
+  if (i32(D(2)) == 4) {
+    let tc = i32(D(28) / TWO_PI);
+    for (var i = 0; i < tc; i++) {
+      let q = inversion_curve(base, tin + f32(i) * PI);
+      if (abs(q.x) > cp.x) { cp = vec3<f32>(abs(q.x), q.y, q.z); }
+    }
+  } else {
+    cp = inversion_curve(base, tin);
+  }
+  var invert = true;
+  let imode = i32(D(3));
+  if (imode == 1) { invert = rin > cp.x; } else if (imode == 2) { invert = rin < cp.x; }
+  let ring_mode = i32(D(11));
+  if (invert && ring_mode != 0 && D(12) != 1.0) {
+    if (ring_mode == 1) { invert = rin >= D(26) && rin <= D(27); }
+    else if (ring_mode == 2) { invert = rin <= D(26) || rin >= D(27); }
+  }
+  if (!invert) {
+    v.x += xin;
+    v.y += yin;
+    if (PRESERVE_Z) { v.z += a.z; }
+    v.hide = select(0.0, 1.0, D(4) == 1.0);
+  } else {
+    let ps = D(14);
+    let pp = D(13);
+    var num = cp.x * cp.x;
+    if (!(ps == 2.0 && D(16) == 1.0)) { num = java_pow(java_pow(abs(cp.y), ps) + java_pow(abs(cp.z), ps), 2.0 / (ps * D(16))); }
+    var den = xin * xin + yin * yin;
+    if (!(pp == 2.0 && D(15) == 1.0)) { den = java_pow(java_pow(abs(xin), pp) + java_pow(abs(yin), pp), 2.0 / (pp * D(15))); }
+    let iscale = num / den;
+    v.x += AMOUNT * iscale * xin;
+    v.y += AMOUNT * iscale * yin;
+    if (PRESERVE_Z) { v.z += AMOUNT * a.z; }
+    v.hide = 0.0;
+    let measure = i32(D(21));
+    if (measure >= 1 && measure <= 4) {
+      var val = 0.0;
+      if (measure == 1) { val = length(vec2<f32>(v.x, v.y) - cp.yz); }
+      else if (measure == 2) { val = length(vec2<f32>(a.x, a.y) - cp.yz); }
+      else if (measure == 3) { val = length(vec2<f32>(v.x - a.x, v.y - a.y)); }
+      else {
+        let is = (D(0) * D(0)) / (a.x * a.x + a.y * a.y);
+        val = length(vec2<f32>(v.x, v.y)) / length(vec2<f32>(a.x, a.y) * is * AMOUNT);
+      }
+      let lo = min(D(23), D(24));
+      let hi = max(D(23), D(24));
+      var bc = 0.0;
+      if (i32(D(22)) == 2) {
+        var w = val;
+        if (w < lo) { w = hi - ((lo - w) % (hi - lo)); } else if (w > hi) { w = lo + ((w - lo) % (hi - lo)); }
+        bc = (w - lo) / (hi - lo) * 255.0;
+      } else if (val >= hi) {
+        bc = 255.0;
+      } else if (val >= lo) {
+        bc = (val - lo) / (hi - lo) * 255.0;
+      }
+      v.rgbc = 0.0;
+      v.color = clamp(bc / 255.0, 0.0, 1.0);
+    }
+  }
+}",
+    },
+    VarDef {
+        name: "inverted_julia",
+        params: &[
+            ParamDef::new("power", 0.25),
+            ParamDef::new("y2_mult", 1.0),
+            ParamDef::new("a2x_mult", 1.0),
+            ParamDef::new("a2y_mult", 1.0),
+            ParamDef::new("a2y_add", 0.0),
+            ParamDef::new("cos_mult", 0.0),
+            ParamDef::new("y_mult", 1.0),
+            ParamDef::new("center", 3.14),
+            ParamDef::new("x2y2_add", 0.0),
+        ],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let z = (a.x * a.x + (a.y * a.y * d[1])).powf(d[0]) + d[8];
+            let q = (a.x * d[2]).atan2(a.y * d[3] + d[4]) * 0.5 + M_PI * ((2.0 * ctx.random()) as i32) as f64;
+            let cz = (z * d[5]).cos();
+            v.x += amount * cz * (q.sin() / z / d[7]);
+            v.y += amount * cz * (q.cos() / z / d[7]) * d[6];
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "let z = java_pow(a.x * a.x + a.y * a.y * D(1), D(0)) + D(8);
+let q = atan2(a.x * D(2), a.y * D(3) + D(4)) * 0.5 + PI * floor(2.0 * rnd());
+let cz = cos(z * D(5));
+v.x += AMOUNT * cz * (sin(q) / z / D(7));
+v.y += AMOUNT * cz * (cos(q) / z / D(7)) * D(6);
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "involute",
+        params: &[ParamDef::new("r", 0.3)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let t = a.y.atan2(a.x);
+            v.x += amount * d[0] * (t.cos() + t * t.sin());
+            v.y += amount * d[0] * (t.sin() - t * t.cos());
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "let t = atan2(a.y, a.x);
+v.x += AMOUNT * D(0) * (cos(t) + t * sin(t));
+v.y += AMOUNT * D(0) * (sin(t) - t * cos(t));
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
 ];
