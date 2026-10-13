@@ -872,6 +872,303 @@ fn koch_prepare(p: &[f64]) -> Vec<f64> {
     d
 }
 
+/// `java.awt.Color.HSBtoRGB` (float arithmetic).
+fn java_hsb_to_rgb(hue: f32, saturation: f32, brightness: f32) -> [i32; 3] {
+    let c = |v: f32| (v * 255.0 + 0.5) as i32;
+    if saturation == 0.0 {
+        let v = c(brightness);
+        return [v, v, v];
+    }
+    let h = (hue - hue.floor()) * 6.0;
+    let f = h - h.floor();
+    let p = brightness * (1.0 - saturation);
+    let q = brightness * (1.0 - saturation * f);
+    let t = brightness * (1.0 - (saturation * (1.0 - f)));
+    match h as i32 {
+        0 => [c(brightness), c(t), c(p)],
+        1 => [c(q), c(brightness), c(p)],
+        2 => [c(p), c(brightness), c(t)],
+        3 => [c(p), c(q), c(brightness)],
+        4 => [c(t), c(p), c(brightness)],
+        5 => [c(brightness), c(p), c(q)],
+        _ => [0, 0, 0],
+    }
+}
+
+/// Hue of `java.awt.Color.RGBtoHSB` (float arithmetic).
+fn java_rgb_hue(rgb: [i32; 3]) -> f32 {
+    let [r, g, b] = rgb;
+    let cmax = r.max(g).max(b);
+    let cmin = r.min(g).min(b);
+    let saturation = if cmax != 0 { (cmax - cmin) as f32 / cmax as f32 } else { 0.0 };
+    if saturation == 0.0 {
+        return 0.0;
+    }
+    let span = (cmax - cmin) as f32;
+    let (rc, gc, bc) = ((cmax - r) as f32 / span, (cmax - g) as f32 / span, (cmax - b) as f32 / span);
+    let mut hue = if r == cmax {
+        bc - gc
+    } else if g == cmax {
+        2.0 + rc - bc
+    } else {
+        4.0 + gc - rc
+    };
+    hue /= 6.0;
+    if hue < 0.0 {
+        hue += 1.0;
+    }
+    hue
+}
+
+/// `js.mandala.RotatorMap` skew tables.
+struct RotatorSkews {
+    num: i32,
+    denom: i32,
+    minsky: bool,
+    wobble: f64,
+    wrap: f64,
+    extra: i32,
+    size: i32,
+    base: i32,
+    min: i32,
+    max: i32,
+    h1: Vec<i32>,
+    v: Vec<i32>,
+    h2: Vec<i32>,
+}
+
+impl RotatorSkews {
+    /// `adjust_skew_maps`
+    fn adjust(&mut self, x: i32) -> i32 {
+        if self.wrap == 0.0 {
+            while self.base + x < 0 || self.base + x >= self.size {
+                self.size *= 2;
+                self.base = self.size / 2;
+                self.h1.clear();
+            }
+        }
+        if self.h1.is_empty() {
+            self.min = -self.base;
+            self.max = self.min + self.size - 1;
+            let n = self.size as usize;
+            (self.h1, self.v, self.h2) = (vec![0; n], vec![0; n], vec![0; n]);
+            let low = self.num as f64 / ((1.0 + self.wobble) * self.denom as f64);
+            let hi = self.num as f64 / ((1.0 - self.wobble) * self.denom as f64);
+            let mut i = -self.base;
+            while i + self.base < self.size {
+                let x = i as f64 * 2.0 * M_PI * (1.0 / 512.0);
+                let angle = M_PI * 2.0 * (low - (x.cos() - 1.0) / 2.0 * (hi - low));
+                let k = (i + self.base) as usize;
+                if self.minsky {
+                    let eps = (2.0 * (1.0 - angle.cos())).sqrt();
+                    self.h1[k] = (-(java_round(eps * i as f64 + 0.00000001) as i64)) as i32 + self.extra;
+                    self.v[k] = java_round(eps * i as f64 + 0.00000001) as i64 as i32;
+                    self.h2[k] = 0;
+                } else {
+                    let sa = angle.sin();
+                    let c = (angle.cos() - 1.0) / sa;
+                    self.h1[k] = java_round(c * i as f64) as i64 as i32;
+                    self.v[k] = java_round(sa * i as f64 + 0.00000001) as i64 as i32;
+                    self.h2[k] = self.h1[k] + self.extra;
+                }
+                i += 1;
+            }
+        }
+        x - self.size * ((self.base + x) as f64 / self.size as f64).floor() as i32
+    }
+
+    /// One rotation (`denom` repetitions of the three skews).
+    fn rotate(&mut self, px: &mut i32, py: &mut i32) {
+        for _ in 0..self.denom {
+            *px += self.h1[(*py + self.base) as usize];
+            if *px < self.min || *px > self.max {
+                *px = self.adjust(*px);
+            }
+            *py += self.v[(*px + self.base) as usize];
+            if *py < self.min || *py > self.max {
+                *py = self.adjust(*py);
+            }
+            *px += self.h2[(*py + self.base) as usize];
+            if *px < self.min || *px > self.max {
+                *px = self.adjust(*px);
+            }
+        }
+    }
+}
+
+const ROTATOR_MAX_STEPS: i32 = 20000;
+
+/// `RotatorMap.drawMap` (`mandala2`: `Mandala2Func.drawMap`, which follows wrapped paths until
+/// they cycle). Returns the step counts per cell (`x * width + y`) and the cells in drawing order.
+#[allow(clippy::too_many_arguments)]
+fn rotator_map(width: i32, num: i32, denom: i32, minsky: bool, wobble: f64, wrap: f64, extra: i32, mandala2: bool) -> (Vec<i32>, Vec<(i32, i32)>) {
+    let show_base = -width / 2;
+    let mut size = if wrap == 0.0 { width * 2 } else { (width as f64 * wrap) as i32 };
+    size |= 1;
+    let mut base = size / 2;
+    if base + (show_base + width) > size {
+        base = -(show_base + width) + size;
+    }
+    let mut sk = RotatorSkews { num, denom, minsky, wobble, wrap, extra, size, base, min: 0, max: 0, h1: Vec::new(), v: Vec::new(), h2: Vec::new() };
+    sk.adjust(0);
+    let offs = -show_base;
+    let (min_show, max_show) = (show_base, show_base + width - 1);
+    let mut counts = vec![0i32; (width * width) as usize];
+    let mut order = Vec::new();
+    let idx = |x: i32, y: i32| ((x + offs) * width + (y + offs)) as usize;
+    for x in min_show..=max_show {
+        for y in min_show..=max_show {
+            if counts[idx(x, y)] != 0 {
+                continue;
+            }
+            let (mut px, mut py) = (x, y);
+            let mut n_steps = 1;
+            // Mandala2Func also follows wrapped paths beyond max_n_steps (they cycle); bounded here
+            let mut guard = 0u64;
+            while n_steps <= ROTATOR_MAX_STEPS || (mandala2 && wrap > 0.0 && guard < 50_000_000) {
+                guard += 1;
+                sk.rotate(&mut px, &mut py);
+                if px == x && py == y {
+                    break;
+                }
+                if mandala2 && n_steps > ROTATOR_MAX_STEPS {
+                    n_steps = ROTATOR_MAX_STEPS;
+                }
+                n_steps += 1;
+            }
+            let (mut px, mut py) = (x, y);
+            for _ in 1..=n_steps {
+                if px >= min_show && px <= max_show && py >= min_show && py <= max_show {
+                    if counts[idx(px, py)] != 0 {
+                        break;
+                    }
+                    order.push((px + offs, py + offs));
+                    counts[idx(px, py)] = n_steps;
+                }
+                sk.rotate(&mut px, &mut py);
+                if px == x && py == y {
+                    break;
+                }
+            }
+        }
+    }
+    (counts, order)
+}
+
+/// Rotator map parameters as set when loading a flame: `num` is adjusted against the default
+/// `denom` (3) and `denom` against the adjusted `num`; returns (num, denom, wobble, wrap, extra).
+fn rotator_params(num: f64, denom: f64, wobble: f64, wrap: f64, hskew: f64) -> (i32, i32, f64, f64, i32) {
+    const WRAP: [f64; 9] = [0.0, 12.0, 8.0, 6.0, 4.0, 3.0, 2.0, 1.5, 1.0];
+    const SKEW: [i32; 23] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 11, 12, 15, 16, 23, 24, 25, 31, 32, 36, 47, 48, 63, 64];
+    let mut n = if num < 1.0 { 1.0 } else { num };
+    if (n * 2.0) % 3.0 == 0.0 {
+        n += 1.0;
+    }
+    let n = limit_value(n, 1.0, 15.0) as i32;
+    let mut dn = if denom < 3.0 { 3.0 } else { denom };
+    if (n as f64 * 2.0) % dn == 0.0 {
+        dn += 1.0;
+    }
+    let dn = limit_value(dn, 3.0, 16.0) as i32;
+    let pick = |v: f64, len: usize| (limit_value(v, 0.0, len as f64) as i32 % len as i32) as usize;
+    let wp = pick(wobble, 9);
+    let wobble = if wp == 0 { 0.0 } else { 10f64.powf(-6.0 + 0.5 * wp as f64) };
+    (n, dn, wobble, WRAP[pick(wrap, 9)], SKEW[pick(hskew, 23)])
+}
+
+/// Packs an RGB color into one value.
+fn pack_rgb(c: [i32; 3]) -> f64 {
+    ((c[0] << 16) | (c[1] << 8) | c[2]) as f64
+}
+
+/// Cached prepared data of the mandala variations (building the map can take a while).
+fn mandala_cached(key: Vec<u64>, build: impl FnOnce() -> Vec<f64>) -> std::sync::Arc<Vec<f64>> {
+    use std::sync::{Arc, Mutex, OnceLock};
+    type Entry = (Vec<u64>, Arc<Vec<f64>>);
+    static CACHE: OnceLock<Mutex<Vec<Entry>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(Default::default);
+    if let Some((_, d)) = cache.lock().unwrap().iter().find(|(k, _)| *k == key) {
+        return d.clone();
+    }
+    let d = Arc::new(build());
+    let mut c = cache.lock().unwrap();
+    if c.len() >= 8 {
+        c.remove(0);
+    }
+    c.push((key, d.clone()));
+    d
+}
+
+/// `MandalaFunc`: d = [width, size, num, denom, minsky, wobble, wrap_range, hskew, color id,
+/// count, (x, y, color) per cell in drawing order]; the color is packed RGB (color id 0) or a
+/// gradient index.
+fn mandala_prepare(p: &[f64]) -> Vec<f64> {
+    let width = limit_value(p[0], 100.0, 1000.0) as i32;
+    let (num, denom, wobble, wrap, extra) = rotator_params(p[2], p[3], p[5], p[6], p[7]);
+    let minsky = limit_value(p[4], 0.0, 1.0) as i32 == 1;
+    let colorid = limit_value(p[8], 0.0, 1.0) as i32;
+    let key = vec![width as u64, num as u64, denom as u64, minsky as u64, wobble.to_bits(), wrap.to_bits(), extra as u64, colorid as u64];
+    let cells = mandala_cached(key, || {
+        let (counts, order) = rotator_map(width, num, denom, minsky, wobble, wrap, extra, false);
+        let mut d = Vec::with_capacity(order.len() * 3);
+        for (x, y) in order {
+            let n = counts[(x * width + y) as usize];
+            let rgb = if n == ROTATOR_MAX_STEPS + 1 {
+                [0, 0, 0]
+            } else {
+                let z = (n as f64).ln() as f32;
+                java_hsb_to_rgb(z - z.floor(), 0.85, 1.0)
+            };
+            d.extend([x as f64, y as f64, if colorid == 0 { pack_rgb(rgb) } else { java_rgb_hue(rgb) as f64 }]);
+        }
+        d
+    });
+    let mut d = vec![width as f64, limit_value(p[1], 0.0, 1.0), num as f64, denom as f64, minsky as i32 as f64, wobble, wrap, extra as f64, colorid as f64];
+    d.push((cells.len() / 3) as f64);
+    d.extend_from_slice(&cells);
+    d
+}
+
+/// `Mandala2Func`: d = [width, num, denom, minsky, wobble, wrap_range, hskew, color id,
+/// color per cell (x * width + y)]; packed RGB for color ids 1..3, else a gradient index.
+fn mandala2_prepare(p: &[f64]) -> Vec<f64> {
+    let width = limit_value(p[0], 100.0, 2000.0) as i32;
+    let (num, denom, wobble, wrap, extra) = rotator_params(p[1], p[2], p[4], p[5], p[6]);
+    let minsky = limit_value(p[3], 0.0, 1.0) as i32 == 1;
+    let colorid = limit_value(p[7], 0.0, 3.0) as i32;
+    let key = vec![width as u64, num as u64, denom as u64, minsky as u64, wobble.to_bits(), wrap.to_bits(), extra as u64, colorid as u64, 2];
+    let cells = mandala_cached(key, || {
+        let (counts, _) = rotator_map(width, num, denom, minsky, wobble, wrap, extra, true);
+        counts
+            .iter()
+            .map(|&n| {
+                let rgb = if n == ROTATOR_MAX_STEPS + 1 {
+                    [0, 0, 0]
+                } else {
+                    match colorid {
+                        1 => {
+                            let z = (n as f64).ln() as f32;
+                            java_hsb_to_rgb(z - z.floor(), 0.85, 1.0)
+                        }
+                        2 => {
+                            let z = (n as f64 / 6.333333) as f32;
+                            java_hsb_to_rgb(z - z.floor(), 0.85, 1.0)
+                        }
+                        _ => {
+                            let c = |m: i32, dv: f32| ((n % m) as f32 / dv * 255.0 + 0.5) as i32;
+                            [c(91, 90.0), c(123, 122.0), c(17, 16.0)]
+                        }
+                    }
+                };
+                if (1..=3).contains(&colorid) { pack_rgb(rgb) } else { java_rgb_hue(rgb) as f64 }
+            })
+            .collect()
+    });
+    let mut d = vec![width as f64, num as f64, denom as f64, minsky as i32 as f64, wobble, wrap, extra as f64, colorid as f64];
+    d.extend_from_slice(&cells);
+    d
+}
+
 pub static DEFS: &[VarDef] = &[
     VarDef {
         name: "harmonograph_js",
@@ -4519,5 +4816,113 @@ y = -xa + 2.0 * D(0) * (y / (1.0 + y * y)) + D(1) * y;
 macmillan_st = vec3<f32>(x, y, 1.0);
 v.x += AMOUNT * x;
 v.y += AMOUNT * y;",
+    },
+    VarDef {
+        name: "mandala",
+        params: &[
+            ParamDef::int("width", 300.0, 100.0, 1000.0),
+            ParamDef::range("size", 0.6, 0.0, 1.0),
+            ParamDef::int("num", 1.0, 1.0, 15.0),
+            ParamDef::int("denom", 3.0, 3.0, 16.0),
+            ParamDef::int("minsky", 0.0, 0.0, 1.0),
+            ParamDef::int("wobble", 0.0, 0.0, 8.0),
+            ParamDef::int("wrap_range", 0.0, 0.0, 8.0),
+            ParamDef::int("hskew", 0.0, 0.0, 22.0),
+            ParamDef::int("color id", 1.0, 0.0, 1.0),
+        ],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let n = d[9] as usize;
+            if n == 0 {
+                return;
+            }
+            let k = 10 + 3 * ((ctx.random() * n as f64) as usize).min(n - 1);
+            let (ox, oy) = super::draw::ngon_point(ctx, 4, 0.0);
+            let (size, half) = (d[1], ((d[0] as i32) / 2) as f64);
+            v.x += 0.01 * amount * (ox * size + d[k] - half);
+            v.y += 0.01 * amount * (oy * size + d[k + 1] - half);
+            ctx.pass_z(a, v, amount);
+            if d[8] as i32 == 0 {
+                let c = d[k + 2] as i32;
+                v.rgb_color = true;
+                v.red = (c >> 16 & 255) as f64;
+                v.green = (c >> 8 & 255) as f64;
+                v.blue = (c & 255) as f64;
+            } else {
+                v.color = d[k + 2];
+            }
+        },
+        prepare: Some(|p, _| mandala_prepare(p)),
+        wgsl: "let n = u32(D(9));
+if (n > 0u) {
+  let k = base + 10u + 3u * min(u32(rnd() * f32(n)), n - 1u);
+  let o = res_ngon_point(4, 0.0);
+  let half = f32(i32(D(0)) / 2);
+  v.x += 0.01 * AMOUNT * (o.x * D(1) + prm[k] - half);
+  v.y += 0.01 * AMOUNT * (o.y * D(1) + prm[k + 1u] - half);
+  if (PRESERVE_Z) { v.z += AMOUNT * a.z; }
+  if (i32(D(8)) == 0) {
+    let c = u32(prm[k + 2u]);
+    v.rgbc = 1.0;
+    v.r = f32((c >> 16u) & 255u);
+    v.g = f32((c >> 8u) & 255u);
+    v.b = f32(c & 255u);
+  } else {
+    v.color = prm[k + 2u];
+  }
+}",
+    },
+    VarDef {
+        name: "mandala2",
+        params: &[
+            ParamDef::int("width", 500.0, 100.0, 2000.0),
+            ParamDef::int("num", 1.0, 1.0, 15.0),
+            ParamDef::int("denom", 3.0, 3.0, 16.0),
+            ParamDef::int("minsky", 0.0, 0.0, 1.0),
+            ParamDef::int("wobble", 0.0, 0.0, 8.0),
+            ParamDef::int("wrap_range", 0.0, 0.0, 8.0),
+            ParamDef::int("hskew", 0.0, 0.0, 22.0),
+            ParamDef::int("color id", 0.0, 0.0, 3.0),
+        ],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let w = d[0];
+            let x = (ctx.random() * w) as i32;
+            let y = (ctx.random() * w) as i32;
+            let c = d[8 + (x * w as i32 + y) as usize];
+            let colorid = d[7] as i32;
+            if (1..=3).contains(&colorid) {
+                let c = c as i32;
+                v.rgb_color = true;
+                v.red = (c >> 16 & 255) as f64;
+                v.green = (c >> 8 & 255) as f64;
+                v.blue = (c & 255) as f64;
+            } else {
+                v.color = c;
+            }
+            v.x += amount * (x as f64 / w - 0.5);
+            v.y += amount * (y as f64 / w - 0.5);
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: Some(|p, _| mandala2_prepare(p)),
+        wgsl: "let w = D(0);
+let x = min(trunc(rnd() * w), w - 1.0);
+let y = min(trunc(rnd() * w), w - 1.0);
+let c = prm[base + 8u + u32(x * w + y)];
+let colorid = i32(D(7));
+if (colorid >= 1 && colorid <= 3) {
+  let ci = u32(c);
+  v.rgbc = 1.0;
+  v.r = f32((ci >> 16u) & 255u);
+  v.g = f32((ci >> 8u) & 255u);
+  v.b = f32(ci & 255u);
+} else {
+  v.color = c;
+}
+v.x += AMOUNT * (x / w - 0.5);
+v.y += AMOUNT * (y / w - 0.5);
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
     },
 ];
