@@ -452,7 +452,10 @@ impl GpuRenderer {
         }
 
         // Solid rendering buffers and shadow map placement
-        if flame.solid.enabled {
+        if !flame.solid.enabled {
+            self.solid.buffers = None;
+            self.solid.frames.clear();
+        } else {
             let maps = program.shadow_maps.iter().flatten().count();
             self.solid.frames = if maps > 0 { jwf_core::render::cpu::solid_shadow_frames(flame, width, height) } else { Vec::new() };
             self.solid.ensure_buffers(device, view.raster_width, view.raster_height, width, height, flame.solid.lights.len(), maps, program.shadow_map_size);

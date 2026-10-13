@@ -16,17 +16,54 @@ fn color_f64(ui: &mut Ui, c: &mut [f64; 3]) {
     }
 }
 
+/// Filter / antialias settings replaced by the solid defaults, restored when solid rendering is
+/// switched off again.
+#[derive(Clone, Copy, PartialEq)]
+struct FilterSettings {
+    oversampling: u32,
+    radius: f64,
+    kernel: FilterKernel,
+    aa_amount: f64,
+    aa_radius: f64,
+}
+
+impl FilterSettings {
+    /// `Flame.setDefaultSolidRenderingSettings`
+    const SOLID: Self = Self { oversampling: 2, radius: 0.5, kernel: FilterKernel::Gaussian, aa_amount: 0.0, aa_radius: 0.0 };
+
+    fn of(f: &Flame) -> Self {
+        Self { oversampling: f.spatial_oversampling, radius: f.spatial_filter_radius, kernel: f.filter_kernel, aa_amount: f.antialias_amount, aa_radius: f.antialias_radius }
+    }
+
+    fn apply(&self, f: &mut Flame) {
+        f.spatial_oversampling = self.oversampling;
+        f.spatial_filter_radius = self.radius;
+        f.filter_kernel = self.kernel;
+        f.antialias_amount = self.aa_amount;
+        f.antialias_radius = self.aa_radius;
+    }
+}
+
 pub fn solid_section(ui: &mut Ui, f: &mut Flame) {
     theme::section_label(ui, "Solid rendering");
     let was_enabled = f.solid.enabled;
     ui.checkbox(&mut f.solid.enabled, "Render as solid surfaces (lights, shadows, ambient occlusion)");
+    let stash_id = egui::Id::new("solid-filter-stash");
     if f.solid.enabled && !was_enabled {
-        // Flame.setDefaultSolidRenderingSettings
-        f.spatial_oversampling = 2;
-        f.spatial_filter_radius = 0.5;
-        f.filter_kernel = FilterKernel::Gaussian;
-        f.antialias_amount = 0.0;
-        f.antialias_radius = 0.0;
+        ui.data_mut(|d| d.insert_temp(stash_id, FilterSettings::of(f)));
+        FilterSettings::SOLID.apply(f);
+    } else if !f.solid.enabled && was_enabled {
+        // Restore the previous filter settings unless they were edited meanwhile.
+        let prev = ui.data_mut(|d| {
+            let v = d.get_temp::<FilterSettings>(stash_id);
+            d.remove::<FilterSettings>(stash_id);
+            v
+        });
+        if let Some(prev) = prev
+            && FilterSettings::of(f) == FilterSettings::SOLID
+        {
+            prev.apply(f);
+        }
     }
     if !f.solid.enabled {
         return;
