@@ -308,7 +308,13 @@ fn glsl_vec4_times_mat4(v: vec4<f32>, m: mat4x4<f32>) -> vec4<f32> {
 // ---- GLSLFunc / DC_BaseFunc helpers -----------------------------------------------------
 
 // dbl2int: 0..1 color -> 0..255 (integral values as f32).
-fn glsl_dbl2int(c: vec3<f32>) -> vec3<f32> { return clamp(floor(c * 256.0), vec3<f32>(0.0), vec3<f32>(255.0)); }
+// NaN test on the bits (GPU compilers may assume that x != x is false).
+fn glsl_is_nan(x: f32) -> bool { return (bitcast<u32>(x) & 0x7fffffffu) > 0x7f800000u; }
+// (Java's (int) of NaN is 0; the NaN test uses the bits, as GPUs may assume there are no NaNs)
+fn glsl_dbl2int(c: vec3<f32>) -> vec3<f32> {
+  let nan = (bitcast<vec3<u32>>(c) & vec3<u32>(0x7fffffffu)) > vec3<u32>(0x7f800000u);
+  return select(clamp(floor(c * 256.0), vec3<f32>(0.0), vec3<f32>(255.0)), vec3<f32>(0.0), nan);
+}
 // DC_BaseFunc.greyscale of a 0..255 color.
 fn dc_greyscale(t: vec3<f32>) -> f32 {
   return (trunc(t.x * 0.299) + trunc(t.y * 0.587) + trunc(t.z * 0.114)) / 255.0;

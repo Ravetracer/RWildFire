@@ -131,6 +131,7 @@ fn gpattern_apply(d: &[f64], ctx: &mut Ctx, a: &Pt, v: &mut Pt, amount: f64) {
 // ---------------------------------------------------------------------------------------------
 // triantruchet (TrianTruchetFunc)
 
+#[allow(clippy::ptr_arg)] // `LoadFn` signature
 fn triantruchet_load(d: &mut Vec<f64>, res: &[Vec<u8>], _: &LoadEnv) {
     // d = [seed, Size, TilesPerRow, TilesPerColumn, n1, n2, n3, n4, ..]
     let mut rnd = JavaRandom::new(d[0] as i64);

@@ -100,6 +100,7 @@ mod tests {
   acc += cx_acoth(v2).y + cx_asech(v2).x + cx_acosech(v2).y + cx_atan(v2).x + cx_asin(v2).y;
   acc += cx_acos(v2).x + cx_a_mean(v2, w2).y + cx_root_mean_s(v2, w2).x + cx_g_mean(v2, w2).y;
   acc += cx_heronian(v2, w2).x + cx_h_mean(v2, w2).y + cx_l_mean(v2, w2).x;
+  if (glsl_is_nan(x)) { acc += 1.0; }
   // noise.wgsl
   acc += f32(noise_perm(n)) + noise_simplex_corner(v3, n) + noise_simplex3d(v3);
   acc += noise_perlin3d(v3, x, y, n) + noise_vratio(v2, w2, v2);
