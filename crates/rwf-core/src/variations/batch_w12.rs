@@ -7510,6 +7510,41 @@ v.y += AMOUNT * (y1 + D(2) * sin(t) + y);
 if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
     },
     VarDef {
+        name: "roche",
+        params: &[ParamDef::new("sep", 0.5), ParamDef::range("mass", 0.5, 0.01, 0.99)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let sep = java_max(d[0].abs(), 0.01);
+            let mass = java_max(0.01, java_min(0.99, d[1]));
+            let mx = sep * 0.5;
+            let (dx1, dx2) = (a.x - mx, a.x + mx);
+            let r1 = java_max((dx1 * dx1 + a.y * a.y).sqrt(), 0.01);
+            let r2 = java_max((dx2 * dx2 + a.y * a.y).sqrt(), 0.01);
+            let (r13, r23) = (r1 * r1 * r1, r2 * r2 * r2);
+            let px = -mass * dx1 / r13 - (1.0 - mass) * dx2 / r23;
+            let py = -mass * a.y / r13 - (1.0 - mass) * a.y / r23;
+            v.x += amount * (a.x - py * 0.5);
+            v.y += amount * (a.y + px * 0.5);
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "let sep = max(abs(D(0)), 0.01);
+let mass = clamp(D(1), 0.01, 0.99);
+let mx = sep * 0.5;
+let dx1 = a.x - mx;
+let dx2 = a.x + mx;
+let r1 = max(sqrt(dx1 * dx1 + a.y * a.y), 0.01);
+let r2 = max(sqrt(dx2 * dx2 + a.y * a.y), 0.01);
+let r13 = r1 * r1 * r1;
+let r23 = r2 * r2 * r2;
+let px = -mass * dx1 / r13 - (1.0 - mass) * dx2 / r23;
+let py = -mass * a.y / r13 - (1.0 - mass) * a.y / r23;
+v.x += AMOUNT * (a.x - py * 0.5);
+v.y += AMOUNT * (a.y + px * 0.5);
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
         name: "post_ztranslate_wf",
         params: &[],
         kind: VarKind::Post,
