@@ -4662,22 +4662,26 @@ if (k < 4u) { v.z += AMOUNT * (a.z + prm[base + 18u + k]); } else { v.z += AMOUN
             d.extend([m, aa]);
             d
         }),
-        // GPU: no state across calls, every call iterates a slightly perturbed start point.
-        wgsl: "let m = D(4);
-let aa = D(5);
-let b = D(3);
-var x0 = 5.0 + 1.0e-2 * (rnd() - 0.5);
-var y0 = 5.0 + 1.0e-2 * (rnd() - 0.5);
-let n = 32 + min(i32(rnd() * 1024.0), 1023);
-for (var i = 0; i < n; i++) {
-  let mx = m * x0 + (2.0 * (1.0 - m) * x0 * x0) / (1.0 + x0 * x0);
-  let xn = y0 + (aa * (1.0 - (b * y0 * y0)) * y0) + mx;
-  let yn = -x0 + m * xn + (2.0 * (1.0 - m) * xn * xn) / (1.0 + xn * xn);
-  x0 = xn;
-  y0 = yn;
+        // GPU: the orbit is kept per shader invocation; it starts at a slightly perturbed start
+        // point after a random number of warm-up steps.
+        wgsl: "var<private> gumowski_mira_st: vec3<f32>;
+fn gumowski_mira_f(x: f32, m: f32) -> f32 { return m * x + (2.0 * (1.0 - m) * x * x) / (1.0 + x * x); }
+fn gumowski_mira_step(p: vec2<f32>, base: u32) -> vec2<f32> {
+  let m = prm[base + 4u];
+  let xn = p.y + (prm[base + 5u] * (1.0 - (prm[base + 3u] * p.y * p.y)) * p.y) + gumowski_mira_f(p.x, m);
+  return vec2<f32>(xn, -p.x + gumowski_mira_f(xn, m));
 }
-v.x = x0 * AMOUNT;
-v.y = y0 * AMOUNT;
+@body
+if (gumowski_mira_st.z == 0.0) {
+  var q = vec2<f32>(5.0) + 1.0e-2 * (vec2<f32>(rnd(), rnd()) - 0.5);
+  let n = min(i32(rnd() * 65536.0), 65535);
+  for (var i = 0; i < n; i++) { q = gumowski_mira_step(q, base); }
+  gumowski_mira_st = vec3<f32>(q, 1.0);
+}
+let q = gumowski_mira_step(gumowski_mira_st.xy, base);
+gumowski_mira_st = vec3<f32>(q, 1.0);
+v.x = q.x * AMOUNT;
+v.y = q.y * AMOUNT;
 if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
     },
     VarDef {

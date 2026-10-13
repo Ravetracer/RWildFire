@@ -1039,9 +1039,20 @@ if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
             v.y = ((v.y + a.y) * scale) + amount * sy;
         },
         prepare: None,
-        // GPU: no state across calls; the 60 degree mode is drawn with its long-run share (4/5)
-        // and a random segment instead of the next one.
-        wgsl: "let mode60 = rnd() < 0.8;
+        // GPU: the segment cycling is kept per shader invocation.
+        wgsl: "var<private> hexaplay3D_st: vec4<f32>;
+fn hexaplay3D_step() -> vec3<f32> {
+  // (mode60, fcycle, bcycle) before the step; hexaplay3D_st = (rswtch, fcycle, bcycle, initialized)
+  if (hexaplay3D_st.w == 0.0) { hexaplay3D_st = vec4<f32>(trunc(rnd() * 3.0), 0.0, 0.0, 1.0); }
+  if (hexaplay3D_st.y > 5.0) { hexaplay3D_st.y = 0.0; hexaplay3D_st.x = trunc(rnd() * 3.0); }
+  if (hexaplay3D_st.z > 2.0) { hexaplay3D_st.z = 0.0; hexaplay3D_st.x = trunc(rnd() * 3.0); }
+  let r = vec3<f32>(select(0.0, 1.0, hexaplay3D_st.x <= 1.0), hexaplay3D_st.y, hexaplay3D_st.z);
+  if (r.x > 0.0) { hexaplay3D_st.y += 1.0; } else { hexaplay3D_st.z += 1.0; }
+  return r;
+}
+@body
+let cyc = hexaplay3D_step();
+let mode60 = cyc.x > 0.0;
 let scale = D(1) * 0.5;
 var pos_neg = 1.0;
 if (rnd() < 0.5) { pos_neg = -1.0; }
@@ -1054,12 +1065,10 @@ if (abmajp <= 1.0) {
 let h = sin(PI / 3.0);
 var sg = vec2<f32>(1.0, 0.0);
 if (mode60) {
-  let k = min(u32(rnd() * 6.0), 5u);
-  let ang = f32(k) * PI / 3.0;
+  let ang = cyc.y * PI / 3.0;
   sg = vec2<f32>(cos(ang), sin(ang));
 } else {
-  let k = min(u32(rnd() * 3.0), 2u);
-  if (k == 1u) { sg = vec2<f32>(-0.5, h); } else if (k == 2u) { sg = vec2<f32>(-0.5, -h); }
+  if (cyc.z == 1.0) { sg = vec2<f32>(-0.5, h); } else if (cyc.z == 2.0) { sg = vec2<f32>(-0.5, -h); }
 }
 v.x = (v.x + a.x) * scale + AMOUNT * sg.x;
 v.y = (v.y + a.y) * scale + AMOUNT * sg.y;",
@@ -1160,8 +1169,19 @@ if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
             v.y = v.y * (1.0 - smooth) + ry_tp + ry_ft + smooth * amount * tail * sy;
         },
         prepare: None,
-        // GPU: no state across calls; the 60 degree mode is drawn with its long-run share (4/5).
-        wgsl: "let mode60 = rnd() < 0.8;
+        // GPU: the mode cycling is kept per shader invocation.
+        wgsl: "var<private> hexnix3D_st: vec4<f32>;
+fn hexnix3D_step() -> vec3<f32> {
+  // (mode60, fcycle, bcycle) before the step; hexnix3D_st = (rswtch, fcycle, bcycle, initialized)
+  if (hexnix3D_st.w == 0.0) { hexnix3D_st = vec4<f32>(trunc(rnd() * 3.0), 0.0, 0.0, 1.0); }
+  if (hexnix3D_st.y > 5.0) { hexnix3D_st.y = 0.0; hexnix3D_st.x = trunc(rnd() * 3.0); }
+  if (hexnix3D_st.z > 2.0) { hexnix3D_st.z = 0.0; hexnix3D_st.x = trunc(rnd() * 3.0); }
+  let r = vec3<f32>(select(0.0, 1.0, hexnix3D_st.x <= 1.0), hexnix3D_st.y, hexnix3D_st.z);
+  if (r.x > 0.0) { hexnix3D_st.y += 1.0; } else { hexnix3D_st.z += 1.0; }
+  return r;
+}
+@body
+let mode60 = hexnix3D_step().x > 0.0;
 let majp = D(0);
 let scale = D(1);
 let zlift = D(2);
@@ -1488,17 +1508,23 @@ if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
             }
             d
         }),
-        // GPU: no state across calls, every call iterates a slightly perturbed start point.
-        wgsl: "var x0 = D(4) + 1.0e-2 * (rnd() - 0.5);
-var y0 = D(5) + 1.0e-2 * (rnd() - 0.5);
-let n = 32 + min(i32(rnd() * 1024.0), 1023);
-for (var i = 0; i < n; i++) {
-  let x1 = y0 - sign(x0) * sqrt(abs(D(2) * x0 - D(3)));
-  y0 = D(1) - x0;
-  x0 = x1;
+        // GPU: the orbit is kept per shader invocation; it starts at a slightly perturbed start
+        // point after a random number of warm-up steps.
+        wgsl: "var<private> hopalong_st: vec3<f32>;
+fn hopalong_step(p: vec2<f32>, base: u32) -> vec2<f32> {
+  return vec2<f32>(p.y - sign(p.x) * sqrt(abs(prm[base + 2u] * p.x - prm[base + 3u])), prm[base + 1u] - p.x);
 }
-v.x += AMOUNT * x0;
-v.y += AMOUNT * y0;",
+@body
+if (hopalong_st.z == 0.0) {
+  var q = vec2<f32>(D(4), D(5)) + 1.0e-2 * (vec2<f32>(rnd(), rnd()) - 0.5);
+  let n = min(i32(rnd() * 65536.0), 65535);
+  for (var i = 0; i < n; i++) { q = hopalong_step(q, base); }
+  hopalong_st = vec3<f32>(q, 1.0);
+}
+let q = hopalong_step(hopalong_st.xy, base);
+hopalong_st = vec3<f32>(q, 1.0);
+v.x += AMOUNT * q.x;
+v.y += AMOUNT * q.y;",
     },
     VarDef {
         name: "hourglass3D",
@@ -3661,10 +3687,18 @@ if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
             }
             d
         }),
-        // GPU: no state across calls, avoid_reversal is ignored (all four matrices are used)
-        wgsl: "fn klein_group_mul(a: vec2<f32>, b: vec2<f32>) -> vec2<f32> { return vec2<f32>(a.x * b.x - a.y * b.y, a.y * b.x + a.x * b.y); }
+        // GPU: the previous matrix (avoid_reversal) is kept per shader invocation
+        wgsl: "var<private> klein_group_prev: u32;
+fn klein_group_mul(a: vec2<f32>, b: vec2<f32>) -> vec2<f32> { return vec2<f32>(a.x * b.x - a.y * b.y, a.y * b.x + a.x * b.y); }
 @body
-let k = min(u32(rnd() * 4.0), 3u);
+var k = min(u32(rnd() * 4.0), 3u);
+if (D(5) == 1.0) {
+  // klein_group_prev holds index + 1 (0: not yet set, i.e. the initial matrix a)
+  let prev = max(klein_group_prev, 1u) - 1u;
+  k = min(u32(rnd() * 3.0), 2u);
+  if (k >= (prev ^ 1u)) { k += 1u; }
+  klein_group_prev = k + 1u;
+}
 let o = base + 6u + 8u * k;
 let w = vec2<f32>(a.x, a.y) / AMOUNT;
 let num = klein_group_mul(w, vec2<f32>(prm[o], prm[o + 1u])) + vec2<f32>(prm[o + 2u], prm[o + 3u]);
@@ -4424,5 +4458,66 @@ v.z += (a.z + h * (a.x * a.y - D(2) * a.z)) * AMOUNT;
 var sc = D(6);
 if (sc == 0.0) { sc = 10E-6; }
 v.color = abs((1.0 / sc) * ((v.x + D(4)) * (v.x + D(4)) + (v.y + D(5)) * (v.y + D(5)))) % 1.0;",
+    },
+    VarDef {
+        name: "lozi",
+        params: &[ParamDef::new("a", 0.5), ParamDef::new("b", 1.0), ParamDef::new("c", 1.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            v.x += (d[2] - (d[0] * a.x.abs()) + a.y) * amount;
+            v.y += d[1] * a.x * amount;
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "v.x += (D(2) - (D(0) * abs(a.x)) + a.y) * AMOUNT;
+v.y += D(1) * a.x * AMOUNT;
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "macmillan",
+        params: &[ParamDef::new("a", 1.6), ParamDef::new("b", 0.4), ParamDef::new("startx", 0.1), ParamDef::new("starty", 0.1)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, _, v, amount| {
+            // Java follows one endless orbit per instance; here one per render thread.
+            let (pa, pb) = (d[0], d[1]);
+            let st = ctx.orbits.entry(d.as_ptr() as usize).or_insert([d[2], d[3]]);
+            let (mut xa, mut y) = (st[0], st[1]);
+            let mut x = y;
+            y = -xa + 2.0 * pa * (y / (1.0 + y * y)) + pb * y;
+            xa = x;
+            x = y;
+            y = -xa + 2.0 * pa * (y / (1.0 + y * y)) + pb * y;
+            *st = [x, y];
+            v.x += amount * x;
+            v.y += amount * y;
+        },
+        prepare: None,
+        // GPU: the orbit is kept per shader invocation; it starts at a slightly perturbed start
+        // point after a random number of warm-up steps.
+        wgsl: "var<private> macmillan_st: vec3<f32>;
+@body
+if (macmillan_st.z == 0.0) {
+  var xa = D(2) + 1.0e-2 * (rnd() - 0.5);
+  var y = D(3) + 1.0e-2 * (rnd() - 0.5);
+  let n = min(i32(rnd() * 65536.0), 65535);
+  for (var i = 0; i < n; i++) {
+    let x = y;
+    y = -xa + 2.0 * D(0) * (y / (1.0 + y * y)) + D(1) * y;
+    xa = x;
+  }
+  macmillan_st = vec3<f32>(xa, y, 1.0);
+}
+var xa = macmillan_st.x;
+var y = macmillan_st.y;
+var x = y;
+y = -xa + 2.0 * D(0) * (y / (1.0 + y * y)) + D(1) * y;
+xa = x;
+x = y;
+y = -xa + 2.0 * D(0) * (y / (1.0 + y * y)) + D(1) * y;
+macmillan_st = vec3<f32>(x, y, 1.0);
+v.x += AMOUNT * x;
+v.y += AMOUNT * y;",
     },
 ];
