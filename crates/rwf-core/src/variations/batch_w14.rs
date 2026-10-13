@@ -5744,6 +5744,194 @@ v.x += AMOUNT * f.x;
 v.y += AMOUNT * f.y;
 v.z += AMOUNT * f.z;",
     },
+    VarDef {
+        name: "mobius3D_with_inverse",
+        params: &[
+            ParamDef::new("a_re", 2.0),
+            ParamDef::new("a_im", 0.0),
+            ParamDef::new("aj", 0.0),
+            ParamDef::new("ak", 0.0),
+            ParamDef::new("b_re", 0.0),
+            ParamDef::new("b_im", -1.0),
+            ParamDef::new("bj", 0.0),
+            ParamDef::new("bk", 0.0),
+            ParamDef::new("c_re", 0.0),
+            ParamDef::new("c_im", -1.0),
+            ParamDef::new("cj", 0.0),
+            ParamDef::new("ck", 0.0),
+            ParamDef::new("d_re", 0.0),
+            ParamDef::new("d_im", 0.0),
+            ParamDef::new("dj", 0.0),
+            ParamDef::new("dk", 0.0),
+            ParamDef::int("normalize", 1.0, 0.0, 1.0),
+        ],
+        kind: VarKind::Normal,
+        is_3d: true,
+        apply: |d, ctx, a, v, amount| {
+            let k = if ctx.random() < 0.5 { 17 } else { 33 };
+            let q = |j: usize| [d[k + 4 * j], d[k + 4 * j + 1], d[k + 4 * j + 2], d[k + 4 * j + 3]];
+            let zin = [a.x, a.y, a.z, 0.0];
+            let num = quat_add(quat_mul(zin, q(0)), q(1));
+            let den = quat_add(quat_mul(zin, q(2)), q(3));
+            let zout = quat_mul(quat_recip(den), num);
+            v.x += amount * zout[0];
+            v.y += amount * zout[1];
+            v.z += amount * zout[2];
+        },
+        prepare: Some(|p, _| mobius3d_with_inverse_prepare(p)),
+        wgsl: "fn mobius3D_with_inverse_mul(a: vec4<f32>, b: vec4<f32>) -> vec4<f32> {
+  return vec4<f32>(a.x * b.x - a.y * b.y - a.z * b.z - a.w * b.w,
+    a.x * b.y + a.y * b.x + a.z * b.w - a.w * b.z,
+    a.x * b.z - a.y * b.w + a.z * b.x + a.w * b.y,
+    a.x * b.w + a.y * b.z - a.z * b.y + a.w * b.x);
+}
+fn mobius3D_with_inverse_q(k: u32) -> vec4<f32> {
+  return vec4<f32>(prm[k], prm[k + 1u], prm[k + 2u], prm[k + 3u]);
+}
+@body
+let k = base + select(33u, 17u, rnd() < 0.5);
+let zin = vec4<f32>(a.x, a.y, a.z, 0.0);
+let num = mobius3D_with_inverse_mul(zin, mobius3D_with_inverse_q(k)) + mobius3D_with_inverse_q(k + 4u);
+let den = mobius3D_with_inverse_mul(zin, mobius3D_with_inverse_q(k + 8u)) + mobius3D_with_inverse_q(k + 12u);
+let n = length(den);
+let rec = vec4<f32>(den.x, -den.y, -den.z, -den.w) / (n * n);
+let zout = mobius3D_with_inverse_mul(rec, num);
+v.x += AMOUNT * zout.x;
+v.y += AMOUNT * zout.y;
+v.z += AMOUNT * zout.z;",
+    },
+    VarDef {
+        name: "mobius_dragon_3D",
+        params: &[
+            ParamDef::new("re", 1.0),
+            ParamDef::new("im", 0.0),
+            ParamDef::new("x_spread", 1.0),
+            ParamDef::new("y_spread", 0.0),
+            ParamDef::new("z_spread", 0.0),
+            ParamDef::new("x_add", 0.0),
+            ParamDef::new("y_add", 0.0),
+            ParamDef::new("log_spread", 2.71828),
+            ParamDef::int("line_enable", 1.0, 0.0, 1.0),
+            ParamDef::new("line_weight", 0.125),
+            ParamDef::new("line_color_shift", 0.1),
+            ParamDef::int("mag_color", 1.0, 0.0, 1.0),
+            ParamDef::new("mag_color_scale", 0.5),
+            ParamDef::int("iterations", 1.0, 0.0, 24.0),
+        ],
+        kind: VarKind::Normal,
+        is_3d: true,
+        apply: |d, ctx, a, v, amount| mobius_dragon_3d_apply(d, ctx, a, v, amount),
+        prepare: Some(|p, _| {
+            let mut d = p.to_vec();
+            d[8] = ftoi(p[8]).clamp(0, 1) as f64;
+            d[11] = ftoi(p[11]).clamp(0, 1) as f64;
+            d[13] = ftoi(p[13]).clamp(0, 24) as f64;
+            d
+        }),
+        // The line colour shift of JWildfire is overwritten by the final colour and has no effect.
+        wgsl: "var zc = v.color;
+let random = rnd();
+let z1 = a.z;
+var sx = -D(2);
+var sy = -D(3);
+var sz = -D(4);
+var z = vec2<f32>(a.x, a.y + 1.0);
+let z2 = vec2<f32>(D(0), D(1));
+for (var i = 0; i < i32(D(13)); i++) {
+  z = cx_div(vec2<f32>(a.x, a.y + 1.0), z2);
+  let r1 = AMOUNT / (z.x * z.x + z.y * z.y + z1 * z1);
+  z = vec2<f32>(z.x * r1, -z.y * r1);
+  v.z = -z1 * r1;
+  z *= AMOUNT;
+  a.x = z.x;
+  a.y = z.y + 1.0;
+  if (i32(D(8)) == 1 && random < D(9)) {
+    z = vec2<f32>(rnd() * sx, 0.0);
+    v.z = 0.0;
+  }
+}
+if (rnd() < 0.5) { sx = D(2); }
+if (rnd() < 0.5) { sy = D(3); }
+if (rnd() < 0.5) { sz = D(4); }
+let ls = log(D(7));
+if (random < 0.5) {
+  z.x = AMOUNT * D(5) + (z.x + sx * java_round(log(rnd()) / ls));
+  z.y = AMOUNT * (D(6) + (z.y + sy * java_round(log(rnd()) / ls))) + 1.0;
+  v.z = AMOUNT * (v.z + sz * java_round(log(rnd()) / ls));
+} else {
+  z.x = AMOUNT * (-z.x + sx * java_round(log(rnd()) / ls));
+  z.y = AMOUNT * (-2.0 - (z.y + sy * java_round(log(rnd()) / ls))) + 1.0;
+  v.z = AMOUNT * (-v.z + sz * java_round(log(rnd()) / ls));
+}
+if (i32(D(11)) == 1) { zc += tanh(sqrt(z.x * z.x + z.y * z.y + z1 * z1) * (D(12) / 6.0)); }
+v.x = z.x;
+v.y = z.y;
+v.color = zc;
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "mobiusN",
+        params: &[
+            ParamDef::new("re_a", 1.1),
+            ParamDef::new("re_b", 0.0),
+            ParamDef::new("re_c", 0.2),
+            ParamDef::new("re_d", 0.9),
+            ParamDef::new("im_a", 0.1),
+            ParamDef::new("im_b", -0.22),
+            ParamDef::new("im_c", -0.05),
+            ParamDef::new("im_d", 0.1),
+            ParamDef::new("power", 1.8),
+            ParamDef::new("dist", 1.0),
+        ],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let power = d[8];
+            let z = 4.0 * d[9] / power;
+            let r = a.rad().powf(z);
+            let alpha = a.y.atan2(a.x) * power;
+            let (x, y) = (r * alpha.cos(), r * alpha.sin());
+            let ru = d[0] * x - d[4] * y + d[1];
+            let iu = d[0] * y + d[4] * x + d[5];
+            let rv = d[2] * x - d[6] * y + d[3];
+            let iv = d[2] * y + d[6] * x + d[7];
+            let rad_v = sqr(rv) + sqr(iv);
+            let x = (ru * rv + iu * iv) / rad_v;
+            let y = (iu * rv - ru * iv) / rad_v;
+            let r = (sqr(x) + sqr(y)).sqrt().powf(1.0 / z);
+            let n = (power * ctx.random()).floor();
+            let alpha = (y.atan2(x) + n * 2.0 * PI) / power.floor();
+            v.x += amount * r * alpha.cos();
+            v.y += amount * r * alpha.sin();
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: Some(|p, _| {
+            let mut d = p.to_vec();
+            if d[8].abs() < 1.0 {
+                d[8] = 1.0;
+            }
+            d
+        }),
+        wgsl: "let power = D(8);
+let z = 4.0 * D(9) / power;
+let r0 = java_pow(sqrt(a.x * a.x + a.y * a.y), z);
+let al = glsl_atan2(a.y, a.x) * power;
+let x0 = r0 * cos(al);
+let y0 = r0 * sin(al);
+let ru = D(0) * x0 - D(4) * y0 + D(1);
+let iu = D(0) * y0 + D(4) * x0 + D(5);
+let rv = D(2) * x0 - D(6) * y0 + D(3);
+let iv = D(2) * y0 + D(6) * x0 + D(7);
+let rad_v = rv * rv + iv * iv;
+let x = (ru * rv + iu * iv) / rad_v;
+let y = (iu * rv - ru * iv) / rad_v;
+let r = java_pow(sqrt(x * x + y * y), 1.0 / z);
+let n = floor(power * rnd());
+let alpha = (glsl_atan2(y, x) + n * 2.0 * PI) / floor(power);
+v.x += AMOUNT * r * cos(alpha);
+v.y += AMOUNT * r * sin(alpha);
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
 ];
 
 fn mandelbox2d_apply(d: &[f64], ctx: &mut Ctx, a: &Pt, v: &mut Pt, amount: f64) {
@@ -6076,4 +6264,96 @@ fn mobiqn_apply(d: &[f64], ctx: &mut Ctx, a: &Pt, v: &mut Pt, amount: f64) {
     v.x += amount * fx;
     v.y += amount * fy;
     v.z += amount * fz;
+}
+
+/// Quaternion product as in `Mobius3DWithInverseFunc.Quaternion.mul`.
+fn quat_mul(a: [f64; 4], b: [f64; 4]) -> [f64; 4] {
+    [
+        a[0] * b[0] - a[1] * b[1] - a[2] * b[2] - a[3] * b[3],
+        a[0] * b[1] + a[1] * b[0] + a[2] * b[3] - a[3] * b[2],
+        a[0] * b[2] - a[1] * b[3] + a[2] * b[0] + a[3] * b[1],
+        a[0] * b[3] + a[1] * b[2] - a[2] * b[1] + a[3] * b[0],
+    ]
+}
+
+fn quat_add(a: [f64; 4], b: [f64; 4]) -> [f64; 4] {
+    [a[0] + b[0], a[1] + b[1], a[2] + b[2], a[3] + b[3]]
+}
+
+fn quat_recip(a: [f64; 4]) -> [f64; 4] {
+    let norm = (a[0] * a[0] + a[1] * a[1] + a[2] * a[2] + a[3] * a[3]).sqrt();
+    let nsq = norm * norm;
+    [a[0] / nsq, -a[1] / nsq, -a[2] / nsq, -a[3] / nsq]
+}
+
+/// Appends the (optionally normalized) Mobius matrix at 17..33 and its inverse at 33..49.
+fn mobius3d_with_inverse_prepare(p: &[f64]) -> Vec<f64> {
+    let q = |j: usize| [p[4 * j], p[4 * j + 1], p[4 * j + 2], p[4 * j + 3]];
+    let mut m = [q(0), q(1), q(2), q(3)];
+    if p[16] == 1.0 {
+        let det = quat_add(quat_mul(m[0], m[3]), quat_mul(m[1], m[2]).map(|x| -x));
+        let rec = quat_recip(quat_mul(det, det));
+        m = m.map(|x| quat_mul(rec, x));
+    }
+    let minus1 = [-1.0, 0.0, 0.0, 0.0];
+    let inv = [m[3], quat_mul(m[1], minus1), quat_mul(m[2], minus1), m[0]];
+    let mut d = p.to_vec();
+    d.extend(m.iter().flatten());
+    d.extend(inv.iter().flatten());
+    d
+}
+
+/// `MobiusDragon3DFunc.transform`; like JWildfire it updates the affine point.
+fn mobius_dragon_3d_apply(d: &[f64], ctx: &mut Ctx, a: &mut Pt, v: &mut Pt, amount: f64) {
+    let mut zc = v.color;
+    let random = ctx.random();
+    let z1 = a.z;
+    let (mut sx, mut sy, mut sz) = (-d[2], -d[3], -d[4]);
+    let mut z = Complex::new(a.x, a.y + 1.0);
+    let z2 = Complex::new(d[0], d[1]);
+    for _ in 0..d[13] as i32 {
+        z.re = a.x;
+        z.im = a.y + 1.0;
+        z.div(&z2);
+        let r1 = amount / (z.re * z.re + z.im * z.im + z1 * z1);
+        z.re *= r1;
+        z.im = -z.im * r1;
+        v.z = -z1 * r1;
+        z.scale(amount);
+        a.x = z.re;
+        a.y = z.im + 1.0;
+        if d[8] as i32 == 1 && random < d[9] {
+            z.re = ctx.random() * sx;
+            z.im = 0.0;
+            v.z = 0.0;
+            v.color += d[10];
+        }
+    }
+    if ctx.random() < 0.5 {
+        sx = d[2];
+    }
+    if ctx.random() < 0.5 {
+        sy = d[3];
+    }
+    if ctx.random() < 0.5 {
+        sz = d[4];
+    }
+    let ls = d[7].ln();
+    let mut lg = || java_round(ctx.random().ln() / ls);
+    if random < 0.5 {
+        z.re = amount * d[5] + (z.re + sx * lg());
+        z.im = amount * (d[6] + (z.im + sy * lg())) + 1.0;
+        v.z = amount * (v.z + sz * lg());
+    } else {
+        z.re = amount * (-z.re + sx * lg());
+        z.im = amount * (-2.0 - (z.im + sy * lg())) + 1.0;
+        v.z = amount * (-v.z + sz * lg());
+    }
+    if d[11] as i32 == 1 {
+        zc += ((z.re * z.re + z.im * z.im + z1 * z1).sqrt() * (d[12] / 6.0)).tanh();
+    }
+    v.x = z.re;
+    v.y = z.im;
+    v.color = zc;
+    ctx.pass_z(a, v, amount);
 }
