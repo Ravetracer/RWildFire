@@ -522,6 +522,153 @@ const QUATERNION_PARAMS: &[ParamDef] = &{
     p
 };
 
+/// `RecurrencePlotFunc`: signal value of function `id` at sample `i` (`a`, `b`, `k`, `n` = Density).
+fn recurrenceplot_y(id: i32, i: i32, a: f64, b: f64, k: i32, n: f64) -> f64 {
+    let fi = i as f64;
+    let s = |t: f64| t.sin();
+    match id {
+        0 => 50.0 * s((i * 4) as f64 * M_PI / n) + 25.0 * s((i * 40) as f64 * M_PI / n),
+        1 => 10.0 * s((i * 5) as f64 * M_PI / n) * 5.0 * s((i * 15) as f64 * M_PI / n),
+        2 => 50.0 * ((i * 24) as f64 * M_PI / n + 5.0 * s((i * 6) as f64 * M_PI / n)).cos(),
+        3 => 50.0 * s((i * 20) as f64 * M_PI / n) + 50.0 * s((i * 22) as f64 * M_PI / n + M_PI),
+        4 => 50.0 * s((i * 20) as f64 * M_PI / n) + 10.0 * s((i * 22) as f64 * M_PI / n),
+        5 => 50.0 * s(fi * a * M_PI / n + s(fi * a * M_PI / n)),
+        6 => a / (1.0 + (-b * (fi - n / 2.0) / n).exp()),
+        7 => {
+            (400.0 / M_PI)
+                * (s(fi * M_PI / (0.5 * n)) + s((i * 3) as f64 * M_PI / (0.5 * n)) / 3.0 + s((i * 5) as f64 * M_PI / (0.5 * n)) / 5.0
+                    + s((i * 7) as f64 * M_PI / (0.5 * n)) / 7.0)
+        }
+        8 => {
+            (400.0 / M_PI * M_PI)
+                * (s(fi * M_PI / (0.5 * n)) - s((i * 3) as f64 * M_PI / (0.5 * n)) / 9.0 + s((i * 5) as f64 * M_PI / (0.5 * n)) / 25.0
+                    - s((i * 7) as f64 * M_PI / (0.5 * n)) / 49.0)
+        }
+        9 => (a * fi * M_PI / n).tanh(),
+        10 => (a * fi * M_PI / n).tan(),
+        11 => {
+            let mut sum = s(fi * M_PI / (0.5 * n));
+            for m in 2..=8 {
+                sum += s((i * m) as f64 * M_PI / (0.5 * n)) / m as f64;
+            }
+            (-200.0 / M_PI) * sum
+        }
+        12 => 50.0 * s((i * 40) as f64 * M_PI / n) + 50.0 * s((i * 44) as f64 * M_PI / n),
+        13 => 50.0 * s((i * 40) as f64 * M_PI / n) + 50.0 * s((i * 44) as f64 * M_PI / n + M_PI),
+        14 => 100.0 * s((i * 16) as f64 * M_PI / n) - 500.0 + fi * 0.25,
+        15 => 100.0 * s((i * 16) as f64 * M_PI / n),
+        16 => 1.0 / (fi * a * M_PI / n).cos(),
+        17 => 50.0 * ((i * 2) as f64 * M_PI * 25.0 / n + 25.0 * s((i * 2) as f64 * M_PI * 0.50 / n)).cos(),
+        18 => a * (-b * (2.0 * a * fi / n - a) * (2.0 * a * fi / n - a)).exp(),
+        19 => 500.0 * s((i * 10) as f64 * M_PI / n) * (-5.0 * fi / n).exp(),
+        20 => 500.0 * s((i * 20) as f64 * M_PI / n) * (-3.0 * fi / n).exp(),
+        21 => 50.0 * ((i * 2) as f64 * M_PI / n).tan(),
+        22 => {
+            let x = (2.0 * fi) / n - 1.0;
+            let p = |e: f64| x.powf(e);
+            // Legendre polynomials: a * numerator / denominator
+            let (num, den) = match b as i32 {
+                0 => return a,
+                1 => return a * x,
+                2 => (3.0 * p(2.0) - 1.0, 2.0),
+                3 => (5.0 * p(3.0) - 3.0 * x, 2.0),
+                4 => (35.0 * p(4.0) - 30.0 * p(2.0) + 3.0, 8.0),
+                5 => (63.0 * p(5.0) - 70.0 * p(3.0) + 15.0 * x, 8.0),
+                6 => (231.0 * p(6.0) - 315.0 * p(4.0) + 105.0 * p(2.0) - 5.0, 16.0),
+                7 => (429.0 * p(7.0) - 693.0 * p(5.0) + 315.0 * p(3.0) - 35.0 * x, 16.0),
+                8 => (6435.0 * p(8.0) - 12012.0 * p(6.0) + 6930.0 * p(4.0) - 1260.0 * p(2.0) + 35.0, 128.0),
+                9 => (12155.0 * p(9.0) - 25740.0 * p(7.0) + 18018.0 * p(5.0) - 4620.0 * p(3.0) + 315.0 * x, 128.0),
+                10 => (46189.0 * p(10.0) - 109395.0 * p(8.0) + 90090.0 * p(6.0) - 30030.0 * p(4.0) + 3465.0 * p(2.0) - 63.0, 256.0),
+                _ => return 0.0,
+            };
+            a * num / den
+        }
+        23 => {
+            let mut sum = 0.0;
+            for j in 1..=k {
+                let o = 2.0 * j as f64 - 1.0;
+                sum += s(fi * o * b * 2.0 * M_PI / n) / o;
+            }
+            sum * (4.0 * a / M_PI)
+        }
+        24 => {
+            let mut sum = 0.0;
+            for j in 1..=k {
+                sum += s(fi * j as f64 * b * 2.0 * M_PI / n) / j as f64;
+            }
+            sum * (-2.0 * a / M_PI)
+        }
+        25 => {
+            let mut sum = 0.0;
+            for j in 1..=k {
+                let j = j as f64;
+                sum += (fi * (2.0 * j) * b * 2.0 * M_PI / n).cos() / ((2.0 * j - 1.0) * (2.0 * j + 1.0));
+            }
+            (4.0 * a / M_PI) * (0.5 - sum)
+        }
+        26 => {
+            let mut sum = 0.0;
+            for j in 1..=k {
+                let j = j as f64;
+                sum += (-1.0f64).powf(j) * (fi * (2.0 * j) * b * 1.0 * M_PI / n).cos() / (j * j);
+            }
+            (a * M_PI * M_PI / 3.0) + 4.0 * a * sum
+        }
+        27 => a * s(b * M_PI * (fi - 0.5 * n) / n) / (b * M_PI * (fi - 0.5 * n) / n),
+        28 => a * (-b * (((fi - 0.5 * n) / n) * (fi - 0.5 * n) / n)).exp() * (2.0 * k as f64 * M_PI * fi / n).cos(),
+        29 => {
+            let x = (2.0 * fi) / n - 1.0;
+            let p = |e: f64| x.powf(e);
+            a * match k {
+                0 => 1.0,
+                1 => x,
+                2 => 2.0 * p(2.0) - 1.0,
+                3 => 4.0 * p(3.0) - 3.0 * x,
+                4 => 8.0 * p(4.0) - 8.0 * p(2.0) + 1.0,
+                5 => 16.0 * p(5.0) - 20.0 * p(3.0) + 5.0 * x,
+                6 => 32.0 * p(6.0) - 48.0 * p(4.0) + 18.0 * p(2.0) - 1.0,
+                7 => 64.0 * p(7.0) - 112.0 * p(5.0) + 56.0 * p(3.0) - 7.0 * x,
+                8 => 128.0 * p(8.0) - 256.0 * p(6.0) + 160.0 * p(4.0) - 32.0 * p(2.0) + 1.0,
+                9 => 256.0 * p(9.0) - 576.0 * p(7.0) + 432.0 * p(5.0) - 120.0 * p(3.0) + 9.0 * x,
+                10 => 512.0 * p(10.0) - 1280.0 * p(8.0) + 1120.0 * p(6.0) - 400.0 * p(4.0) + 50.0 * p(2.0) - 1.0,
+                11 => 1024.0 * p(11.0) - 2816.0 * p(9.0) + 2816.0 * p(7.0) - 1232.0 * p(5.0) + 220.0 * p(3.0) - 11.0 * x,
+                12 => 2048.0 * p(12.0) - 6144.0 * p(10.0) + 6912.0 * p(8.0) - 3584.0 * p(6.0) + 840.0 * p(4.0) - 72.0 * p(2.0) + 1.0,
+                _ => return 0.0,
+            }
+        }
+        // Java keeps the previous values (initially 0) for unknown ids.
+        _ => 0.0,
+    }
+}
+
+/// `RhodoneaFunc.init`: `(k, cycles, cycles_to_close)` (first initialization, `cycles` = 0).
+fn rhodonea_cycles(p: &[f64]) -> (f64, f64, f64) {
+    // p = [knumer, kdenom, inner_mode, outer_mode, inner_spread, outer_spread, inner_spread_ratio,
+    //      outer_spread_ratio, spread_split, fill, radial_offset, cycles, cycle_offset, metacycles,
+    //      metacycle_expansion]
+    let (mut kn, mut kd) = (p[0], p[1]);
+    let k = kn / kd;
+    let cycles_to_close = if k % 1.0 == 0.0 {
+        if k % 2.0 == 0.0 || p[10] != 0.0 || p[4] != 0.0 || p[5] != 0.0 || p[9] != 0.0 { 1.0 } else { 0.5 }
+    } else if kn % 1.0 == 0.0 && kd % 1.0 == 0.0 {
+        let (mut x, mut y) = ((kn as i64).unsigned_abs(), (kd as i32 as i64).unsigned_abs());
+        while y != 0 {
+            (x, y) = (y, x % y);
+        }
+        let gcd = x as i32;
+        if gcd != 1 {
+            kn /= gcd as f64;
+            kd /= gcd as f64;
+        }
+        if kn % 2.0 == 0.0 || kd % 2.0 == 0.0 { kd } else { kd / 2.0 }
+    } else {
+        // Java compares the not yet computed cycles (0) with 16.
+        16.0
+    };
+    let cycles = if p[11] == 0.0 { cycles_to_close * p[13] } else { p[11] };
+    (k, cycles, cycles_to_close)
+}
+
 /// In-place `Complex` operation.
 type ComplexOp = fn(&mut Complex);
 
@@ -4209,6 +4356,674 @@ if (D(71) != 0.0) {
 v.x += q.x;
 v.y += q.y;
 v.z += q.z;",
+    },
+    VarDef {
+        name: "rainbow_arc",
+        params: &[ParamDef::new("radius", 0.5), ParamDef::new("width", 0.2), ParamDef::new("arc", 3.14159)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let radius = java_max(d[0].abs(), 0.01);
+            let width = java_max(d[1].abs(), 0.001);
+            let arc = java_max(d[2].abs(), 0.01);
+            let r = (a.x * a.x + a.y * a.y).sqrt();
+            let theta = a.y.atan2(a.x);
+            let band_r = java_round((r - radius) / width) * width + radius;
+            let new_r = r + 0.6 * (java_max(band_r, 1e-4) - r);
+            let new_theta = java_max(-arc, java_min(arc, theta));
+            v.x += amount * new_r * new_theta.cos();
+            v.y += amount * new_r * new_theta.sin();
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "let radius = max(abs(D(0)), 0.01);
+let width = max(abs(D(1)), 0.001);
+let arc = max(abs(D(2)), 0.01);
+let r = sqrt(a.x * a.x + a.y * a.y);
+let theta = atan2(a.y, a.x);
+let band_r = java_round((r - radius) / width) * width + radius;
+let new_r = r + 0.6 * (max(band_r, 1e-4) - r);
+let new_theta = max(-arc, min(arc, theta));
+v.x += AMOUNT * new_r * cos(new_theta);
+v.y += AMOUNT * new_r * sin(new_theta);
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "rational3",
+        params: &[
+            ParamDef::new("a", 0.5),
+            ParamDef::new("b", 0.0),
+            ParamDef::new("c", 0.25),
+            ParamDef::new("d", 1.0),
+            ParamDef::new("e", 0.0),
+            ParamDef::new("f", 0.9),
+            ParamDef::new("g", 0.0),
+            ParamDef::new("h", 1.0),
+        ],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let (xsqr, ysqr) = (a.x * a.x, a.y * a.y);
+            let (xcb, ycb) = (xsqr * a.x, ysqr * a.y);
+            let zt3 = xcb - 3.0 * a.x * ysqr;
+            let zt2 = xsqr - ysqr;
+            let zb3 = 3.0 * xsqr * a.y - ycb;
+            let zb2 = 2.0 * a.x * a.y;
+            let tr = (d[0] * zt3) + (d[1] * zt2) + (d[2] * a.x) + d[3];
+            let ti = (d[0] * zb3) + (d[1] * zb2) + (d[2] * a.y);
+            let br = (d[4] * zt3) + (d[5] * zt2) + (d[6] * a.x) + d[7];
+            let bi = (d[4] * zb3) + (d[5] * zb2) + (d[6] * a.y);
+            let r3den = 1.0 / (br * br + bi * bi);
+            v.x += amount * (tr * br + ti * bi) * r3den;
+            v.y += amount * (ti * br - tr * bi) * r3den;
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "let xsqr = a.x * a.x;
+let ysqr = a.y * a.y;
+let zt3 = xsqr * a.x - 3.0 * a.x * ysqr;
+let zt2 = xsqr - ysqr;
+let zb3 = 3.0 * xsqr * a.y - ysqr * a.y;
+let zb2 = 2.0 * a.x * a.y;
+let tr = D(0) * zt3 + D(1) * zt2 + D(2) * a.x + D(3);
+let ti = D(0) * zb3 + D(1) * zb2 + D(2) * a.y;
+let br = D(4) * zt3 + D(5) * zt2 + D(6) * a.x + D(7);
+let bi = D(4) * zb3 + D(5) * zb2 + D(6) * a.y;
+let r3den = 1.0 / (br * br + bi * bi);
+v.x += AMOUNT * (tr * br + ti * bi) * r3den;
+v.y += AMOUNT * (ti * br - tr * bi) * r3den;
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    simple(
+        "rays1",
+        false,
+        |_, ctx, a, v, amount| {
+            let t = sqr(a.x) + sqr(a.y);
+            let u = 1.0 / t.sqrt().tan() + (amount * sqr(M_2_PI));
+            v.x = amount * u * t / a.x;
+            v.y = amount * u * t / a.y;
+            ctx.pass_z(a, v, amount);
+        },
+        "let t = a.x * a.x + a.y * a.y;
+let u = 1.0 / tan(sqrt(t)) + AMOUNT * (4.0 / (PI * PI));
+v.x = AMOUNT * u * t / a.x;
+v.y = AMOUNT * u * t / a.y;
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    ),
+    simple(
+        "rays2",
+        false,
+        |_, ctx, a, v, amount| {
+            let t = sqr(a.x) + sqr(a.y);
+            let u = 1.0 / ((t + SMALL_EPSILON) * (1.0 / t + SMALL_EPSILON).tan()).cos();
+            v.x = (amount / 10.0) * u * t / a.x;
+            v.y = (amount / 10.0) * u * t / a.y;
+            ctx.pass_z(a, v, amount);
+        },
+        "let t = a.x * a.x + a.y * a.y;
+let u = 1.0 / cos((t + EPS) * tan(1.0 / t + EPS));
+v.x = (AMOUNT / 10.0) * u * t / a.x;
+v.y = (AMOUNT / 10.0) * u * t / a.y;
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    ),
+    simple(
+        "rays3",
+        false,
+        |_, ctx, a, v, amount| {
+            let t = sqr(a.x) + sqr(a.y);
+            let u = 1.0 / ((sqr(t) + SMALL_EPSILON).sin() * (1.0 / sqr(t) + SMALL_EPSILON).sin()).cos().sqrt();
+            v.x = (amount / 10.0) * u * t.cos() * t / a.x;
+            v.y = (amount / 10.0) * u * t.tan() * t / a.y;
+            ctx.pass_z(a, v, amount);
+        },
+        "let t = a.x * a.x + a.y * a.y;
+let u = 1.0 / sqrt(cos(sin(t * t + EPS) * sin(1.0 / (t * t) + EPS)));
+v.x = (AMOUNT / 10.0) * u * cos(t) * t / a.x;
+v.y = (AMOUNT / 10.0) * u * tan(t) * t / a.y;
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    ),
+    VarDef {
+        name: "rbox3D",
+        params: &[ParamDef::range("dx", 0.5, 0.0, 0.5), ParamDef::range("dy", 0.5, 0.0, 0.5), ParamDef::range("dz", 0.5, 0.0, 0.5), ParamDef::range("r", 0.05, 0.0, 0.25)],
+        kind: VarKind::Normal,
+        is_3d: true,
+        apply: |d, ctx, _a, v, amount| {
+            // d = [dx, dy, dz, r]
+            for _ in 0..50 {
+                let (x, y, z) = (ctx.random() - 0.5, ctx.random() - 0.5, ctx.random() - 0.5);
+                let q = [x.abs() - d[0], y.abs() - d[1], z.abs() - d[2]];
+                let l = (sqr(q[0].max(0.0)) + sqr(q[1].max(0.0)) + sqr(q[2].max(0.0))).sqrt();
+                let dist = l + java_min(java_max(q[0], java_max(q[1], q[2])), 0.0) - d[3];
+                if dist < 0.0 {
+                    v.do_hide = false;
+                    v.x += amount * x;
+                    v.y += amount * y;
+                    v.z += amount * z;
+                    return;
+                }
+            }
+            v.do_hide = true;
+        },
+        prepare: Some(|p, _| vec![limit_value(p[0], 0.0, 0.5), limit_value(p[1], 0.0, 0.5), limit_value(p[2], 0.0, 0.5), limit_value(p[3], 0.0, 0.25)]),
+        wgsl: "var found = false;
+for (var i = 0; i < 50; i++) {
+  let p = vec3<f32>(rnd() - 0.5, rnd() - 0.5, rnd() - 0.5);
+  let q = abs(p) - vec3<f32>(D(0), D(1), D(2));
+  let dist = length(max(q, vec3<f32>(0.0))) + min(max(q.x, max(q.y, q.z)), 0.0) - D(3);
+  if (dist < 0.0) {
+    v.hide = 0.0;
+    v.x += AMOUNT * p.x;
+    v.y += AMOUNT * p.y;
+    v.z += AMOUNT * p.z;
+    found = true;
+    break;
+  }
+}
+if (!found) { v.hide = 1.0; }",
+    },
+    VarDef {
+        name: "r_circleblur",
+        params: &[ParamDef::new("n", 1.0), ParamDef::new("seed", 0.0), ParamDef::new("dist", 0.5), ParamDef::new("min", 0.1), ParamDef::new("max", 1.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            // d = [n, seed, dist, min, max]
+            let angle = a.y.atan2(a.x);
+            let rad = fmod((sqr(a.x) + sqr(a.y)).sqrt(), d[0].abs());
+            let by = java_round((angle + rad).sin() * rad);
+            let bx = java_round((angle + rad).cos() * rad);
+            let mut rad2 = ctx.random().sqrt() * 0.5;
+            let angle2 = ctx.random() * M_2PI;
+            let h = |t: f64| {
+                let s = (t + d[1]).sin() * 43758.5453;
+                s - s.trunc()
+            };
+            let a1 = h(bx * 127.1 + by * 311.7);
+            let a2 = h(bx * 269.5 + by * 183.3);
+            let a3 = h(by * 12.9898 + bx * 78.233) * (d[4] - d[3]) + d[3];
+            rad2 *= a3;
+            v.x += amount * (bx + rad2 * angle2.cos() + a2 * d[2]);
+            v.y += amount * (by + rad2 * angle2.sin() + a1 * d[2]);
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        // GPU: the sin based hash runs in f32 (different cell offsets).
+        wgsl: "let angle = atan2(a.y, a.x);
+let rad = fmod(sqrt(a.x * a.x + a.y * a.y), abs(D(0)));
+let by = java_round(sin(angle + rad) * rad);
+let bx = java_round(cos(angle + rad) * rad);
+var rad2 = sqrt(rnd()) * 0.5;
+let angle2 = rnd() * TWO_PI;
+let h = sin(vec3<f32>(bx * 127.1 + by * 311.7, bx * 269.5 + by * 183.3, by * 12.9898 + bx * 78.233) + D(1)) * 43758.5453;
+let a1 = h.x - trunc(h.x);
+let a2 = h.y - trunc(h.y);
+let a3 = h.z - trunc(h.z);
+rad2 *= a3 * (D(4) - D(3)) + D(3);
+v.x += AMOUNT * (bx + rad2 * cos(angle2) + a2 * D(2));
+v.y += AMOUNT * (by + rad2 * sin(angle2) + a1 * D(2));
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "recurrenceplot",
+        params: &[
+            ParamDef::int("func_id", 0.0, 0.0, 29.0),
+            ParamDef::new("a", 0.5),
+            ParamDef::new("b", 10.0),
+            ParamDef::int("k", 5.0, 0.0, 20.0),
+            ParamDef::int("Density", 700.0, 1.0, 5000.0),
+            ParamDef::int("dc", 0.0, 0.0, 2.0),
+            ParamDef::new("scale", 1.0),
+            ParamDef::new("angle", 0.0),
+            ParamDef::new("offset", 0.0),
+            ParamDef::new("tolerance", 5.0),
+        ],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, _a, v, amount| {
+            // d = [func_id, a, b, k, Density, dc, scale, angle, offset, tolerance, ldcs]
+            let n = d[4];
+            let i = (n * ctx.random()) as i32;
+            let j = (n * ctx.random()) as i32;
+            let (id, k) = (d[0] as i32, d[3] as i32);
+            let y1 = recurrenceplot_y(id, i, d[1], d[2], k, n);
+            let y2 = recurrenceplot_y(id, j, d[1], d[2], k, n);
+            // The last plotted point is kept across calls (per render thread here).
+            if ((y1 - y2) * (y1 - y2)).sqrt() < d[9] {
+                v.x += amount * (i as f64 / n - 0.5);
+                v.y += amount * (j as f64 / n - 0.5);
+                *state_slot(ctx, d, 0, [0.0; 2]) = [v.x, v.y];
+                let dc = d[5] as i32;
+                if dc == 1 {
+                    v.color = fmod((0.5 * d[10] * v.x * v.y + d[8]).abs(), 1.0);
+                } else if dc == 2 {
+                    let (s, c) = (d[7].sin(), d[7].cos());
+                    v.color = fmod((0.5 * (d[10] * (c * v.x + s * v.y + d[8]) + 1.0)).abs(), 1.0);
+                }
+            } else {
+                [v.x, v.y] = *state_slot(ctx, d, 0, [0.0; 2]);
+            }
+        },
+        prepare: Some(|p, _| {
+            let mut d = p.to_vec();
+            for k in [0, 3, 4, 5] {
+                d[k] = (p[k] as i32) as f64;
+            }
+            d.push(1.0 / if p[6] == 0.0 { 10E-6 } else { p[6] });
+            d
+        }),
+        // GPU: no memory of the last plotted point; the sample pair is redrawn (up to 32 times)
+        // until it lies on the plot, else the point moves to the origin.
+        wgsl: "fn recurrenceplot_pow(x: f32, e: i32) -> f32 {
+  var r = 1.0;
+  for (var m = 0; m < e; m++) { r *= x; }
+  return r;
+}
+fn recurrenceplot_y(id: i32, ii: i32, a: f32, b: f32, k: i32, n: f32) -> f32 {
+  let i = f32(ii);
+  switch (id) {
+    case 0: { return 50.0 * sin(i * 4.0 * PI / n) + 25.0 * sin(i * 40.0 * PI / n); }
+    case 1: { return 10.0 * sin(i * 5.0 * PI / n) * 5.0 * sin(i * 15.0 * PI / n); }
+    case 2: { return 50.0 * cos(i * 24.0 * PI / n + 5.0 * sin(i * 6.0 * PI / n)); }
+    case 3: { return 50.0 * sin(i * 20.0 * PI / n) + 50.0 * sin(i * 22.0 * PI / n + PI); }
+    case 4: { return 50.0 * sin(i * 20.0 * PI / n) + 10.0 * sin(i * 22.0 * PI / n); }
+    case 5: { return 50.0 * sin(i * a * PI / n + sin(i * a * PI / n)); }
+    case 6: { return a / (1.0 + exp(-b * (i - n / 2.0) / n)); }
+    case 7: {
+      let h = 0.5 * n;
+      return (400.0 / PI) * (sin(i * PI / h) + sin(i * 3.0 * PI / h) / 3.0 + sin(i * 5.0 * PI / h) / 5.0 + sin(i * 7.0 * PI / h) / 7.0);
+    }
+    case 8: {
+      let h = 0.5 * n;
+      return 400.0 * (sin(i * PI / h) - sin(i * 3.0 * PI / h) / 9.0 + sin(i * 5.0 * PI / h) / 25.0 - sin(i * 7.0 * PI / h) / 49.0);
+    }
+    case 9: { return tanh(a * i * PI / n); }
+    case 10: { return tan(a * i * PI / n); }
+    case 11: {
+      var s = 0.0;
+      for (var m = 1; m <= 8; m++) { s += sin(i * f32(m) * PI / (0.5 * n)) / f32(m); }
+      return (-200.0 / PI) * s;
+    }
+    case 12: { return 50.0 * sin(i * 40.0 * PI / n) + 50.0 * sin(i * 44.0 * PI / n); }
+    case 13: { return 50.0 * sin(i * 40.0 * PI / n) + 50.0 * sin(i * 44.0 * PI / n + PI); }
+    case 14: { return 100.0 * sin(i * 16.0 * PI / n) - 500.0 + i * 0.25; }
+    case 15: { return 100.0 * sin(i * 16.0 * PI / n); }
+    case 16: { return 1.0 / cos(i * a * PI / n); }
+    case 17: { return 50.0 * cos(i * 2.0 * PI * 25.0 / n + 25.0 * sin(i * 2.0 * PI * 0.5 / n)); }
+    case 18: {
+      let t = 2.0 * a * i / n - a;
+      return a * exp(-b * t * t);
+    }
+    case 19: { return 500.0 * sin(i * 10.0 * PI / n) * exp(-5.0 * i / n); }
+    case 20: { return 500.0 * sin(i * 20.0 * PI / n) * exp(-3.0 * i / n); }
+    case 21: { return 50.0 * tan(i * 2.0 * PI / n); }
+    case 22: {
+      let x = 2.0 * i / n - 1.0;
+      switch (i32(b)) {
+        case 0: { return a; }
+        case 1: { return a * x; }
+        case 2: { return a * (3.0 * x * x - 1.0) / 2.0; }
+        case 3: { return a * (5.0 * recurrenceplot_pow(x, 3) - 3.0 * x) / 2.0; }
+        case 4: { return a * (35.0 * recurrenceplot_pow(x, 4) - 30.0 * x * x + 3.0) / 8.0; }
+        case 5: { return a * (63.0 * recurrenceplot_pow(x, 5) - 70.0 * recurrenceplot_pow(x, 3) + 15.0 * x) / 8.0; }
+        case 6: { return a * (231.0 * recurrenceplot_pow(x, 6) - 315.0 * recurrenceplot_pow(x, 4) + 105.0 * x * x - 5.0) / 16.0; }
+        case 7: { return a * (429.0 * recurrenceplot_pow(x, 7) - 693.0 * recurrenceplot_pow(x, 5) + 315.0 * recurrenceplot_pow(x, 3) - 35.0 * x) / 16.0; }
+        case 8: { return a * (6435.0 * recurrenceplot_pow(x, 8) - 12012.0 * recurrenceplot_pow(x, 6) + 6930.0 * recurrenceplot_pow(x, 4) - 1260.0 * x * x + 35.0) / 128.0; }
+        case 9: { return a * (12155.0 * recurrenceplot_pow(x, 9) - 25740.0 * recurrenceplot_pow(x, 7) + 18018.0 * recurrenceplot_pow(x, 5) - 4620.0 * recurrenceplot_pow(x, 3) + 315.0 * x) / 128.0; }
+        case 10: { return a * (46189.0 * recurrenceplot_pow(x, 10) - 109395.0 * recurrenceplot_pow(x, 8) + 90090.0 * recurrenceplot_pow(x, 6) - 30030.0 * recurrenceplot_pow(x, 4) + 3465.0 * x * x - 63.0) / 256.0; }
+        default: { return 0.0; }
+      }
+    }
+    case 23: {
+      var s = 0.0;
+      for (var j = 1; j <= k; j++) {
+        let o = 2.0 * f32(j) - 1.0;
+        s += sin(i * o * b * 2.0 * PI / n) / o;
+      }
+      return s * (4.0 * a / PI);
+    }
+    case 24: {
+      var s = 0.0;
+      for (var j = 1; j <= k; j++) { s += sin(i * f32(j) * b * 2.0 * PI / n) / f32(j); }
+      return s * (-2.0 * a / PI);
+    }
+    case 25: {
+      var s = 0.0;
+      for (var j = 1; j <= k; j++) {
+        let fj = f32(j);
+        s += cos(i * (2.0 * fj) * b * 2.0 * PI / n) / ((2.0 * fj - 1.0) * (2.0 * fj + 1.0));
+      }
+      return (4.0 * a / PI) * (0.5 - s);
+    }
+    case 26: {
+      var s = 0.0;
+      for (var j = 1; j <= k; j++) {
+        let fj = f32(j);
+        s += select(1.0, -1.0, j % 2 == 1) * cos(i * (2.0 * fj) * b * PI / n) / (fj * fj);
+      }
+      return (a * PI * PI / 3.0) + 4.0 * a * s;
+    }
+    case 27: {
+      let t = b * PI * (i - 0.5 * n) / n;
+      return a * sin(t) / t;
+    }
+    case 28: {
+      let t = (i - 0.5 * n) / n;
+      return a * exp(-b * (t * t)) * cos(2.0 * f32(k) * PI * i / n);
+    }
+    case 29: {
+      let x = 2.0 * i / n - 1.0;
+      var t0 = 1.0;
+      var t1 = x;
+      if (k < 0 || k > 12) { return 0.0; }
+      if (k == 0) { return a; }
+      for (var m = 1; m < k; m++) {
+        let t2 = 2.0 * x * t1 - t0;
+        t0 = t1;
+        t1 = t2;
+      }
+      return a * t1;
+    }
+    default: { return 0.0; }
+  }
+}
+@body
+let n = D(4);
+let id = i32(D(0));
+let k = i32(D(3));
+var found = false;
+var i = 0;
+var j = 0;
+for (var t = 0; t < 32; t++) {
+  i = i32(n * rnd());
+  j = i32(n * rnd());
+  let y1 = recurrenceplot_y(id, i, D(1), D(2), k, n);
+  let y2 = recurrenceplot_y(id, j, D(1), D(2), k, n);
+  if (abs(y1 - y2) < D(9)) {
+    found = true;
+    break;
+  }
+}
+if (found) {
+  v.x += AMOUNT * (f32(i) / n - 0.5);
+  v.y += AMOUNT * (f32(j) / n - 0.5);
+  let dc = i32(D(5));
+  if (dc == 1) {
+    v.color = fmod(abs(0.5 * D(10) * v.x * v.y + D(8)), 1.0);
+  } else if (dc == 2) {
+    v.color = fmod(abs(0.5 * (D(10) * (cos(D(7)) * v.x + sin(D(7)) * v.y + D(8)) + 1.0)), 1.0);
+  }
+} else {
+  v.x = 0.0;
+  v.y = 0.0;
+}",
+    },
+    VarDef {
+        name: "resonance",
+        params: &[ParamDef::new("freq", 3.0), ParamDef::new("decay", 0.5)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let freq = java_max(d[0].abs(), 0.01);
+            let r = (a.x * a.x + a.y * a.y).sqrt();
+            let theta = a.y.atan2(a.x);
+            let ring = java_round(r * freq) / freq;
+            let dist = r - ring;
+            let pull = d[1] * (-dist * dist * freq * freq * 4.0).exp();
+            let nr = r - pull * dist;
+            v.x += amount * nr * theta.cos();
+            v.y += amount * nr * theta.sin();
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "let freq = max(abs(D(0)), 0.01);
+let r = sqrt(a.x * a.x + a.y * a.y);
+let theta = atan2(a.y, a.x);
+let dist = r - java_round(r * freq) / freq;
+let nr = r - D(1) * exp(-dist * dist * freq * freq * 4.0) * dist;
+v.x += AMOUNT * nr * cos(theta);
+v.y += AMOUNT * nr * sin(theta);
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "rewind",
+        params: &[ParamDef::new("speed", 1.0), ParamDef::new("radius", 0.5), ParamDef::new("decay", 0.3)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let r = (a.x * a.x + a.y * a.y + 1.0e-10).sqrt();
+            let theta = a.y.atan2(a.x);
+            let nr = r * (1.0 - d[2] * 0.05);
+            let nt = theta + d[0] / (r + d[1]);
+            v.x += amount * nr * nt.cos();
+            v.y += amount * nr * nt.sin();
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "let r = sqrt(a.x * a.x + a.y * a.y + 1.0e-10);
+let nr = r * (1.0 - D(2) * 0.05);
+let nt = atan2(a.y, a.x) + D(0) / (r + D(1));
+v.x += AMOUNT * nr * cos(nt);
+v.y += AMOUNT * nr * sin(nt);
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "rhodonea",
+        params: &[
+            ParamDef::new("knumer", 3.0),
+            ParamDef::new("kdenom", 4.0),
+            ParamDef::int("inner_mode", 1.0, 0.0, 6.0),
+            ParamDef::int("outer_mode", 1.0, 0.0, 6.0),
+            ParamDef::new("inner_spread", 0.0),
+            ParamDef::new("outer_spread", 0.0),
+            ParamDef::new("inner_spread_ratio", 1.0),
+            ParamDef::new("outer_spread_ratio", 1.0),
+            ParamDef::new("spread_split", 1.0),
+            ParamDef::new("fill", 0.0),
+            ParamDef::new("radial_offset", 0.0),
+            ParamDef::new("cycles", 0.0),
+            ParamDef::new("cycle_offset", 0.0),
+            ParamDef::new("metacycles", 1.0),
+            ParamDef::new("metacycle_expansion", 0.0),
+        ],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            // d = [knumer, kdenom, inner_mode, outer_mode, inner_spread, outer_spread, inner_spread_ratio,
+            //      outer_spread_ratio, spread_split, fill, radial_offset, cycles, cycle_offset, metacycles,
+            //      metacycle_expansion, k 15, cycles 16, cycles_to_close 17]
+            let (k, cycles, ctc) = (d[15], d[16], d[17]);
+            let rin = d[8] * ((a.x * a.x) + (a.y * a.y)).sqrt();
+            let tin = a.y.atan2(a.x);
+            let t = cycles * (tin + (d[12] * 2.0 * M_PI));
+            let mut r = (k * t).cos() + d[10];
+            if d[9] != 0.0 {
+                r += d[9] * (ctx.random() - 0.5);
+            }
+            let (x, y) = (r * t.cos(), r * t.sin());
+            let expansion = ((cycles * (tin + M_PI)) / (ctc * 2.0 * M_PI)).floor();
+            let am = amount + (expansion * d[14]);
+            let signed = |va: f64, w: f64| if w < 0.0 { -va.abs() } else { va.abs() };
+            let outer = rin.abs() > r.abs();
+            let (mode, spread, ratio) = if outer { (d[3] as i32, d[5], d[7]) } else { (d[2] as i32, d[4], d[6]) };
+            // modes 5 and 6 are swapped between inside and outside
+            let mode = if !outer && (mode == 5 || mode == 6) { 11 - mode } else { mode };
+            match mode {
+                1 => {
+                    let rinx = (rin * spread * ratio) - (spread * ratio) + 1.0;
+                    let riny = (rin * spread) - spread + 1.0;
+                    v.x += am * rinx * x;
+                    v.y += am * riny * y;
+                    if v.y == 0.0 {
+                        v.x = 0.0;
+                    }
+                }
+                2 => {
+                    let (xin, yin) = (signed(a.x, x), signed(a.y, y));
+                    if outer {
+                        v.x += am * (x + (spread * ratio * (xin - x)));
+                        v.y += am * (y + (spread * (yin - y)));
+                    } else {
+                        v.x += am * (x - (spread * ratio * (x - xin)));
+                        v.y += am * (y - (spread * (y - yin)));
+                    }
+                }
+                3 => {
+                    let (xin, yin) = (signed(a.x, x), signed(a.y, y));
+                    if outer {
+                        v.x += am * (x + (spread * ratio * xin));
+                        v.y += am * (y + (spread * yin));
+                    } else {
+                        v.x += am * (x - (spread * ratio * xin));
+                        v.y += am * (y - (spread * yin));
+                    }
+                }
+                4 => {
+                    let rinx = (0.5 * rin) + (spread * ratio);
+                    let riny = (0.5 * rin) + spread;
+                    v.x += am * rinx * x;
+                    v.y += am * riny * y;
+                }
+                5 => {
+                    v.x += a.x;
+                    v.y += a.y;
+                }
+                6 => v.do_hide = true,
+                _ => {
+                    v.x += am * x;
+                    v.y += am * y;
+                }
+            }
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: Some(|p, _| {
+            let mut d = p.to_vec();
+            for k in [2, 3] {
+                let m = p[k].floor() as i32;
+                d[k] = if !(0..=6).contains(&m) { 0.0 } else { m as f64 };
+            }
+            let (k, cycles, ctc) = rhodonea_cycles(&d);
+            d.extend([k, cycles, ctc]);
+            d
+        }),
+        wgsl: "let rin = D(8) * sqrt(a.x * a.x + a.y * a.y);
+let tin = atan2(a.y, a.x);
+let cycles = D(16);
+let t = cycles * (tin + (D(12) * 2.0 * PI));
+var r = cos(D(15) * t) + D(10);
+if (D(9) != 0.0) { r += D(9) * (rnd() - 0.5); }
+let x = r * cos(t);
+let y = r * sin(t);
+let am = AMOUNT + floor((cycles * (tin + PI)) / (D(17) * 2.0 * PI)) * D(14);
+let outer = abs(rin) > abs(r);
+var mode = i32(D(2));
+var spread = D(4);
+var ratio = D(6);
+var sg = -1.0;
+if (outer) {
+  mode = i32(D(3));
+  spread = D(5);
+  ratio = D(7);
+  sg = 1.0;
+} else if (mode == 5 || mode == 6) {
+  mode = 11 - mode;
+}
+let xin = select(abs(a.x), -abs(a.x), x < 0.0);
+let yin = select(abs(a.y), -abs(a.y), y < 0.0);
+if (mode == 1) {
+  v.x += am * ((rin * spread * ratio) - (spread * ratio) + 1.0) * x;
+  v.y += am * ((rin * spread) - spread + 1.0) * y;
+  if (v.y == 0.0) { v.x = 0.0; }
+} else if (mode == 2) {
+  v.x += am * (x + sg * (spread * ratio * (sg * (xin - x))));
+  v.y += am * (y + sg * (spread * (sg * (yin - y))));
+} else if (mode == 3) {
+  v.x += am * (x + sg * (spread * ratio * xin));
+  v.y += am * (y + sg * (spread * yin));
+} else if (mode == 4) {
+  v.x += am * ((0.5 * rin) + (spread * ratio)) * x;
+  v.y += am * ((0.5 * rin) + spread) * y;
+} else if (mode == 5) {
+  v.x += a.x;
+  v.y += a.y;
+} else if (mode == 6) {
+  v.hide = 1.0;
+} else {
+  v.x += am * x;
+  v.y += am * y;
+}
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "rhombus3D",
+        params: &[ParamDef::range("la", 0.5, 0.0, 0.5), ParamDef::range("lb", 0.5, 0.0, 0.5), ParamDef::range("h", 0.5, 0.0, 0.5), ParamDef::range("r", 0.05, 0.0, 0.25)],
+        kind: VarKind::Normal,
+        is_3d: true,
+        apply: |d, ctx, _a, v, amount| {
+            // d = [la, lb, h, r]
+            let b = vec2(d[0], d[1]);
+            for _ in 0..50 {
+                let (x, y, z) = (ctx.random() - 0.5, ctx.random() - 0.5, ctx.random() - 0.5);
+                let (px, py, pz) = (x.abs(), y.abs(), z.abs());
+                let pxz = vec2(px, pz);
+                let w = b - pxz * 2.0;
+                let f = clamp((b.x * w.x - b.y * w.y) / dot(b, b), -1.0, 1.0);
+                let qx = length(pxz - b * vec2(1.0 - f, 1.0 + f) * 0.5) * sign(px * b.y + pz * b.x - b.x * b.y) - d[3];
+                let q = vec2(qx, py - d[2]);
+                let dist = min(max(q.x, q.y), 0.0) + length(max(q, 0.0));
+                if dist < 0.0 {
+                    v.do_hide = false;
+                    v.x += amount * x;
+                    v.y += amount * y;
+                    v.z += amount * z;
+                    return;
+                }
+            }
+            v.do_hide = true;
+        },
+        prepare: Some(|p, _| vec![limit_value(p[0], 0.0, 0.5), limit_value(p[1], 0.0, 0.5), limit_value(p[2], 0.0, 0.5), limit_value(p[3], 0.0, 0.25)]),
+        wgsl: "let b = vec2<f32>(D(0), D(1));
+var found = false;
+for (var i = 0; i < 50; i++) {
+  let p = vec3<f32>(rnd() - 0.5, rnd() - 0.5, rnd() - 0.5);
+  let ap = abs(p);
+  let w = b - ap.xz * 2.0;
+  let f = clamp((b.x * w.x - b.y * w.y) / dot(b, b), -1.0, 1.0);
+  let q = vec2<f32>(length(ap.xz - b * vec2<f32>(1.0 - f, 1.0 + f) * 0.5) * sign(ap.x * b.y + ap.z * b.x - b.x * b.y) - D(3), ap.y - D(2));
+  let dist = min(max(q.x, q.y), 0.0) + length(max(q, vec2<f32>(0.0)));
+  if (dist < 0.0) {
+    v.hide = 0.0;
+    v.x += AMOUNT * p.x;
+    v.y += AMOUNT * p.y;
+    v.z += AMOUNT * p.z;
+    found = true;
+    break;
+  }
+}
+if (!found) { v.hide = 1.0; }",
+    },
+    VarDef {
+        name: "ridged",
+        params: &[ParamDef::new("freq", 2.0), ParamDef::new("amp", 0.4)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let (x, y) = (d[0] * a.x, d[0] * a.y);
+            let v1 = 1.0 - (x + y * 0.3).sin().abs();
+            let v2 = (1.0 - (2.1 * x - y * 0.7).sin().abs()) * 0.5;
+            let val = d[1] * (v1 + v2);
+            let theta = a.y.atan2(a.x);
+            v.x += amount * val * theta.cos();
+            v.y += amount * val * theta.sin();
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "let x = D(0) * a.x;
+let y = D(0) * a.y;
+let val = D(1) * ((1.0 - abs(sin(x + y * 0.3))) + (1.0 - abs(sin(2.1 * x - y * 0.7))) * 0.5);
+let theta = atan2(a.y, a.x);
+v.x += AMOUNT * val * cos(theta);
+v.y += AMOUNT * val * sin(theta);
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
     },
     VarDef {
         name: "post_ztranslate_wf",
