@@ -196,16 +196,11 @@ impl RwfApp {
                 }
             }
             if del {
-                let sel = self.doc.selection;
-                let l = self.doc.layer_mut();
-                match sel {
-                    crate::doc::Selection::XForm(i) if i < l.xforms.len() => {
-                        l.xforms.remove(i);
+                if let Some((kind, i)) = self.doc.selection.kind() {
+                    let list = self.doc.layer_mut().xforms_of_mut(kind);
+                    if i < list.len() {
+                        list.remove(i);
                     }
-                    crate::doc::Selection::Final(i) if i < l.final_xforms.len() => {
-                        l.final_xforms.remove(i);
-                    }
-                    _ => {}
                 }
                 self.doc.fix_selection();
             }

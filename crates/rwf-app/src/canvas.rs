@@ -116,23 +116,14 @@ impl Mapper {
 }
 
 fn affine_of(doc: &Document, sel: Selection) -> Option<Affine> {
-    let l = doc.layer();
-    let xf = match sel {
-        Selection::XForm(i) => l.xforms.get(i)?,
-        Selection::Final(i) => l.final_xforms.get(i)?,
-        Selection::None => return None,
-    };
+    let (kind, i) = sel.kind()?;
+    let xf = doc.layer().xforms_of(kind).get(i)?;
     Some(if doc.edit_post { xf.post } else { xf.coefs })
 }
 
 fn set_affine(doc: &mut Document, sel: Selection, a: Affine) {
     let post = doc.edit_post;
-    let l = doc.layer_mut();
-    let xf = match sel {
-        Selection::XForm(i) => l.xforms.get_mut(i),
-        Selection::Final(i) => l.final_xforms.get_mut(i),
-        Selection::None => None,
-    };
+    let xf = sel.kind().and_then(|(kind, i)| doc.layer_mut().xforms_of_mut(kind).get_mut(i));
     if let Some(xf) = xf {
         if post {
             xf.post = a;
@@ -163,6 +154,10 @@ fn all_handles(doc: &Document) -> Vec<Selection> {
     let l = doc.layer();
     let mut v: Vec<Selection> = (0..l.xforms.len()).map(Selection::XForm).collect();
     v.extend((0..l.final_xforms.len()).map(Selection::Final));
+    // Background xforms live in their own coordinate frame: only the selected one is shown.
+    if let Selection::Background(i) = doc.selection {
+        v.push(Selection::Background(i));
+    }
     v
 }
 
@@ -337,10 +332,13 @@ pub fn show(ui: &mut egui::Ui, frame: &eframe::Frame, doc: &mut Document, state:
             let t = triangle(&mapper, &a);
             let idx = match sel {
                 Selection::XForm(i) => i,
-                Selection::Final(_) => 7,
-                Selection::None => 0,
+                _ => 7,
             };
-            let color = if matches!(sel, Selection::Final(_)) { Color32::from_rgb(0xd0, 0xd4, 0xdc) } else { xform_color(idx) };
+            let color = match sel {
+                Selection::Final(_) => Color32::from_rgb(0xd0, 0xd4, 0xdc),
+                Selection::Background(_) => Color32::from_rgb(0xc8, 0xa8, 0x70),
+                _ => xform_color(idx),
+            };
             let selected = sel == doc.selection;
             let hovered = hover_hit.is_some_and(|h| h.sel == sel);
             let alpha = if selected { 255 } else if hovered { 200 } else { 110 };
@@ -349,7 +347,7 @@ pub fn show(ui: &mut egui::Ui, frame: &eframe::Frame, doc: &mut Document, state:
                 painter.add(Shape::convex_polygon(t.to_vec(), color.gamma_multiply(0.12), Stroke::NONE));
             }
             let width = if selected { 2.0 } else { 1.2 };
-            let dashed = matches!(sel, Selection::Final(_)) || doc.edit_post;
+            let dashed = matches!(sel, Selection::Final(_) | Selection::Background(_)) || doc.edit_post;
             if dashed {
                 for (p, q) in [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
                     painter.extend(Shape::dashed_line(&[p, q], Stroke::new(width, c), 6.0, 4.0));

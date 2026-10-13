@@ -20,7 +20,9 @@
 //! UI panels.
 
 pub mod inspector;
+pub mod mixer;
 pub mod solid;
 pub mod topbar;
 pub mod transforms;
+pub mod weighting;
 pub mod widgets;

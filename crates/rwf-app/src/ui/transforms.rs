@@ -175,6 +175,22 @@ pub fn show(ui: &mut Ui, doc: &mut Document, st: &mut TransformsState) {
         }
     }
 
+    ui.add_space(4.0);
+    if header(ui, "Background", "Add background transform") {
+        let xf = rwf_core::render::background::random_bg_xform(&mut rwf_core::rng::Rng::from_entropy());
+        doc.layer_mut().bg_xforms.push(xf);
+        doc.selection = Selection::Background(doc.layer().bg_xforms.len() - 1);
+    }
+    for i in 0..doc.layer().bg_xforms.len() {
+        let xf = &doc.layer().bg_xforms[i];
+        let title = if xf.name.is_empty() { format!("Background {}", i + 1) } else { xf.name.clone() };
+        let sub = format!("{}  ·  w {:.2}", summary(xf), xf.weight);
+        let sw = Color32::from_rgb(0x50, 0x44, 0x30);
+        if let Some(a) = row(ui, &title, &sub, sw, Color32::from_rgb(0xc8, 0xa8, 0x70), doc.selection == Selection::Background(i)) {
+            act = Some((Selection::Background(i), a));
+        }
+    }
+
     if let Some((sel, a)) = act {
         apply_row_action(doc, sel, a);
     }
@@ -272,12 +288,10 @@ fn layers_section(ui: &mut Ui, doc: &mut Document) {
 }
 
 fn apply_row_action(doc: &mut Document, sel: Selection, a: RowAction) {
+    let Some((kind, i)) = sel.kind() else { return };
     let l = doc.layer_mut();
-    let (list, i, wrap): (&mut Vec<XForm>, usize, fn(usize) -> Selection) = match sel {
-        Selection::XForm(i) => (&mut l.xforms, i, Selection::XForm),
-        Selection::Final(i) => (&mut l.final_xforms, i, Selection::Final),
-        Selection::None => return,
-    };
+    let list = l.xforms_of_mut(kind);
+    let wrap = |i| Selection::of(kind, i);
     let is_xform = matches!(sel, Selection::XForm(_));
     let mut new_sel = Some(sel);
     match a {
@@ -330,6 +344,7 @@ fn variations_editor(ui: &mut Ui, doc: &mut Document, st: &mut TransformsState) 
     let title = match doc.selection {
         Selection::XForm(i) => format!("Variations · Transform {}", i + 1),
         Selection::Final(i) => format!("Variations · Final {}", i + 1),
+        Selection::Background(i) => format!("Variations · Background {}", i + 1),
         Selection::None => "Variations".into(),
     };
     theme::section_label(ui, &title);

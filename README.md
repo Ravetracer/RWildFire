@@ -72,30 +72,29 @@ Each variation is a `VarDef` with a CPU function and a WGSL snippet that read th
 
 ## Status / roadmap
 
-Done: core editor, file compatibility, CPU and GPU renderer, 1010 variations (incl. prepost, image and mesh resources, formula plots and curves, SVG and text, sub-flames), gradient editing, random generators, mutations, PNG export, density estimation, DOF, layers, animation and video export, adaptive filter, post blur, AI denoiser, solid rendering.
+Done: core editor, file compatibility, CPU and GPU renderer, 1010 variations (incl. prepost, image and mesh resources, formula plots and curves, SVG and text, sub-flames), gradient editing, random generators, mutations, PNG export, density estimation, DOF, layers, animation and video export, adaptive filter, post blur, AI denoiser, solid rendering, xform weighting fields, channel mixer, background xforms.
 
 Planned, by priority:
 
-1. Flame file compatibility (JWildfire flames that use these render differently today)
-   - XForm weighting fields (cellular noise, fractal noise and image map fields)
-   - Channel mixer (per-flame color curves)
-2. Rendering and output
+1. Rendering and output
    - More output formats: JPEG, HDR/EXR, Z-buffer
    - Interactive renderer: long progressive renders with pause, resume and saved render state
    - Batch renderer (render queue)
    - Quilt renderer (very large images rendered in tiles)
-3. Creative tools
+2. Creative tools
    - More random flame generators (JWildfire has about 60: 3D, solid, bokeh, layers, sub-flames, tilings, ...)
    - More MutaGen mutations (gradient, bokeh, weighting field, painterly, add transform, ...)
    - Random symmetry and random weighting field generators
    - Motion curve / envelope editor, incl. audio (MP3) envelopes
    - Easy movie maker (movies from a sequence of morphing flames)
    - Mesh generator (flame to sliced 3D mesh, OBJ export)
-4. Optional / later
+3. Optional / later
    - Variations not ported yet: `lsystem_js`, `lsystem3D_js`, `iflames_wf`, `taprats`, `wangtiles`
    - Dancing flames (realtime, audio-reactive)
    - Scripting (e.g. Lua or Rhai in place of JWildfire's Java scripts)
    - Review of the CPU/GPU quality scale and brightness
+   - Weighting field parameter modulation on the GPU for variations with precomputed values (CPU only today)
+   - Motion curves of weighting field settings (kept in the file, not animated)
 
 Not planned: variations that run user-written Java/GLSL code or formula engines (`custom_wf`, `c_var`, `dc_code`, `glsl_code`, `f_complex`, `colordomain`, `cut_c`, `ducks`, `fract_formula_*`), JWildfire's classic image-processing module, LeapMotion, applet and launcher.
 

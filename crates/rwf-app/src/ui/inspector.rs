@@ -57,6 +57,8 @@ pub struct InspectorState {
     pub gradient: GradientEdit,
     pub keys: crate::gradients::KeyEditor,
     pub library: crate::gradients::GradientLibrary,
+    pub wfield_preview: super::weighting::FieldPreview,
+    pub mixer: super::mixer::MixerState,
     rotate_step: f64,
     scale_step: f64,
     move_step: f64,
@@ -94,7 +96,7 @@ fn transform_tab(ui: &mut Ui, doc: &mut Document, st: &mut InspectorState) {
         widgets::label(ui, "Name");
         ui.text_edit_singleline(&mut xf.name);
         ui.end_row();
-        if matches!(sel, Selection::XForm(_)) {
+        if matches!(sel, Selection::XForm(_) | Selection::Background(_)) {
             slider_log(ui, "Weight", &mut xf.weight, 0.001..=50.0);
         }
         widgets::label(ui, "Opacity");
@@ -246,6 +248,7 @@ fn transform_tab(ui: &mut Ui, doc: &mut Document, st: &mut InspectorState) {
         });
         ui.label(RichText::new("Color modulation is applied by the CPU renderer.").small().color(theme::TEXT_MUTED));
     });
+    super::weighting::section(ui, xf, &mut st.wfield_preview);
     if solid {
         egui::CollapsingHeader::new(RichText::new("Solid material").color(theme::TEXT_MUTED)).default_open(true).show(ui, |ui| {
             grid(ui, "xf-material", |ui| {
@@ -410,6 +413,7 @@ fn look_tab(ui: &mut Ui, doc: &mut Document, st: &mut InspectorState) {
             ui.checkbox(&mut f.bg_transparency, "in exported images");
             ui.end_row();
         });
+        super::mixer::section(ui, &mut f.mixer, &mut st.mixer);
     }
 
     gradient_editor(ui, doc, st);

@@ -101,7 +101,7 @@ impl FieldType {
         Self::ALL.into_iter().find(|t| t.as_str() == s.trim())
     }
 
-    fn is_fractal(self) -> bool {
+    pub fn is_fractal(self) -> bool {
         matches!(self, FieldType::CubicFractalNoise | FieldType::PerlinFractalNoise | FieldType::SimplexFractalNoise | FieldType::ValueFractalNoise)
     }
 }
@@ -175,7 +175,7 @@ impl Default for WeightingField {
     }
 }
 
-fn fractal_type_str(t: FractalType) -> &'static str {
+pub fn fractal_type_str(t: FractalType) -> &'static str {
     match t {
         FractalType::Fbm => "FBM",
         FractalType::Billow => "BILLOW",
@@ -183,7 +183,7 @@ fn fractal_type_str(t: FractalType) -> &'static str {
     }
 }
 
-fn cellular_return_str(t: CellularReturn) -> &'static str {
+pub fn cellular_return_str(t: CellularReturn) -> &'static str {
     match t {
         CellularReturn::CellValue => "CELL_VALUE",
         CellularReturn::Distance => "DISTANCE",
@@ -195,7 +195,7 @@ fn cellular_return_str(t: CellularReturn) -> &'static str {
     }
 }
 
-fn cellular_distance_str(t: CellularDistance) -> &'static str {
+pub fn cellular_distance_str(t: CellularDistance) -> &'static str {
     match t {
         CellularDistance::Euclidean => "EUCLIDIAN",
         CellularDistance::Manhattan => "MANHATTAN",
@@ -234,8 +234,8 @@ const ATTRS: [&str; 27] = [
     "wfield_cell_noise_dist_function",
 ];
 
-const FRACTAL_TYPES: [FractalType; 3] = [FractalType::Fbm, FractalType::Billow, FractalType::RigidMulti];
-const CELLULAR_RETURNS: [CellularReturn; 7] = [
+pub const FRACTAL_TYPES: [FractalType; 3] = [FractalType::Fbm, FractalType::Billow, FractalType::RigidMulti];
+pub const CELLULAR_RETURNS: [CellularReturn; 7] = [
     CellularReturn::CellValue,
     CellularReturn::Distance,
     CellularReturn::Distance2,
@@ -244,7 +244,7 @@ const CELLULAR_RETURNS: [CellularReturn; 7] = [
     CellularReturn::Distance2Mul,
     CellularReturn::Distance2Div,
 ];
-const CELLULAR_DISTANCES: [CellularDistance; 3] = [CellularDistance::Euclidean, CellularDistance::Manhattan, CellularDistance::Natural];
+pub const CELLULAR_DISTANCES: [CellularDistance; 3] = [CellularDistance::Euclidean, CellularDistance::Manhattan, CellularDistance::Natural];
 
 impl WeightingField {
     /// Reads the `wfield_*` attributes of an xform and removes them from `attrs`.

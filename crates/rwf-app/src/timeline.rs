@@ -24,7 +24,7 @@ use std::time::Instant;
 use egui::{Align2, Color32, CornerRadius, FontId, Pos2, Rect, RichText, Sense, Shape, Stroke, Ui, pos2, vec2};
 use rwf_core::animation::{self, Interp};
 
-use crate::doc::{Document, Selection};
+use crate::doc::Document;
 use crate::{icons, theme};
 
 pub struct Timeline {
@@ -97,8 +97,10 @@ impl Timeline {
     fn key_paths(doc: &Document, which: &str) -> Vec<String> {
         let all = animation::all_props(&doc.flame);
         let prefix = match (which, doc.selection) {
-            ("transform", Selection::XForm(i)) => format!("layer{}.xf{i}.", doc.layer),
-            ("transform", Selection::Final(i)) => format!("layer{}.final{i}.", doc.layer),
+            ("transform", sel) => match sel.kind() {
+                Some((kind, i)) => format!("layer{}.{}{i}.", doc.layer, kind.path_prefix()),
+                None => String::new(),
+            },
             _ => String::new(),
         };
         all.into_iter()

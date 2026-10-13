@@ -21,6 +21,7 @@
 
 use std::path::PathBuf;
 
+use rwf_core::model::XFormKind;
 use rwf_core::{Flame, Layer, XForm};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -28,6 +29,27 @@ pub enum Selection {
     None,
     XForm(usize),
     Final(usize),
+    Background(usize),
+}
+
+impl Selection {
+    /// The xform list and index of the selection.
+    pub fn kind(self) -> Option<(XFormKind, usize)> {
+        match self {
+            Selection::XForm(i) => Some((XFormKind::Normal, i)),
+            Selection::Final(i) => Some((XFormKind::Final, i)),
+            Selection::Background(i) => Some((XFormKind::Background, i)),
+            Selection::None => None,
+        }
+    }
+
+    pub fn of(kind: XFormKind, i: usize) -> Self {
+        match kind {
+            XFormKind::Normal => Selection::XForm(i),
+            XFormKind::Final => Selection::Final(i),
+            XFormKind::Background => Selection::Background(i),
+        }
+    }
 }
 
 pub struct Document {
@@ -75,23 +97,19 @@ impl Document {
 
 
     pub fn selected_mut(&mut self) -> Option<&mut XForm> {
-        let sel = self.selection;
-        let l = self.layer_mut();
-        match sel {
-            Selection::XForm(i) => l.xforms.get_mut(i),
-            Selection::Final(i) => l.final_xforms.get_mut(i),
-            Selection::None => None,
-        }
+        let (kind, i) = self.selection.kind()?;
+        self.layer_mut().xforms_of_mut(kind).get_mut(i)
     }
 
     /// Makes sure the selection points to an existing transform.
     pub fn fix_selection(&mut self) {
         self.layer = self.layer.min(self.flame.layers.len().saturating_sub(1));
         let l = self.layer();
-        let (nx, nf) = (l.xforms.len(), l.final_xforms.len());
+        let (nx, nf, nb) = (l.xforms.len(), l.final_xforms.len(), l.bg_xforms.len());
         self.selection = match self.selection {
             Selection::XForm(i) if i < nx => Selection::XForm(i),
             Selection::Final(i) if i < nf => Selection::Final(i),
+            Selection::Background(i) if i < nb => Selection::Background(i),
             _ if nx > 0 => Selection::XForm(nx - 1),
             _ => Selection::None,
         };

@@ -26,7 +26,7 @@ use rayon::prelude::*;
 use super::prepared::{PreparedXForm, colormap_index, prepare_xform};
 use super::tonemap::background_color;
 use crate::math::EPSILON;
-use crate::model::{Flame, VariationInstance};
+use crate::model::{ColorType, Flame, VariationInstance, XForm};
 use crate::variations::{Ctx, Pt};
 
 /// `DC_BaseFunc` subclasses: `prepareBackgroundRendering` sets `ColorOnly = 1`.
@@ -95,6 +95,22 @@ fn prepare_for_background(var: &mut VariationInstance) {
         var.set_param("color_only", 1.0);
         var.set_param("buddhabrot_mode", 0.0);
     }
+}
+
+/// Variations with a color-only mode for backgrounds (`VARTYPE_SUPPORTS_BACKGROUND`).
+pub fn background_variations() -> Vec<&'static str> {
+    DC_COLOR_ONLY.iter().chain(&["dc_perlin"]).chain(FRACT_COLOR_ONLY).copied().filter(|n| crate::variations::find(n).is_some()).collect()
+}
+
+/// A new background xform with a random background variation (`TinaController.addBGForm`,
+/// without the affine mutation).
+pub fn random_bg_xform(rng: &mut crate::rng::Rng) -> XForm {
+    let names = background_variations();
+    let mut xf = XForm::with_variation(names[rng.random_int(names.len())], 0.5 + rng.random());
+    xf.weight = 0.5;
+    xf.color_symmetry = 1.0;
+    xf.color_type = ColorType::None;
+    xf
 }
 
 struct BgLayer {

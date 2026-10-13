@@ -334,6 +334,19 @@ impl Envelope {
         Self { y: y.to_vec(), xmin, xmax, vsx, vsy }
     }
 
+    /// The interpolated curve points without the unused tail (for drawing the curve).
+    pub fn points(&self) -> Vec<(f64, f64)> {
+        let mut out: Vec<(f64, f64)> = Vec::new();
+        for (&x, &y) in self.vsx.iter().zip(&self.vsy) {
+            // Segment joints overlap by rounding errors; the tail drops back to zero.
+            if out.last().is_some_and(|&(px, _)| x < px - 1.0) {
+                break;
+            }
+            out.push((x, y));
+        }
+        out
+    }
+
     /// `Envelope.evaluate` (with bisection).
     pub fn evaluate(&self, t: f64) -> f64 {
         let n = self.y.len();
