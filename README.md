@@ -78,3 +78,7 @@ Next:
 - image resources for variations (`plane_wf` color/displacement maps, OBJ meshes)
 - remaining JWildfire variations (~500; 13 batch files are prepared but empty, see `variations/batch_w*.rs` and the `wNN` features)
 - resource-based variations (images, formulas, subflames, SVG, text)
+
+## License
+
+RWildFire is a port of [JWildfire](https://github.com/thargor6/JWildfire) (Copyright (C) 1995-2026 Andreas Maschke, LGPL 2.1 or later) and is licensed under the [GNU Lesser General Public License v3.0 or later](https://www.gnu.org/licenses/lgpl-3.0.html) (`LGPL-3.0-or-later`). See [LICENSE](LICENSE) (LGPL v3), [COPYING](COPYING) (GPL v3, on which the LGPL v3 builds) and [NOTICE](NOTICE).

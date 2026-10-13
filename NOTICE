@@ -1,0 +1,38 @@
+RWildFire - a fractal flame editor written in Rust
+Copyright (C) 2026 Christian Nielebock
+https://github.com/Ravetracer/RWildFire
+
+RWildFire is a port of JWildfire to Rust.
+JWildfire - an image and animation processor written in Java
+Copyright (C) 1995-2026 Andreas Maschke
+https://github.com/thargor6/JWildfire
+
+JWildfire is licensed under the GNU Lesser General Public License,
+version 2.1 or (at your option) any later version. RWildFire makes use
+of that option and is distributed under version 3 of the license.
+
+This program is free software: you can redistribute it and/or modify it
+under the terms of the GNU Lesser General Public License as published by
+the Free Software Foundation, either version 3 of the License, or (at
+your option) any later version.
+
+This program is distributed in the hope that it will be useful, but
+WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU Lesser
+General Public License for more details.
+
+The GNU Lesser General Public License version 3 is a set of additional
+permissions on top of the GNU General Public License version 3. Both
+texts are included:
+
+  LICENSE  - GNU Lesser General Public License, version 3
+             https://www.gnu.org/licenses/lgpl-3.0.html
+  COPYING  - GNU General Public License, version 3
+             https://www.gnu.org/licenses/gpl-3.0.html
+
+SPDX-License-Identifier: LGPL-3.0-or-later
+
+Third-party data
+----------------
+The gradient files in assets/gradients/ and the example flames in
+testdata/ are taken from the JWildfire distribution.

@@ -5,7 +5,7 @@ members = ["crates/rwf-core", "crates/rwf-gpu", "crates/rwf-app", "crates/rwf-cl
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-license = "LGPL-2.1-or-later"
+license = "LGPL-3.0-or-later"
 
 [profile.release]
 opt-level = 3
