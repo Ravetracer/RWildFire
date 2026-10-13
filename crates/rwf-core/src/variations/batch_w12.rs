@@ -498,6 +498,30 @@ fn prepost_affine_prepare(p: &[f64]) -> Vec<f64> {
     d
 }
 
+/// Parameters of `QuaternionFunc`: groups `<f>qpow, <f>qx1, <f>qx2, <f>qy1, <f>qy2, <f>qz1, <f>qz2`
+/// (estiq without x2, logq with pow and base only).
+const QUATERNION_PARAMS: &[ParamDef] = &{
+    const NAMES: [&str; 92] = [
+        "cosqpow", "cosqx1", "cosqx2", "cosqy1", "cosqy2", "cosqz1", "cosqz2", "coshqpow", "coshqx1", "coshqx2", "coshqy1", "coshqy2", "coshqz1",
+        "coshqz2", "cotqpow", "cotqx1", "cotqx2", "cotqy1", "cotqy2", "cotqz1", "cotqz2", "cothqpow", "cothqx1", "cothqx2", "cothqy1", "cothqy2",
+        "cothqz1", "cothqz2", "cscqpow", "cscqx1", "cscqx2", "cscqy1", "cscqy2", "cscqz1", "cscqz2", "cschqpow", "cschqx1", "cschqx2", "cschqy1",
+        "cschqy2", "cschqz1", "cschqz2", "estiqpow", "estiqx1", "estiqy1", "estiqy2", "estiqz1", "estiqz2", "logqpow", "logqbase", "secqpow",
+        "secqx1", "secqx2", "secqy1", "secqy2", "secqz1", "secqz2", "sechqpow", "sechqx1", "sechqx2", "sechqy1", "sechqy2", "sechqz1", "sechqz2",
+        "sinqpow", "sinqx1", "sinqx2", "sinqy1", "sinqy2", "sinqz1", "sinqz2", "sinhqpow", "sinhqx1", "sinhqx2", "sinhqy1", "sinhqy2", "sinhqz1",
+        "sinhqz2", "tanqpow", "tanqx1", "tanqx2", "tanqy1", "tanqy2", "tanqz1", "tanqz2", "tanhqpow", "tanhqx1", "tanhqx2", "tanhqy1", "tanhqy2",
+        "tanhqz1", "tanhqz2",
+    ];
+    let mut p = [ParamDef::new("", 1.0); 92];
+    let mut i = 0;
+    while i < 92 {
+        // the "pow" weights are 0 except cosqpow; logqbase is e
+        let pow = i == 0 || i == 7 || i == 14 || i == 21 || i == 28 || i == 35 || i == 42 || i == 48 || i == 50 || i == 57 || i == 64 || i == 71 || i == 78 || i == 85;
+        p[i] = ParamDef::new(NAMES[i], if i == 49 { M_E } else if pow && i != 0 { 0.0 } else { 1.0 });
+        i += 1;
+    }
+    p
+};
+
 /// In-place `Complex` operation.
 type ComplexOp = fn(&mut Complex);
 
@@ -3791,6 +3815,400 @@ let im = D(0) * y + 2.0 * D(1) * x * y;
 let r = AMOUNT / (re * re + im * im);
 a.x = (x * re + y * im) * r;
 a.y = (y * re - x * im) * r;",
+    },
+    VarDef {
+        name: "quadrupole",
+        params: &[ParamDef::new("strength", 0.3), ParamDef::new("smooth", 0.1)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let r2 = a.x * a.x + a.y * a.y;
+            let qr2 = r2 + d[1];
+            let theta = a.y.atan2(a.x);
+            let fr = d[0] * (2.0 * theta).cos() / qr2;
+            let ft = d[0] * (2.0 * theta).sin() / qr2;
+            let nr = (r2 + 1.0e-10).sqrt() + fr;
+            let nt = theta + ft;
+            v.x += amount * nr * nt.cos();
+            v.y += amount * nr * nt.sin();
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "let r2 = a.x * a.x + a.y * a.y;
+let qr2 = r2 + D(1);
+let theta = atan2(a.y, a.x);
+let nr = sqrt(r2 + 1.0e-10) + D(0) * cos(2.0 * theta) / qr2;
+let nt = theta + D(0) * sin(2.0 * theta) / qr2;
+v.x += AMOUNT * nr * cos(nt);
+v.y += AMOUNT * nr * sin(nt);
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "quasicrystal",
+        params: &[ParamDef::new("freq", 3.0), ParamDef::new("amp", 0.3)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let (mut sx, mut sy) = (0.0, 0.0);
+            for k in 0..5 {
+                let (s, c) = (k as f64 * 1.2566370614359172).sin_cos();
+                let wave = (d[0] * (a.x * c + a.y * s)).cos();
+                sx += wave * c;
+                sy += wave * s;
+            }
+            v.x += amount * (a.x + d[1] * sx * 0.2);
+            v.y += amount * (a.y + d[1] * sy * 0.2);
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "var s = vec2<f32>(0.0);
+for (var k = 0; k < 5; k++) {
+  let an = f32(k) * 1.2566370614359172;
+  let cs = vec2<f32>(cos(an), sin(an));
+  s += cos(D(0) * (a.x * cs.x + a.y * cs.y)) * cs;
+}
+v.x += AMOUNT * (a.x + D(1) * s.x * 0.2);
+v.y += AMOUNT * (a.y + D(1) * s.y * 0.2);
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "quilt",
+        params: &[ParamDef::new("scale", 3.0), ParamDef::new("puff", 0.3)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let (cx, cy) = (a.x * d[0], a.y * d[0]);
+            let (col, row) = (java_round(cx), java_round(cy));
+            let (lx, ly) = (cx - col, cy - row);
+            let bulge = d[1] * (1.0 - (lx * lx + ly * ly).sqrt() * 2.0);
+            v.x += amount * (col + lx * (1.0 - bulge)) / d[0];
+            v.y += amount * (row + ly * (1.0 - bulge)) / d[0];
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "let cx = a.x * D(0);
+let cy = a.y * D(0);
+let col = java_round(cx);
+let row = java_round(cy);
+let lx = cx - col;
+let ly = cy - row;
+let bulge = D(1) * (1.0 - sqrt(lx * lx + ly * ly) * 2.0);
+v.x += AMOUNT * (col + lx * (1.0 - bulge)) / D(0);
+v.y += AMOUNT * (row + ly * (1.0 - bulge)) / D(0);
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "quintessence",
+        params: &[ParamDef::new("scale", 1.0), ParamDef::new("power", 0.5)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let r = (a.x * a.x + a.y * a.y + 1e-10).powf(d[1] * 0.5);
+            let an = a.y.atan2(a.x) * 5.0;
+            v.x += amount * r * an.cos() * d[0];
+            v.y += amount * r * an.sin() * d[0];
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "let r = pow(a.x * a.x + a.y * a.y + 1e-10, D(1) * 0.5);
+let an = atan2(a.y, a.x) * 5.0;
+v.x += AMOUNT * r * cos(an) * D(0);
+v.y += AMOUNT * r * sin(an) * D(0);
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "quaternion",
+        params: QUATERNION_PARAMS,
+        kind: VarKind::Normal,
+        is_3d: true,
+        apply: |d, _, a, v, amount| {
+            // d: see QUATERNION_PARAMS (cosq 0, coshq 7, cotq 14, cothq 21, cscq 28, cschq 35, estiq 42,
+            // logq 48, secq 50, sechq 57, sinq 64, sinhq 71, tanq 78, tanhq 85)
+            let (ax, ay, az) = (a.x, a.y, a.z);
+            let (mut x, mut y, mut z) = (0.0, 0.0, 0.0);
+            let hyp = ay.hypot(az);
+            let r2 = sqr(ax) + sqr(ay) + sqr(az);
+            if d[0] != 0.0 {
+                let p = &d[0..7];
+                let av = hyp * p[5];
+                let (s, c, sh, ch) = ((ax * p[1]).sin(), (ax * p[2]).cos(), (av * p[3]).sinh(), (av * p[4]).cosh());
+                let cc = amount * s * sh / av * p[6];
+                x += p[0] * amount * c * ch;
+                y += p[0] * cc * ay;
+                z += p[0] * cc * az;
+            }
+            if d[7] != 0.0 {
+                let p = &d[7..14];
+                let av = hyp * p[5];
+                let (s, c, sh, ch) = ((av * p[3]).sin(), (av * p[4]).cos(), (ax * p[1]).sinh(), (ax * p[2]).cosh());
+                let cc = amount * sh * s / av * p[6];
+                x += p[0] * amount * ch * c;
+                y += p[0] * cc * ay;
+                z += p[0] * cc * az;
+            }
+            if d[14] != 0.0 {
+                let p = &d[14..21];
+                let av = hyp * p[5];
+                let (s, c, sh, ch) = ((ax * p[1]).sin(), (ax * p[2]).cos(), (av * p[3]).sinh(), (av * p[4]).cosh());
+                let sysz = sqr(ay) + sqr(az);
+                let ni = amount / (sqr(ax) + sysz);
+                let cc = c * sh / av * p[6];
+                let b = -s * sh / av;
+                let stcv = s * ch;
+                let nstcv = -stcv;
+                let ctcv = c * ch;
+                x += p[0] * (stcv * ctcv + cc * b * sysz) * ni;
+                y -= p[0] * (nstcv * b * ay + cc * ay * ctcv) * ni;
+                z -= p[0] * (nstcv * b * az + cc * az * ctcv) * ni;
+            }
+            if d[21] != 0.0 {
+                let p = &d[21..28];
+                let av = hyp * p[5];
+                let (s, c, sh, ch) = ((av * p[3]).sin(), (av * p[4]).cos(), (ax * p[1]).sinh(), (ax * p[2]).cosh());
+                let sysz = sqr(ay) + sqr(az);
+                let ni = amount / (sqr(ax) + sysz);
+                let cc = ch * s / av * p[6];
+                let b = sh * s / av;
+                let stcv = sh * c;
+                let nstcv = -stcv;
+                let ctcv = ch * c;
+                x += p[0] * (stcv * ctcv + cc * b * sysz) * ni;
+                y += p[0] * (nstcv * b * ay + cc * ay * ctcv) * ni;
+                z += p[0] * (nstcv * b * az + cc * az * ctcv) * ni;
+            }
+            if d[28] != 0.0 {
+                let p = &d[28..35];
+                let av = hyp * p[5];
+                let (s, c, sh, ch) = ((ax * p[1]).sin(), (ax * p[2]).cos(), (av * p[3]).sinh(), (av * p[4]).cosh());
+                let ni = amount / r2;
+                let cc = ni * c * sh / av * p[6];
+                x += p[0] * s * ch * ni;
+                y -= p[0] * cc * ay;
+                z -= p[0] * cc * az;
+            }
+            if d[35] != 0.0 {
+                let p = &d[35..42];
+                let av = hyp * p[5];
+                let (s, c, sh, ch) = ((av * p[3]).sin(), (av * p[4]).cos(), (ax * p[1]).sinh(), (ax * p[2]).cosh());
+                let ni = amount / r2;
+                let cc = ni * ch * s / av * p[6];
+                x += p[0] * sh * c * ni;
+                y -= p[0] * cc * ay;
+                z -= p[0] * cc * az;
+            }
+            if d[42] != 0.0 {
+                // [pow, x1, y1, y2, z1, z2]
+                let p = &d[42..48];
+                let e = (ax * p[1]).exp();
+                let av = hyp * p[4];
+                let (s, c) = ((av * p[2]).sin(), (av * p[3]).cos());
+                let ea = e * s / av * p[5];
+                x += p[0] * amount * e * c;
+                y += p[0] * amount * ea * ay;
+                z += p[0] * amount * ea * az;
+            }
+            if d[48] != 0.0 {
+                let av = hyp;
+                let cc = amount * av.atan2(ax) / av;
+                x += d[48] * (sqr(ax) + sqr(av)).ln() * (0.5 * amount / d[49].ln());
+                y += d[48] * cc * ay;
+                z += d[48] * cc * az;
+            }
+            if d[50] != 0.0 {
+                let p = &d[50..57];
+                let av = hyp * p[5];
+                let (s, c, sh, ch) = ((-ax * p[1]).sin(), (-ax * p[2]).cos(), (av * p[3]).sinh(), (av * p[4]).cosh());
+                let ni = amount / r2;
+                let cc = ni * s * sh / av * p[6];
+                x += p[0] * c * ch * ni;
+                y -= p[0] * cc * ay;
+                z -= p[0] * cc * az;
+            }
+            if d[57] != 0.0 {
+                let p = &d[57..64];
+                let av = hyp * p[5];
+                let (s, c, sh, ch) = ((av * p[3]).sin(), (av * p[4]).cos(), (ax * p[1]).sinh(), (ax * p[2]).cosh());
+                let ni = amount / r2;
+                let cc = ni * sh * s / av * p[6];
+                x += p[0] * ch * c * ni;
+                y -= p[0] * cc * ay;
+                z -= p[0] * cc * az;
+            }
+            if d[78] != 0.0 {
+                let p = &d[78..85];
+                let av = hyp * p[5];
+                let (s, c, sh, ch) = ((ax * p[1]).sin(), (ax * p[2]).cos(), (av * p[3]).sinh(), (av * p[4]).cosh());
+                let sysz = sqr(ay) + sqr(az);
+                let ni = amount / (sqr(ax) + sysz);
+                let cc = c * sh / av * p[6];
+                let b = -s * sh / av;
+                let stcv = s * ch;
+                let nstcv = -stcv;
+                let ctcv = c * ch;
+                x += p[0] * (stcv * ctcv + cc * b * sysz) * ni;
+                y += p[0] * (nstcv * b * ay + cc * ay * ctcv) * ni;
+                z += p[0] * (nstcv * b * az + cc * az * ctcv) * ni;
+            }
+            if d[85] != 0.0 {
+                let p = &d[85..92];
+                let av = hyp * p[5];
+                let (s, c, sh, ch) = ((av * p[3]).sin(), (av * p[4]).cos(), (ax * p[1]).sinh(), (ax * p[2]).cosh());
+                let sysz = sqr(ay) + sqr(az);
+                let ni = amount / (sqr(ax) + sysz);
+                let cc = ch * s / av * p[6];
+                let b = sh * s / av;
+                let stcv = sh * c;
+                let nstcv = -stcv;
+                let ctcv = c * ch;
+                x += p[0] * (stcv * ctcv + cc * b * sysz) * ni;
+                y += p[0] * (nstcv * b * ay + cc * ay * ctcv) * ni;
+                z += p[0] * (nstcv * b * az + cc * az * ctcv) * ni;
+            }
+            if d[64] != 0.0 {
+                let p = &d[64..71];
+                let av = hyp * p[5];
+                let (s, c, sh, ch) = ((ax * p[1]).sin(), (ax * p[2]).cos(), (av * p[3]).sinh(), (av * p[4]).cosh());
+                let cc = amount * c * sh / av * p[6];
+                x += p[0] * amount * s * ch;
+                y += p[0] * cc * ay;
+                z += p[0] * cc * az;
+            }
+            if d[71] != 0.0 {
+                let p = &d[71..78];
+                let av = hyp * p[5];
+                let (s, c, sh, ch) = ((av * p[3]).sin(), (av * p[4]).cos(), (ax * p[1]).sinh(), (ax * p[2]).cosh());
+                let cc = amount * ch * s / av * p[6];
+                x += p[0] * amount * sh * c;
+                y += p[0] * cc * ay;
+                z += p[0] * cc * az;
+            }
+            v.x += x;
+            v.y += y;
+            v.z += z;
+        },
+        prepare: None,
+        wgsl: "fn quaternion_trig(base: u32, ax: f32, hyp: f32, hyp_trig: bool) -> vec4<f32> {
+  // (s, c, sh, ch): trigonometric functions of x and hyperbolic ones of |v|, or swapped
+  let av = hyp * prm[base + 5u];
+  if (hyp_trig) {
+    return vec4<f32>(sin(av * prm[base + 3u]), cos(av * prm[base + 4u]), sinh(ax * prm[base + 1u]), cosh(ax * prm[base + 2u]));
+  }
+  return vec4<f32>(sin(ax * prm[base + 1u]), cos(ax * prm[base + 2u]), sinh(av * prm[base + 3u]), cosh(av * prm[base + 4u]));
+}
+@body
+let ax = a.x;
+let ay = a.y;
+let az = a.z;
+var q = vec3<f32>(0.0);
+let hyp = length(vec2<f32>(ay, az));
+let r2 = ax * ax + ay * ay + az * az;
+let sysz = ay * ay + az * az;
+let yz = vec2<f32>(ay, az);
+if (D(0) != 0.0) {
+  let t = quaternion_trig(base, ax, hyp, false);
+  let av = hyp * D(5);
+  let cc = AMOUNT * t.x * t.z / av * D(6);
+  q += D(0) * vec3<f32>(AMOUNT * t.y * t.w, cc * yz);
+}
+if (D(7) != 0.0) {
+  let t = quaternion_trig(base + 7u, ax, hyp, true);
+  let av = hyp * D(12);
+  let cc = AMOUNT * t.z * t.x / av * D(13);
+  q += D(7) * vec3<f32>(AMOUNT * t.w * t.y, cc * yz);
+}
+if (D(14) != 0.0) {
+  let t = quaternion_trig(base + 14u, ax, hyp, false);
+  let av = hyp * D(19);
+  let ni = AMOUNT / (ax * ax + sysz);
+  let cc = t.y * t.z / av * D(20);
+  let b = -t.x * t.z / av;
+  let stcv = t.x * t.w;
+  let ctcv = t.y * t.w;
+  q += D(14) * vec3<f32>(stcv * ctcv + cc * b * sysz, -(-stcv * b * yz + cc * yz * ctcv)) * ni;
+}
+if (D(21) != 0.0) {
+  let t = quaternion_trig(base + 21u, ax, hyp, true);
+  let av = hyp * D(26);
+  let ni = AMOUNT / (ax * ax + sysz);
+  let cc = t.w * t.x / av * D(27);
+  let b = t.z * t.x / av;
+  let stcv = t.z * t.y;
+  let ctcv = t.w * t.y;
+  q += D(21) * vec3<f32>(stcv * ctcv + cc * b * sysz, -stcv * b * yz + cc * yz * ctcv) * ni;
+}
+if (D(28) != 0.0) {
+  let t = quaternion_trig(base + 28u, ax, hyp, false);
+  let av = hyp * D(33);
+  let ni = AMOUNT / r2;
+  let cc = ni * t.y * t.z / av * D(34);
+  q += D(28) * vec3<f32>(t.x * t.w * ni, -cc * yz);
+}
+if (D(35) != 0.0) {
+  let t = quaternion_trig(base + 35u, ax, hyp, true);
+  let av = hyp * D(40);
+  let ni = AMOUNT / r2;
+  let cc = ni * t.w * t.x / av * D(41);
+  q += D(35) * vec3<f32>(t.z * t.y * ni, -cc * yz);
+}
+if (D(42) != 0.0) {
+  let e = exp(ax * D(43));
+  let av = hyp * D(46);
+  let ea = e * sin(av * D(44)) / av * D(47);
+  q += D(42) * AMOUNT * vec3<f32>(e * cos(av * D(45)), ea * yz);
+}
+if (D(48) != 0.0) {
+  let cc = AMOUNT * atan2(hyp, ax) / hyp;
+  q += D(48) * vec3<f32>(log(ax * ax + hyp * hyp) * (0.5 * AMOUNT / log(D(49))), cc * yz);
+}
+if (D(50) != 0.0) {
+  let t = quaternion_trig(base + 50u, -ax, hyp, false);
+  let av = hyp * D(55);
+  let ni = AMOUNT / r2;
+  let cc = ni * t.x * t.z / av * D(56);
+  q += D(50) * vec3<f32>(t.y * t.w * ni, -cc * yz);
+}
+if (D(57) != 0.0) {
+  let t = quaternion_trig(base + 57u, ax, hyp, true);
+  let av = hyp * D(62);
+  let ni = AMOUNT / r2;
+  let cc = ni * t.z * t.x / av * D(63);
+  q += D(57) * vec3<f32>(t.w * t.y * ni, -cc * yz);
+}
+if (D(78) != 0.0) {
+  let t = quaternion_trig(base + 78u, ax, hyp, false);
+  let av = hyp * D(83);
+  let ni = AMOUNT / (ax * ax + sysz);
+  let cc = t.y * t.z / av * D(84);
+  let b = -t.x * t.z / av;
+  let stcv = t.x * t.w;
+  let ctcv = t.y * t.w;
+  q += D(78) * vec3<f32>(stcv * ctcv + cc * b * sysz, -stcv * b * yz + cc * yz * ctcv) * ni;
+}
+if (D(85) != 0.0) {
+  let t = quaternion_trig(base + 85u, ax, hyp, true);
+  let av = hyp * D(90);
+  let ni = AMOUNT / (ax * ax + sysz);
+  let cc = t.w * t.x / av * D(91);
+  let b = t.z * t.x / av;
+  let stcv = t.z * t.y;
+  let ctcv = t.y * t.w;
+  q += D(85) * vec3<f32>(stcv * ctcv + cc * b * sysz, -stcv * b * yz + cc * yz * ctcv) * ni;
+}
+if (D(64) != 0.0) {
+  let t = quaternion_trig(base + 64u, ax, hyp, false);
+  let av = hyp * D(69);
+  let cc = AMOUNT * t.y * t.z / av * D(70);
+  q += D(64) * vec3<f32>(AMOUNT * t.x * t.w, cc * yz);
+}
+if (D(71) != 0.0) {
+  let t = quaternion_trig(base + 71u, ax, hyp, true);
+  let av = hyp * D(76);
+  let cc = AMOUNT * t.w * t.x / av * D(77);
+  q += D(71) * vec3<f32>(AMOUNT * t.z * t.y, cc * yz);
+}
+v.x += q.x;
+v.y += q.y;
+v.z += q.z;",
     },
     VarDef {
         name: "post_ztranslate_wf",
