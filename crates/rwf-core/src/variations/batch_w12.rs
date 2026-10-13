@@ -669,6 +669,36 @@ fn rhodonea_cycles(p: &[f64]) -> (f64, f64, f64) {
     (k, cycles, cycles_to_close)
 }
 
+/// `RsquaresFunc`: end points of segment `k` of the recursive squares of depth `level`
+/// (squares in the drawing order of `rSquares.draw`, four sides each).
+fn rsquares_segment(level: i32, k: i64) -> [f64; 4] {
+    let (mut x, mut y, mut size) = (0.5, 0.5, 1.0);
+    let mut s = k / 4;
+    let mut depth = level;
+    while s > 0 {
+        s -= 1;
+        // number of squares below a child: (4^(depth-1) - 1) / 3
+        let sub = ((1i64 << (2 * (depth - 1))) - 1) / 3;
+        let child = s / sub;
+        s %= sub;
+        let (cx, cy) = match child {
+            0 => (x - size / 2.0, y - size / 2.0),
+            1 => (x - size / 2.0, y + size / 2.0),
+            2 => (x + size / 2.0, y - size / 2.0),
+            _ => (x + size / 2.0, y + size / 2.0),
+        };
+        (x, y, size) = (cx, cy, size / 2.2);
+        depth -= 1;
+    }
+    let (x0, x1, y0, y1) = (x - size / 2.0, x + size / 2.0, y - size / 2.0, y + size / 2.0);
+    match k % 4 {
+        0 => [x0, y0, x0, y1],
+        1 => [x0, y1, x1, y1],
+        2 => [x1, y1, x1, y0],
+        _ => [x1, y0, x0, y0],
+    }
+}
+
 /// In-place `Complex` operation.
 type ComplexOp = fn(&mut Complex);
 
@@ -5642,6 +5672,234 @@ v.y += AMOUNT * (AMOUNT / d * a.y / e);
 v.z = tpz + AMOUNT * (AMOUNT / d * ttz / e);",
     ),
     VarDef {
+        name: "rsquares_js",
+        params: &[
+            ParamDef::int("level", 2.0, 1.0, 9.0),
+            ParamDef::int("show_lines", 1.0, 0.0, 1.0),
+            ParamDef::new("line_thickness", 0.5),
+            ParamDef::int("show_points", 0.0, 0.0, 1.0),
+            ParamDef::new("point_thickness", 3.0),
+        ],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            // d = [level, show_lines, line_thickness, show_points, point_thickness, segments,
+            //      line_thickness / 100, point_thickness / 100, line_threshold, point_threshold]
+            // Java cycles through the segments; the position is kept per render thread here.
+            let slot = state_slot(ctx, d, 0, [0.0; 2]);
+            let k = slot[0] as i64;
+            slot[0] = ((k + 1) % d[5] as i64) as f64;
+            let [x1, y1, x2, y2] = rsquares_segment(d[0] as i32, k);
+            let rnd = ctx.random();
+            let (mut ox, mut oy) = (0.0, 0.0);
+            if rnd < d[8] {
+                let (xdiff, ydiff) = (x2 - x1, y2 - y1);
+                let m = if xdiff == 0.0 { 10000.0 } else { ydiff / xdiff };
+                let len = ((xdiff * xdiff) + (ydiff * ydiff)).sqrt();
+                let dd = ctx.random() * len;
+                let mut xo = dd / (1.0 + m * m).sqrt();
+                if x2 < x1 {
+                    xo = -xo;
+                }
+                let mut yo = (m * xo).abs();
+                if y2 < y1 {
+                    yo = -yo;
+                }
+                if d[6] != 0.0 {
+                    xo += (ctx.random() - 0.5) * d[6];
+                    yo += (ctx.random() - 0.5) * d[6];
+                }
+                (ox, oy) = (x1 + xo, y1 + yo);
+            } else if rnd <= d[9] {
+                let (mut xo, mut yo) = (0.0, 0.0);
+                if d[7] != 0.0 {
+                    let ro = ctx.random() * d[7];
+                    let ra = ctx.random() * M_2PI;
+                    (xo, yo) = (ro * ra.cos(), ro * ra.sin());
+                }
+                (ox, oy) = (x1 + xo, y1 + yo);
+            }
+            v.x += amount * ox;
+            v.y += amount * oy;
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: Some(|p, _| {
+            let level = limit_value(ftoi(p[0]), 1, 9);
+            let (sl, sp) = ((p[1] as i32) as f64, (p[3] as i32) as f64);
+            let sum = sl + sp;
+            let (lf, pf) = (sl / sum, sp / sum);
+            let nseg = 4 * ((1i64 << (2 * level)) - 1) / 3;
+            vec![level as f64, sl, p[2], sp, p[4], nseg as f64, p[2] / 100.0, p[4] / 100.0, lf, lf + pf]
+        }),
+        // GPU: a random segment per call instead of the cycling order.
+        wgsl: "fn rsquares_js_segment(level: i32, k: i32) -> vec4<f32> {
+  var c = vec2<f32>(0.5, 0.5);
+  var size = 1.0;
+  var s = k / 4;
+  var depth = level;
+  while (s > 0) {
+    s -= 1;
+    let sub = ((1 << u32(2 * (depth - 1))) - 1) / 3;
+    let child = s / sub;
+    s = s % sub;
+    let h = size / 2.0;
+    if (child == 0) { c = c + vec2<f32>(-h, -h); } else if (child == 1) { c = c + vec2<f32>(-h, h); }
+    else if (child == 2) { c = c + vec2<f32>(h, -h); } else { c = c + vec2<f32>(h, h); }
+    size = size / 2.2;
+    depth -= 1;
+  }
+  let h = size / 2.0;
+  let x0 = c.x - h;
+  let x1 = c.x + h;
+  let y0 = c.y - h;
+  let y1 = c.y + h;
+  let side = k % 4;
+  if (side == 0) { return vec4<f32>(x0, y0, x0, y1); }
+  if (side == 1) { return vec4<f32>(x0, y1, x1, y1); }
+  if (side == 2) { return vec4<f32>(x1, y1, x1, y0); }
+  return vec4<f32>(x1, y0, x0, y0);
+}
+@body
+let nseg = i32(D(5));
+let seg = rsquares_js_segment(i32(D(0)), min(i32(rnd() * f32(nseg)), nseg - 1));
+let x1 = seg.x;
+let y1 = seg.y;
+let x2 = seg.z;
+let y2 = seg.w;
+let rn = rnd();
+var o = vec2<f32>(0.0);
+if (rn < D(8)) {
+  let xdiff = x2 - x1;
+  let ydiff = y2 - y1;
+  var m = 10000.0;
+  if (xdiff != 0.0) { m = ydiff / xdiff; }
+  let dd = rnd() * sqrt(xdiff * xdiff + ydiff * ydiff);
+  var xo = dd / sqrt(1.0 + m * m);
+  if (x2 < x1) { xo = -xo; }
+  var yo = abs(m * xo);
+  if (y2 < y1) { yo = -yo; }
+  if (D(6) != 0.0) {
+    xo += (rnd() - 0.5) * D(6);
+    yo += (rnd() - 0.5) * D(6);
+  }
+  o = vec2<f32>(x1 + xo, y1 + yo);
+} else if (rn <= D(9)) {
+  var off = vec2<f32>(0.0);
+  if (D(7) != 0.0) {
+    let ro = rnd() * D(7);
+    let ra = rnd() * TWO_PI;
+    off = vec2<f32>(ro * cos(ra), ro * sin(ra));
+  }
+  o = vec2<f32>(x1, y1) + off;
+}
+v.x += AMOUNT * o.x;
+v.y += AMOUNT * o.y;
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "ruffle",
+        params: &[ParamDef::new("freq", 3.0), ParamDef::new("amp", 0.3)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let fa = java_max(d[0].abs(), 0.01);
+            let cell = (a.x * fa).floor();
+            let lx = a.x * fa - cell;
+            let dir = if cell - 2.0 * (cell / 2.0).floor() > 0.5 { 1.0 } else { -1.0 };
+            let wave = d[1] * (M_PI * lx).sin() * dir;
+            v.x = amount * a.x;
+            v.y = amount * (a.y + wave);
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "let fa = max(abs(D(0)), 0.01);
+let cell = floor(a.x * fa);
+let lx = a.x * fa - cell;
+var dir = -1.0;
+if (cell - 2.0 * floor(cell / 2.0) > 0.5) { dir = 1.0; }
+v.x = AMOUNT * a.x;
+v.y = AMOUNT * (a.y + D(1) * sin(PI * lx) * dir);
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "satin",
+        params: &[ParamDef::new("freq", 4.0), ParamDef::new("sheen", 0.2)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let f = java_max(d[0].abs(), 0.01);
+            let d1 = (a.x + a.y) * 0.7071067811865476;
+            let d2 = (a.x - a.y) * 0.7071067811865476;
+            v.x += amount * (a.x + d[1] * (f * d1).sin());
+            v.y += amount * (a.y + d[1] * (f * d2).cos());
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "let f = max(abs(D(0)), 0.01);
+let d1 = (a.x + a.y) * 0.7071067811865476;
+let d2 = (a.x - a.y) * 0.7071067811865476;
+v.x += AMOUNT * (a.x + D(1) * sin(f * d1));
+v.y += AMOUNT * (a.y + D(1) * cos(f * d2));
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "sattractor_js",
+        params: &[ParamDef::int("m", 10.0, 2.0, 12.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            // d = [m]
+            let m = d[0];
+            let l = (ctx.random() * m) as i32 + 1;
+            let an = 2.0 * M_PI * l as f64 / m;
+            let (bl, al) = (an.sin(), an.cos());
+            let (mut x, mut y) = if ctx.random() < 0.5 {
+                (a.x / 2.0 + al, a.y / 2.0 + bl)
+            } else {
+                (a.x * al + a.y * bl + a.x * a.x * bl, a.y * al - a.x * bl + a.x * a.x * al)
+            };
+            x /= 2.0;
+            y /= 2.0;
+            v.x += x * amount;
+            v.y += y * amount;
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: Some(|p, _| vec![((p[0] as i32).clamp(2, 12)) as f64]),
+        wgsl: "let m = D(0);
+let l = f32(i32(rnd() * m) + 1);
+let an = 2.0 * PI * l / m;
+let al = cos(an);
+let bl = sin(an);
+var x = a.x * al + a.y * bl + a.x * a.x * bl;
+var y = a.y * al - a.x * bl + a.x * a.x * al;
+if (rnd() < 0.5) {
+  x = a.x / 2.0 + al;
+  y = a.y / 2.0 + bl;
+}
+v.x += x / 2.0 * AMOUNT;
+v.y += y / 2.0 * AMOUNT;
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "schwarz_christoffel",
+        params: &[ParamDef::new("scale", 1.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let s = java_max(d[0].abs(), 0.01);
+            let ex = (M_PI * a.x / s).exp();
+            v.x += amount * ex * (M_PI * a.y / s).cos();
+            v.y += amount * ex * (M_PI * a.y / s).sin();
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "let s = max(abs(D(0)), 0.01);
+let ex = exp(PI * a.x / s);
+v.x += AMOUNT * ex * cos(PI * a.y / s);
+v.y += AMOUNT * ex * sin(PI * a.y / s);
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
         name: "post_ztranslate_wf",
         params: &[],
         kind: VarKind::Post,
@@ -5653,3 +5911,33 @@ v.z = tpz + AMOUNT * (AMOUNT / d * ttz / e);",
         wgsl: "v.z += AMOUNT;",
     },
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `rSquares.draw` of JWildfire: the point list of the recursive squares.
+    fn rsquares_points(n: i32, x: f64, y: f64, size: f64, pts: &mut Vec<[f64; 2]>) {
+        if n == 0 {
+            return;
+        }
+        let (h0, h1) = (x - size / 2.0, x + size / 2.0);
+        let (v0, v1) = (y - size / 2.0, y + size / 2.0);
+        pts.extend([[h0, v0], [h0, v1], [h0, v1], [h1, v1], [h1, v1], [h1, v0], [h1, v0], [h0, v0]]);
+        for (cx, cy) in [(h0, v0), (h0, v1), (h1, v0), (h1, v1)] {
+            rsquares_points(n - 1, cx, cy, size / 2.2, pts);
+        }
+    }
+
+    #[test]
+    fn rsquares_segments_follow_the_drawing_order() {
+        for level in 1..=5 {
+            let mut pts = Vec::new();
+            rsquares_points(level, 0.5, 0.5, 1.0, &mut pts);
+            for k in 0..pts.len() / 2 {
+                let s = rsquares_segment(level, k as i64);
+                assert_eq!(s, [pts[2 * k][0], pts[2 * k][1], pts[2 * k + 1][0], pts[2 * k + 1][1]], "level {level} segment {k}");
+            }
+        }
+    }
+}
