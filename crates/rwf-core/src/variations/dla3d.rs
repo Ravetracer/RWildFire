@@ -21,8 +21,9 @@
 //! cluster, displayed as blurred nodes and junctions or as optional node/junction meshes.
 //!
 //! The cluster is always grown with JWildfire's single-thread algorithm (the multi-threaded one
-//! is not deterministic). The transform draws from the per-thread generator instead of the
-//! variation's shared `MarsagliaRandomGenerator`.
+//! is not deterministic). The transform draws from a `MarsagliaRandomGenerator` stream seeded
+//! with `seed`, per render thread (JWildfire: per instance, re-seeded in `init`); the GPU uses
+//! the shared random generator.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -211,6 +212,12 @@ fn load_mesh(d: &mut Vec<f64>, o: usize, p: usize, obj: &[u8], colormap: &[u8]) 
     }
 }
 
+/// `AbstractRandomGenerator.random(int)`.
+fn marsaglia_int(rg: &mut Marsaglia, n: usize) -> usize {
+    let r = (rg.random() * n as f64) as usize;
+    r.min(n.saturating_sub(1))
+}
+
 struct Sample {
     x: f64,
     y: f64,
@@ -220,8 +227,8 @@ struct Sample {
 
 /// `getRawSampleFromNodeMesh` / `getRawSampleFromJunctMesh`: `o` = mesh block, `p` = index of
 /// the mesh parameters, `rot` = point record whose rotation applies.
-fn mesh_sample(d: &[f64], ctx: &mut Ctx, o: usize, p: usize, scale: f64, default_color: f64, rot: Option<usize>) -> Sample {
-    let k = ctx.random_int(d[o + M_TOTAL] as usize) as f64;
+fn mesh_sample(d: &[f64], ctx: &mut Ctx, rg: &mut Marsaglia, o: usize, p: usize, scale: f64, default_color: f64, rot: Option<usize>) -> Sample {
+    let k = marsaglia_int(rg, d[o + M_TOTAL] as usize) as f64;
     let fs = d[o + M_FSTART] as usize;
     let (mut lo, mut hi) = (0, d[o + M_NF] as usize - 1);
     while lo < hi {
@@ -248,8 +255,8 @@ fn mesh_sample(d: &[f64], ctx: &mut Ctx, o: usize, p: usize, scale: f64, default
         };
         q.map(|c| (c * pre_scale * scale) as f32 as f64)
     });
-    let sqrt_r1 = ctx.random().sqrt();
-    let r2 = ctx.random();
+    let sqrt_r1 = rg.random().sqrt();
+    let r2 = rg.random();
     let (a, b, c) = (1.0 - sqrt_r1, sqrt_r1 * (1.0 - r2), r2 * sqrt_r1);
     let mut s = Sample {
         x: a * pt[0][0] + b * pt[1][0] + c * pt[2][0],
@@ -269,20 +276,20 @@ fn mesh_sample(d: &[f64], ctx: &mut Ctx, o: usize, p: usize, scale: f64, default
 }
 
 /// Random point on a sphere of `radius` around `q`.
-fn sphere_sample(ctx: &mut Ctx, q: &[f64], radius: f64, color: f64) -> Sample {
-    let phi = ctx.random() * (M_PI + M_PI);
-    let theta = ctx.random() * (M_PI + M_PI);
+fn sphere_sample(rg: &mut Marsaglia, q: &[f64], radius: f64, color: f64) -> Sample {
+    let phi = rg.random() * (M_PI + M_PI);
+    let theta = rg.random() * (M_PI + M_PI);
     Sample { x: q[0] + radius * theta.sin() * phi.cos(), y: q[1] + radius * theta.sin() * phi.sin(), z: q[2] + radius * theta.cos(), color }
 }
 
 /// `displayCentreNode` (`outer` false) / `displayOuterNode`.
-fn node(d: &[f64], ctx: &mut Ctx, q: usize, radius: f64, outer: bool) -> Sample {
+fn node(d: &[f64], ctx: &mut Ctx, rg: &mut Marsaglia, q: usize, radius: f64, outer: bool) -> Sample {
     let color = if outer { d[q + 3] } else { 0.0 };
     let radius = radius * d[4];
     if d[NODE + M_TOTAL] < 1.0 {
-        return sphere_sample(ctx, &d[q..q + 3], radius, color);
+        return sphere_sample(rg, &d[q..q + 3], radius, color);
     }
-    let mut s = mesh_sample(d, ctx, NODE, 13, radius, color, outer.then_some(q));
+    let mut s = mesh_sample(d, ctx, rg, NODE, 13, radius, color, outer.then_some(q));
     s.x += d[q];
     s.y += d[q + 1];
     s.z += d[q + 2];
@@ -290,14 +297,14 @@ fn node(d: &[f64], ctx: &mut Ctx, q: usize, radius: f64, outer: bool) -> Sample 
 }
 
 /// `displayJunction`.
-fn junction(d: &[f64], ctx: &mut Ctx, q: usize, pq: usize, min_radius: f64, max_radius: f64, rnd: f64) -> Sample {
+fn junction(d: &[f64], ctx: &mut Ctx, rg: &mut Marsaglia, q: usize, pq: usize, min_radius: f64, max_radius: f64, rnd: f64) -> Sample {
     let radius = min_radius + (max_radius - min_radius) * rnd;
     let default_color = d[q + 3] + (d[pq + 3] - d[q + 3]) * rnd;
     let (ax, ay, az) = (d[pq] - d[q], d[pq + 1] - d[q + 1], d[pq + 2] - d[q + 2]);
     if d[JUNCT + M_TOTAL] < 1.0 {
         let mut s = Sample { x: d[q] + ax * rnd, y: d[q + 1] + ay * rnd, z: d[q + 2] + az * rnd, color: default_color };
         for _ in 0..10 {
-            let (bx, by, bz) = (0.5 - ctx.random(), 0.5 - ctx.random(), 0.5 - ctx.random());
+            let (bx, by, bz) = (0.5 - rg.random(), 0.5 - rg.random(), 0.5 - rg.random());
             let (cx, cy, cz) = (ay * bz - az * by, az * bx - ax * bz, ax * by - ay * bx);
             let r = (cx * cx + cy * cy + cz * cz).sqrt();
             if r > 0.001 {
@@ -309,7 +316,7 @@ fn junction(d: &[f64], ctx: &mut Ctx, q: usize, pq: usize, min_radius: f64, max_
         }
         return s;
     }
-    let mut s = mesh_sample(d, ctx, JUNCT, 19, radius, default_color, Some(q));
+    let mut s = mesh_sample(d, ctx, rg, JUNCT, 19, radius, default_color, Some(q));
     s.x += d[q] + ax * 0.5;
     s.y += d[q + 1] + ay * 0.5;
     s.z += d[q + 2] + az * 0.5;
@@ -322,28 +329,34 @@ fn apply(d: &[f64], ctx: &mut Ctx, v: &mut Pt, amount: f64) {
         v.do_hide = true;
         return;
     }
-    let q = PTS + ctx.random_int(n) * PREC;
-    let rnd = ctx.random();
+    // JWildfire draws from its generator seeded in `init`; here a stream per render thread
+    let key = d.as_ptr() as usize;
+    let mut rg = match ctx.states.get(&key) {
+        Some(st) => Marsaglia { u: st[0] as i32, v: st[1] as i32 },
+        None => Marsaglia::new(d[1] as i64),
+    };
+    let q = PTS + marsaglia_int(&mut rg, n) * PREC;
+    let rnd = rg.random();
     let (inner, outer) = (d[2], d[3]);
     let do_blur = outer > EPSILON;
     let (nodes, junctions) = (d[10] > 0.0, d[11] > 0.0);
     let sample = if d[q + 4] < 0.0 {
-        (nodes && do_blur).then(|| node(d, ctx, q, inner, false))
+        (nodes && do_blur).then(|| node(d, ctx, &mut rg, q, inner, false))
     } else {
         let pq = PTS + d[q + 4] as usize * PREC;
         if do_blur {
             let min_radius = inner + (outer - inner) * d[q + 3];
             let max_radius = inner + (outer - inner) * d[pq + 3];
             if junctions && nodes {
-                if ctx.random() < 0.333 {
-                    Some(node(d, ctx, q, min_radius, true))
+                if rg.random() < 0.333 {
+                    Some(node(d, ctx, &mut rg, q, min_radius, true))
                 } else {
-                    Some(junction(d, ctx, q, pq, min_radius, max_radius, rnd))
+                    Some(junction(d, ctx, &mut rg, q, pq, min_radius, max_radius, rnd))
                 }
             } else if junctions {
-                Some(junction(d, ctx, q, pq, min_radius, max_radius, rnd))
+                Some(junction(d, ctx, &mut rg, q, pq, min_radius, max_radius, rnd))
             } else if nodes {
-                Some(node(d, ctx, q, max_radius, true))
+                Some(node(d, ctx, &mut rg, q, max_radius, true))
             } else {
                 None
             }
@@ -357,6 +370,7 @@ fn apply(d: &[f64], ctx: &mut Ctx, v: &mut Pt, amount: f64) {
             })
         }
     };
+    ctx.states.insert(key, vec![rg.u as f64, rg.v as f64]);
     match sample {
         Some(s) => {
             v.do_hide = false;
