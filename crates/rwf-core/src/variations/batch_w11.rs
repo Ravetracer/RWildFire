@@ -19,6 +19,9 @@
 
 //! Variations ported from the JWildfire sources (batch w11).
 
+// The glsl_* shaders use JWildfire's truncated pi literals.
+#![allow(clippy::approx_constant)]
+
 #[allow(unused_imports)]
 use super::{Ctx, ParamDef, Pt, VarDef, VarKind, simple};
 #[allow(unused_imports)]
@@ -2505,7 +2508,7 @@ v.y += AMOUNT * (gj / 1000000.0 - 0.5);",
             let (time, zoom, p1) = (d[2], d[4], d[5]);
             let ka = M_PI / d[3];
             let mut uv = vec2(2.0 * (px.0 + 0.5) / d[0] - 1.0, 2.0 * (px.1 + 0.5) / GLSL_RES_Y - 1.0) * 12.0;
-            uv *= (0.1 + zoom);
+            uv *= 0.1 + zoom;
             if d[6] as i32 == 1 {
                 let angle = (glsl_mod(glsl_atan2(uv.y, uv.x), 2.0 * ka) - ka).abs() + 0.1 * time;
                 uv = vec2(angle.cos(), angle.sin()) * length(uv);
