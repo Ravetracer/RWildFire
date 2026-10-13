@@ -1106,52 +1106,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "jwf-app"
-version = "0.1.0"
-dependencies = [
- "eframe",
- "egui",
- "egui-phosphor",
- "egui-wgpu",
- "jwf-core",
- "jwf-gpu",
- "png",
- "rfd",
- "wgpu",
-]
-
-[[package]]
-name = "jwf-cli"
-version = "0.1.0"
-dependencies = [
- "jwf-core",
- "jwf-gpu",
- "png",
-]
-
-[[package]]
-name = "jwf-core"
-version = "0.1.0"
-dependencies = [
- "image",
- "naga",
- "png",
- "rayon",
- "thiserror 2.0.21",
-]
-
-[[package]]
-name = "jwf-gpu"
-version = "0.1.0"
-dependencies = [
- "bytemuck",
- "jwf-core",
- "naga",
- "pollster 1.0.1",
- "wgpu",
-]
-
-[[package]]
 name = "khronos-egl"
 version = "6.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2122,6 +2076,52 @@ name = "rustversion"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
+
+[[package]]
+name = "rwf-app"
+version = "0.1.0"
+dependencies = [
+ "eframe",
+ "egui",
+ "egui-phosphor",
+ "egui-wgpu",
+ "png",
+ "rfd",
+ "rwf-core",
+ "rwf-gpu",
+ "wgpu",
+]
+
+[[package]]
+name = "rwf-cli"
+version = "0.1.0"
+dependencies = [
+ "png",
+ "rwf-core",
+ "rwf-gpu",
+]
+
+[[package]]
+name = "rwf-core"
+version = "0.1.0"
+dependencies = [
+ "image",
+ "naga",
+ "png",
+ "rayon",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "rwf-gpu"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "naga",
+ "pollster 1.0.1",
+ "rwf-core",
+ "wgpu",
+]
 
 [[package]]
 name = "same-file"

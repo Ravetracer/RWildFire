@@ -1,0 +1,9 @@
+[package]
+name = "rwf-cli"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+rwf-core = { version = "0.1.0", path = "../rwf-core" }
+rwf-gpu = { version = "0.1.0", path = "../rwf-gpu" }
+png = "0.18.1"

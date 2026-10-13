@@ -1,30 +1,30 @@
-# JWildfire (Rust)
+# RWildFire
 
-A Rust port of [JWildfire](https://github.com/thargor6/JWildfire)'s fractal flame editor, with a GPU renderer (wgpu compute shaders) and a redesigned, flat UI (egui).
+A fractal flame editor in Rust, ported from [JWildfire](https://github.com/thargor6/JWildfire), with a GPU renderer (wgpu compute shaders) and a redesigned, flat UI (egui).
 
 ## Run
 
 ```sh
-cargo run --release -p jwf-app                      # editor
-cargo run --release -p jwf-app -- some.flame        # open a file
-cargo run --release -p jwf-cli -- render in.flame -o out.png -w 1920 -h 1080 -q 1000 --gpu
-cargo run --release -p jwf-cli -- random out_dir 8  # random flames (.flame + .png)
-cargo run --release -p jwf-cli -- render-anim in.flame -o out.mp4 --gpu   # animation (mp4/mov/webm via ffmpeg, or a folder for PNGs)
+cargo run --release -p rwf-app                      # editor
+cargo run --release -p rwf-app -- some.flame        # open a file
+cargo run --release -p rwf-cli -- render in.flame -o out.png -w 1920 -h 1080 -q 1000 --gpu
+cargo run --release -p rwf-cli -- random out_dir 8  # random flames (.flame + .png)
+cargo run --release -p rwf-cli -- render-anim in.flame -o out.mp4 --gpu   # animation (mp4/mov/webm via ffmpeg, or a folder for PNGs)
 ```
 
 ## Workspace
 
 | Crate      | Purpose |
 |------------|---------|
-| `jwf-core` | Flame model, `.flame` reader/writer (JWildfire + flam3 compatible), variations, multi-threaded CPU renderer, log-density filter + gamma (ported 1:1 from `LogDensityFilter` / `GammaCorrectionFilter`), random generators |
-| `jwf-gpu`  | wgpu renderer. A WGSL iteration kernel is generated per flame *structure*; all numbers live in a storage buffer, so parameter edits never recompile |
-| `jwf-app`  | Desktop editor (eframe/egui, shares the wgpu device with the renderer) |
-| `jwf-cli`  | Headless rendering and random flame generation |
+| `rwf-core` | Flame model, `.flame` reader/writer (JWildfire + flam3 compatible), variations, multi-threaded CPU renderer, log-density filter + gamma (ported 1:1 from `LogDensityFilter` / `GammaCorrectionFilter`), random generators |
+| `rwf-gpu`  | wgpu renderer. A WGSL iteration kernel is generated per flame *structure*; all numbers live in a storage buffer, so parameter edits never recompile |
+| `rwf-app`  | Desktop editor (eframe/egui, shares the wgpu device with the renderer) |
+| `rwf-cli`  | Headless rendering and random flame generation |
 
 ### Variations
 
-Each variation is a `VarDef` with a CPU function and a WGSL snippet that read the same prepared data array (`crates/jwf-core/src/variations/`). 509 variations are ported, nearly all of them with GPU support. Pre/post variations of priority 2 (`prepost_*`, `ringtile`) run their inverse in the pre slot and their forward transform in the post slot, as in JWildfire. Unknown variations in loaded files are kept on save and reported in the UI.
-`cargo test -p jwf-gpu` validates every WGSL snippet with naga.
+Each variation is a `VarDef` with a CPU function and a WGSL snippet that read the same prepared data array (`crates/rwf-core/src/variations/`). 509 variations are ported, nearly all of them with GPU support. Pre/post variations of priority 2 (`prepost_*`, `ringtile`) run their inverse in the pre slot and their forward transform in the post slot, as in JWildfire. Unknown variations in loaded files are kept on save and reported in the UI.
+`cargo test -p rwf-gpu` validates every WGSL snippet with naga.
 
 ## Performance
 
@@ -33,8 +33,8 @@ Each variation is a `VarDef` with a CPU function and a WGSL snippet that read th
 | Renderer | Time |
 |----------|------|
 | JWildfire 9.20 (Java, CPU) | 256.7 s |
-| jwf-cli (CPU) | 151.5 s |
-| jwf-cli `--gpu` | 3.3 s |
+| rwf-cli (CPU) | 151.5 s |
+| rwf-cli `--gpu` | 3.3 s |
 
 ## UI concept
 
@@ -59,7 +59,7 @@ Each variation is a `VarDef` with a CPU function and a WGSL snippet that read th
 ## Gradients
 
 - Key-point editor: gradients are fitted to a few color stops that can be dragged, added (click the bar) and recolored
-- Library with ~1600 bundled gradients (flam3 classics, UltraFractal collections), user gradients in `~/.config/jwildfire-rs/gradients`, import of `.ugr` / `.map` / flam3 palette files
+- Library with ~1600 bundled gradients (flam3 classics, UltraFractal collections), user gradients in `~/.config/rwildfire/gradients`, import of `.ugr` / `.map` / flam3 palette files
 - Relative adjustments (shift, hue, saturation, lightness), random gradients
 
 ## Animation

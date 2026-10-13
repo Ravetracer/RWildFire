@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/jwf-core", "crates/jwf-gpu", "crates/jwf-app", "crates/jwf-cli"]
+members = ["crates/rwf-core", "crates/rwf-gpu", "crates/rwf-app", "crates/rwf-cli"]
 
 [workspace.package]
 version = "0.1.0"
