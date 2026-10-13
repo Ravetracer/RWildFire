@@ -182,6 +182,20 @@ impl VariationInstance {
         def.params.iter().position(|p| p.name == name).and_then(|i| self.params.get(i).copied())
     }
 
+    /// Decoded value of a resource parameter (empty if unset).
+    pub fn resource(&self, name: &str) -> String {
+        self.raw_params.iter().find(|(k, _)| k == name).and_then(|(_, v)| crate::resources::hex_decode(v)).unwrap_or_default()
+    }
+
+    /// Sets a resource parameter (stored hex-encoded in `raw_params`, as in JWildfire files).
+    pub fn set_resource(&mut self, name: &str, value: &str) {
+        let hex = crate::resources::hex_encode(value);
+        match self.raw_params.iter_mut().find(|(k, _)| k == name) {
+            Some(e) => e.1 = hex,
+            None => self.raw_params.push((name.to_string(), hex)),
+        }
+    }
+
     pub fn set_param(&mut self, name: &str, value: f64) -> bool {
         if let Some(def) = variations::find(&self.name)
             && let Some(i) = def.params.iter().position(|p| p.name == name)

@@ -751,78 +751,6 @@ fn pre_recip_apply(d: &[f64], ctx: &mut Ctx, a: &mut Pt, v: &mut Pt, amount: f64
 
 pub static DEFS: &[VarDef] = &[
     VarDef {
-        // Color/displacement map resources are not supported yet: without them the plane is
-        // flat and "colormap" leaves the color unchanged (as JWildfire without an image).
-        name: "plane_wf",
-        params: &[
-            ParamDef::new("position", 3.0),
-            ParamDef::new("size", 10.0),
-            ParamDef::int("axis", 2.0, 0.0, 2.0),
-            ParamDef::int("direct_color", 1.0, 0.0, 1.0),
-            ParamDef::int("color_mode", 3.0, 0.0, 3.0),
-            ParamDef::int("blend_colormap", 0.0, 0.0, 1.0),
-            ParamDef::new("displ_amount", 0.0),
-            ParamDef::int("blend_displ_map", 0.0, 0.0, 1.0),
-            ParamDef::int("calc_color_idx", 0.0, 0.0, 1.0),
-            ParamDef::int("receive_only_shadows", 0.0, 0.0, 1.0),
-        ],
-        kind: VarKind::Normal,
-        is_3d: true,
-        apply: |d, ctx, _, v, amount| {
-            // d = [position, size, axis, direct_color, color_mode, ..., receive_only_shadows]
-            let u = 0.5 - ctx.random();
-            let w = 0.5 - ctx.random();
-            let (x, y, z) = match d[2] as i32 {
-                0 => (u * d[1], w * d[1], d[0]),
-                1 => (d[0], u * d[1], w * d[1]),
-                _ => (u * d[1], d[0], w * d[1]),
-            };
-            // setColor(u, v) with (x, y), (y, z) or (z, x)
-            let (cu, cv) = if d[2] as i32 == 2 { (w, u) } else { (u, w) };
-            if d[3] as i32 > 0 {
-                match d[4] as i32 {
-                    0 => {}
-                    2 => v.color = cv + 0.5,
-                    3 => v.color = (cv + 0.5) * (cu + 0.5),
-                    _ => v.color = cu + 0.5,
-                }
-                v.color = v.color.clamp(0.0, 1.0);
-            }
-            if d[9] as i32 == 1 {
-                v.receive_only_shadows = true;
-            }
-            v.x += amount * x;
-            v.y += amount * y;
-            v.z += amount * z;
-        },
-        prepare: Some(|p, _| {
-            let mut d = p.to_vec();
-            d[2] = ftoi_limit(p[2], 0, 2);
-            d[3] = ftoi_limit(p[3], 0, 1);
-            d[4] = ftoi_limit(p[4], 0, 3);
-            d[9] = ftoi_limit(p[9], 0, 1);
-            d
-        }),
-        wgsl: "let u = 0.5 - rnd();
-let w = 0.5 - rnd();
-let axis = i32(D(2));
-var x = u * D(1); var y = D(0); var z = w * D(1);
-var cu = w; var cv = u;
-if (axis == 0) { x = u * D(1); y = w * D(1); z = D(0); cu = u; cv = w; }
-else if (axis == 1) { x = D(0); y = u * D(1); z = w * D(1); cu = u; cv = w; }
-if (i32(D(3)) > 0) {
-  let mode = i32(D(4));
-  if (mode == 2) { v.color = cv + 0.5; }
-  else if (mode == 3) { v.color = (cv + 0.5) * (cu + 0.5); }
-  else if (mode == 1) { v.color = cu + 0.5; }
-  v.color = clamp(v.color, 0.0, 1.0);
-}
-if (i32(D(9)) == 1) { v.rso = 1.0; }
-v.x += AMOUNT * x;
-v.y += AMOUNT * y;
-v.z += AMOUNT * z;",
-    },
-    VarDef {
         name: "pre_dcztransl",
         params: &[
             ParamDef::range("x0", 0.0, 0.0, 1.0),
@@ -1796,7 +1724,6 @@ mod tests {
     use super::*;
 
     const NAMES: &[&str] = &[
-        "plane_wf",
         "pre_dcztransl",
         "pre_disc3d",
         "pre_disc",

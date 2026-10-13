@@ -23,7 +23,7 @@ cargo run --release -p rwf-cli -- render-anim in.flame -o out.mp4 --gpu   # anim
 
 ### Variations
 
-Each variation is a `VarDef` with a CPU function and a WGSL snippet that read the same prepared data array (`crates/rwf-core/src/variations/`). 509 variations are ported, nearly all of them with GPU support. Pre/post variations of priority 2 (`prepost_*`, `ringtile`) run their inverse in the pre slot and their forward transform in the post slot, as in JWildfire. Unknown variations in loaded files are kept on save and reported in the UI.
+Each variation is a `VarDef` with a CPU function and a WGSL snippet that read the same prepared data array (`crates/rwf-core/src/variations/`). 511 variations are ported, nearly all of them with GPU support. Pre/post variations of priority 2 (`prepost_*`, `ringtile`) run their inverse in the pre slot and their forward transform in the post slot, as in JWildfire. Unknown variations in loaded files are kept on save and reported in the UI. Variations with external resources (`plane_wf` color/displacement maps, `obj_mesh_wf` / `obj_mesh_primitive_wf` meshes) load images and OBJ files once into a cache and pack them into the prepared data array, so the GPU reads them like ordinary parameters; resource values are stored hex-encoded in `.flame` files, as in JWildfire.
 `cargo test -p rwf-gpu` validates every WGSL snippet with naga.
 
 ## Performance
@@ -72,10 +72,9 @@ Each variation is a `VarDef` with a CPU function and a WGSL snippet that read th
 
 ## Status / roadmap
 
-Done: core editor, file compatibility, CPU and GPU renderer, 509 variations (incl. prepost), gradient editing, random generators, mutations, PNG export, density estimation, DOF, layers, animation and video export, adaptive filter, post blur, AI denoiser, solid rendering.
+Done: core editor, file compatibility, CPU and GPU renderer, 511 variations (incl. prepost, image and mesh resources), gradient editing, random generators, mutations, PNG export, density estimation, DOF, layers, animation and video export, adaptive filter, post blur, AI denoiser, solid rendering.
 
 Next:
-- image resources for variations (`plane_wf` color/displacement maps, OBJ meshes)
 - remaining JWildfire variations (~500; 13 batch files are prepared but empty, see `variations/batch_w*.rs` and the `wNN` features)
 - resource-based variations (images, formulas, subflames, SVG, text)
 

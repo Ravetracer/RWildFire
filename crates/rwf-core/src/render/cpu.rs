@@ -382,7 +382,7 @@ fn render_thread(sh: Arc<Shared>, seed: u64) {
         sh.packets.iter().map(|pk| pk.prepared.layers.iter().map(|_| LayerState { p: Pt::default(), xf: 0, valid: false }).collect()).collect();
     for (pk, sts) in sh.packets.iter().zip(states.iter_mut()) {
         for (l, st) in pk.prepared.layers.iter().zip(sts.iter_mut()) {
-            ctx.palette.clone_from(&l.palette);
+            ctx.set_palette(&l.palette);
             pre_fuse(l, st, &mut ctx);
         }
     }
@@ -397,7 +397,7 @@ fn render_thread(sh: Arc<Shared>, seed: u64) {
             let layers = &pk.prepared.layers;
             for (l, st) in layers.iter().zip(sts.iter_mut()) {
                 if ctx.palette != l.palette {
-                    ctx.palette.clone_from(&l.palette);
+                    ctx.set_palette(&l.palette);
                 }
                 if !st.valid || st.p.is_bad() {
                     pre_fuse(l, st, &mut ctx);
@@ -636,7 +636,7 @@ fn shadow_frames(pk: &Packet, flame: &Flame) -> Vec<Option<ShadowFrame>> {
     let enough = |points: &[Vec<[f32; 3]>]| lights.proj.iter().zip(points).all(|(m, p)| m.is_none() || p.len() >= solid::SHADOW_MAP_PRE_SAMPLES);
     'outer: for _ in 0..64 {
         for layer in &pk.prepared.layers {
-            ctx.palette.clone_from(&layer.palette);
+            ctx.set_palette(&layer.palette);
             let mut st = LayerState { p: Pt::default(), xf: 0, valid: false };
             pre_fuse(layer, &mut st, &mut ctx);
             if !st.valid {

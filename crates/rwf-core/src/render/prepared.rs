@@ -158,7 +158,7 @@ fn prepare_xform(xf: &XForm, color_type: ColorType, colormap: &[[f64; 3]], missi
             }
             continue;
         };
-        let data = def.prepare_data(&var.params, &xf.coefs);
+        let data = variations::prepare_instance(def, var, &xf.coefs);
         let step = |def, mode| VarStep { def, mode, amount: var.amount, data: data.clone() };
         // Slot selection of `XForm.createTransformations`: priority 2 and -2 put a variation into
         // both the pre and the post slot.

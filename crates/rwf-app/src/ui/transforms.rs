@@ -383,7 +383,9 @@ fn variations_editor(ui: &mut Ui, doc: &mut Document, st: &mut TransformsState) 
                         for (pi, p) in def.params.iter().enumerate() {
                             widgets::label(ui, p.name);
                             let v = &mut var.params[pi];
-                            if p.integer {
+                            if def.name == "obj_mesh_primitive_wf" && p.name == "primitive" {
+                                primitive_combo(ui, vi, v);
+                            } else if p.integer {
                                 let mut iv = v.round() as i64;
                                 ui.add(egui::DragValue::new(&mut iv).speed(0.05).range(p.min as i64..=p.max as i64 * 4));
                                 *v = iv as f64;
@@ -392,9 +394,20 @@ fn variations_editor(ui: &mut Ui, doc: &mut Document, st: &mut TransformsState) 
                             }
                             ui.end_row();
                         }
+                        if let Some(rv) = variations::resources_of(&var.name) {
+                            for r in rv.resources {
+                                widgets::label(ui, r.name);
+                                resource_picker(ui, var, r);
+                                ui.end_row();
+                            }
+                        }
                     });
                 }
+                let res = variations::resources_of(&var.name).map_or(&[][..], |rv| rv.resources);
                 for (k, v) in &var.raw_params {
+                    if res.iter().any(|r| r.name == k) {
+                        continue;
+                    }
                     ui.label(RichText::new(format!("{k} = {v}")).small().color(theme::TEXT_MUTED));
                 }
             }
@@ -452,6 +465,41 @@ fn variations_editor(ui: &mut Ui, doc: &mut Document, st: &mut TransformsState) 
             xf.variations.push(VariationInstance::new(name, amount));
             st.var_search.clear();
             ui.close();
+        }
+    });
+}
+
+/// Built-in mesh selection of `obj_mesh_primitive_wf`.
+fn primitive_combo(ui: &mut Ui, vi: usize, v: &mut f64) {
+    let prims = rwf_core::mesh::PRIMITIVES;
+    let cur = v.round() as i64;
+    let text = usize::try_from(cur).ok().and_then(|i| prims.get(i)).map_or_else(|| cur.to_string(), |n| n.to_string());
+    egui::ComboBox::from_id_salt(("primitive", vi)).selected_text(text).show_ui(ui, |ui| {
+        for (i, name) in prims.iter().enumerate() {
+            if ui.selectable_label(cur == i as i64, *name).clicked() {
+                *v = i as f64;
+            }
+        }
+    });
+}
+
+/// File name of a variation resource (image or OBJ mesh), typed or picked.
+fn resource_picker(ui: &mut Ui, var: &mut VariationInstance, r: &variations::ResDef) {
+    let (kind, exts): (&str, &[&str]) = match r.kind {
+        variations::ResKind::ImageFile => ("Image", &["png", "jpg", "jpeg"]),
+        variations::ResKind::ObjFile => ("Wavefront OBJ", &["obj"]),
+    };
+    let mut value = var.resource(r.name);
+    ui.horizontal(|ui| {
+        let mut changed = ui.add(egui::TextEdit::singleline(&mut value).desired_width(140.0).hint_text(format!("{kind} file"))).changed();
+        if ui.small_button("…").clicked()
+            && let Some(p) = rfd::FileDialog::new().add_filter(kind, exts).pick_file()
+        {
+            value = p.display().to_string();
+            changed = true;
+        }
+        if changed {
+            var.set_resource(r.name, &value);
         }
     });
 }

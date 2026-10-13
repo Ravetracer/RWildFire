@@ -44,6 +44,7 @@ pub mod glsl;
 pub mod noise;
 
 mod basic;
+pub mod resource_vars;
 mod batch_a;
 mod batch_b;
 mod batch_c;
@@ -161,13 +162,43 @@ pub struct Ctx {
     pub rng: Rng,
     /// Flame flag `preserve_z`: 2D variations pass the z coordinate through when set.
     pub preserve_z: bool,
-    /// Gradient (0..255 RGB) of the layer currently being iterated.
+    /// Gradient (0..255 RGB) of the layer currently being iterated. Set it with
+    /// [`Ctx::set_palette`], which also resets the palette lookup cache.
     pub palette: Vec<[u8; 3]>,
+    uv_idx_cache: HashMap<(i32, i32, i32), f64>,
 }
 
 impl Ctx {
     pub fn new(seed: u64, preserve_z: bool) -> Self {
-        Self { rng: Rng::new(seed), preserve_z, palette: vec![[0, 0, 0]; 256] }
+        Self { rng: Rng::new(seed), preserve_z, palette: vec![[0, 0, 0]; 256], uv_idx_cache: HashMap::new() }
+    }
+    pub fn set_palette(&mut self, palette: &[[u8; 3]]) {
+        self.palette.clear();
+        self.palette.extend_from_slice(palette);
+        self.uv_idx_cache.clear();
+    }
+    /// Gradient position (0..1) of the gradient color nearest to an RGB color
+    /// (`UVColorMapper.getUVColorIdx`; compares against the render palette, 0..200 scale).
+    pub fn uv_color_idx(&mut self, r: i32, g: i32, b: i32) -> f64 {
+        if let Some(&v) = self.uv_idx_cache.get(&(r, g, b)) {
+            return v;
+        }
+        let scale = 200.0 / 256.0;
+        let mut nearest = 0;
+        let mut nearest_dist = f64::MAX;
+        for (i, c) in self.palette.iter().enumerate() {
+            let dr = c[0] as f64 * scale - r as f64;
+            let dg = c[1] as f64 * scale - g as f64;
+            let db = c[2] as f64 * scale - b as f64;
+            let dist = dr * dr + dg * dg + db * db;
+            if dist < nearest_dist {
+                nearest_dist = dist;
+                nearest = i;
+            }
+        }
+        let v = nearest as f64 / (self.palette.len().max(2) - 1) as f64;
+        self.uv_idx_cache.insert((r, g, b), v);
+        v
     }
     /// Gradient color `i` (clamped to 0..255) as 0..255 floats (JWildfire `RGBPalette.getColor`).
     #[inline]
@@ -293,6 +324,50 @@ impl VarDef {
     }
 }
 
+/// Kind of a resource parameter (JWildfire `RessourceType`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResKind {
+    /// PNG / JPEG image file name.
+    ImageFile,
+    /// Wavefront OBJ file name.
+    ObjFile,
+}
+
+/// A resource parameter: a string value (e.g. a file name), stored hex-encoded in `.flame` files.
+#[derive(Clone, Copy, Debug)]
+pub struct ResDef {
+    pub name: &'static str,
+    pub kind: ResKind,
+}
+
+/// Completes prepared data with loaded resources. `res` holds the decoded resource values,
+/// aligned with [`ResourceVar::resources`] (empty strings for unset ones).
+pub type LoadFn = fn(d: &mut Vec<f64>, res: &[String]);
+
+/// Resource declaration of a variation. Resources are loaded on the CPU and packed into the
+/// prepared data array, so both renderers read them like ordinary parameters.
+pub struct ResourceVar {
+    pub name: &'static str,
+    pub resources: &'static [ResDef],
+    pub load: LoadFn,
+}
+
+/// Resource declaration of a variation, if it has resources.
+pub fn resources_of(name: &str) -> Option<&'static ResourceVar> {
+    let name = find(name)?.name;
+    resource_vars::RESOURCES.iter().find(|r| r.name == name)
+}
+
+/// Prepared data of a variation instance, including its resources.
+pub fn prepare_instance(def: &VarDef, inst: &crate::model::VariationInstance, coefs: &Affine) -> Vec<f64> {
+    let mut d = def.prepare_data(&inst.params, coefs);
+    if let Some(rv) = resources_of(def.name) {
+        let res: Vec<String> = rv.resources.iter().map(|r| inst.resource(r.name)).collect();
+        (rv.load)(&mut d, &res);
+    }
+    d
+}
+
 /// Convenience constructor for parameterless variations.
 pub const fn simple(name: &'static str, is_3d: bool, apply: ApplyFn, wgsl: &'static str) -> VarDef {
     VarDef { name, params: &[], kind: VarKind::Normal, is_3d, apply, prepare: None, wgsl }
@@ -311,7 +386,7 @@ fn registry() -> &'static Registry {
     REG.get_or_init(|| {
         let mut defs: Vec<&'static VarDef> = Vec::new();
         #[allow(unused_mut)]
-        let mut lists: Vec<&'static [VarDef]> = vec![basic::DEFS, batch_a::DEFS, batch_b::DEFS, batch_c::DEFS, batch_d::DEFS];
+        let mut lists: Vec<&'static [VarDef]> = vec![basic::DEFS, resource_vars::DEFS, batch_a::DEFS, batch_b::DEFS, batch_c::DEFS, batch_d::DEFS];
         #[cfg(feature = "w01")]
         lists.push(batch_w01::DEFS);
         #[cfg(feature = "w02")]

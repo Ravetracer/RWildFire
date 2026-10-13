@@ -69,6 +69,15 @@ overloading, so vector variants of non-builtins get a size suffix (`glsl_mod2`, 
 * Arrays: `var P: array<vec2<f32>, 9>;` dynamic indexing is fine; `fmod` (prelude) is the
   Java `%` for floats, `glsl_mod` the GLSL `mod`.
 
+### Resources (images, meshes, other files)
+
+Variations with JWildfire `getRessourceNames` get an entry in `resource_vars::RESOURCES`
+(`ResourceVar`: resource names/kinds and a `load` function). `prepare` reserves the header
+slots; `load` fills them and appends the resource data to `d` (see `resource_vars.rs`: image
+blocks `[width, height, start]` with packed `r << 16 | g << 8 | b` pixels, meshes as vertex and
+face records). WGSL reads the data through `base` with the `res_*` helpers of
+`wgsl/resource.wgsl`. Loading goes through the caches in `crate::resources` / `crate::mesh`.
+
 ## 3. js.glsl: vectors and matrices
 
 | Java                                 | Rust                                | WGSL                              |

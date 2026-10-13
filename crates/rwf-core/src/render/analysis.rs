@@ -31,7 +31,7 @@ pub fn sample_points(flame: &Flame, n: usize, seed: u64) -> Vec<(f64, f64)> {
         return Vec::new();
     };
     let mut ctx = Ctx::new(seed, prepared.preserve_z);
-    ctx.palette.clone_from(&layer.palette);
+    ctx.set_palette(&layer.palette);
     let mut out = Vec::with_capacity(n);
     let mut restarts = 0;
     'outer: while out.len() < n && restarts < 20 {

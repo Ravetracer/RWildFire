@@ -26,6 +26,7 @@
 //! | `wgsl/glsl.wgsl`         | `glsl_`, `dc_`                  | `glsl` (`G.*`, `DC_BaseFunc`) |
 //! | `wgsl/complex.wgsl`      | `cx_`                           | `complex::Complex` methods    |
 //! | `wgsl/noise.wgsl`        | `noise_`, `NOISE_`              | `noise` (`NoiseTools`, `VoronoiTools`) |
+//! | `wgsl/resource.wgsl`     | `res_`                          | `resource_vars` (images, meshes) |
 
 pub static LIBS: &[&str] = &[
     include_str!("wgsl/math.wgsl"),
@@ -33,6 +34,7 @@ pub static LIBS: &[&str] = &[
     include_str!("wgsl/glsl.wgsl"),
     include_str!("wgsl/complex.wgsl"),
     include_str!("wgsl/noise.wgsl"),
+    include_str!("wgsl/resource.wgsl"),
 ];
 
 #[cfg(test)]
@@ -105,6 +107,12 @@ mod tests {
   pts[0] = v2;
   pts[1] = w2;
   acc += f32(noise_closest(pts, n, v2)) + noise_voronoi(pts, n, 0, v2);
+  // resource.wgsl
+  let ub = u32(n);
+  acc += res_pixel(ub, 1u, n, n).x + res_sample(ub, 1u, x > 0.0, x, y).w + res_image_color(ub, 1u, true, x, y).y;
+  acc += res_image_displ(ub, 2u, false, x, y) + res_uv_color_idx(v3);
+  var mp: Pt;
+  acc += res_mesh(ub, 3u, mp, x).x;
   prm[4] = acc;
 "#;
 
@@ -144,7 +152,7 @@ mod tests {
     /// Library names must carry a library prefix so they cannot clash with variation helpers.
     #[test]
     fn library_function_names_are_prefixed() {
-        const PREFIXES: &[&str] = &["glsl_", "c_", "cx_", "dc_", "noise_", "math_", "java_", "gfx_"];
+        const PREFIXES: &[&str] = &["glsl_", "c_", "cx_", "dc_", "noise_", "math_", "java_", "gfx_", "res_"];
         const PLAIN: &[&str] = &["ftoi", "limit_value", "limit_value_i", "erf", "lgamma"];
         let bad: Vec<String> = lib_function_names()
             .into_iter()
