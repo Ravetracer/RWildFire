@@ -826,6 +826,582 @@ fn snowflake_points(p: &[f64]) -> std::sync::Arc<Vec<[f64; 3]>> {
     res
 }
 
+fn quad_sqrt_safe(x: f64) -> f64 {
+    if x <= 0.0 { 0.0 } else { x.sqrt() }
+}
+
+fn quad_sqrt_safe_e(x: f64) -> f64 {
+    if x < SMALL_EPSILON { 0.0 } else { x.sqrt() }
+}
+
+/// `QuadFunc`: sub variation of one quadrant. `q` = [quad, amount, shiftx, shifty, seed, 1a, 1b];
+/// `cond_1a` is the 1a used in the range test of sub variation 25 (Java uses ll_1a there for
+/// the upper left quadrant). Adds to `acc`; returns false where Java leaves `transform`.
+fn quad_sub(q: &[f64], cond_1a: f64, ctx: &mut Ctx, a: &mut Pt, amount: f64, acc: &mut [f64; 2]) -> bool {
+    let (qa, q1a, q1b) = (q[1], q[5], q[6]);
+    let (x, y) = (a.x, a.y);
+    let am = amount * qa;
+    let bipolar_tau = || 0.5 * ((sqr(x + 1.0) + sqr(y)).ln() - (sqr(x - 1.0) + sqr(y)).ln());
+    let bipolar_sigma = || M_PI - y.atan2(x + 1.0) - y.atan2(1.0 - x);
+    match q[0] as i32 {
+        0 => {
+            acc[0] += am * x;
+            acc[1] += am * y;
+        }
+        1 => {
+            let r = am / (x * x * q1a + y * y * q1b + SMALL_EPSILON);
+            acc[0] += x * r;
+            acc[1] += y * r;
+        }
+        2 | 3 => {
+            let mut z = Complex::new(x, y);
+            if q[0] as i32 == 2 {
+                z.acosech();
+                z.flip();
+            } else {
+                z.acosh();
+            }
+            z.scale(am * M_2_PI);
+            if ctx.random() < 0.5 {
+                acc[1] += z.im;
+                acc[0] += z.re;
+            } else {
+                acc[1] += -z.im;
+                acc[0] += -z.re;
+            }
+        }
+        4 | 6 => {
+            let mut z = Complex::new(x, y);
+            if q[0] as i32 == 4 {
+                z.acoth();
+                z.flip();
+            } else {
+                z.asinh();
+            }
+            z.scale(am * M_2_PI);
+            acc[1] += z.im;
+            acc[0] += z.re;
+        }
+        5 => {
+            let r = 3.0f64.sqrt();
+            let den = (1.0 + r - x).powf(2.0) + y * y;
+            let a0 = 3.0 * (1.0 + r - x) / den - (1.0 + r) / (2.0 + r);
+            let b0 = 3.0 * y / den;
+            let f1x = a0 / (a0 * a0 + b0 * b0);
+            let f1y = -b0 / (a0 * a0 + b0 * b0);
+            let w = (4.0 * ctx.random()) as i32;
+            let (xxx, yyy) = match w % 3 {
+                0 => (a0, b0),
+                1 => (-f1x / 2.0 - f1y * r / 2.0, f1x * r / 2.0 - f1y / 2.0),
+                _ => (-f1x / 2.0 + f1y * r / 2.0, -f1x * r / 2.0 - f1y / 2.0),
+            };
+            acc[0] += xxx * amount * qa;
+            acc[1] += yyy * amount * qa;
+        }
+        7 => {
+            let z = Complex::new(x, y);
+            let mut z2 = Complex::copy_of(&z);
+            z2.scale(-1.0);
+            z2.inc();
+            let mut z3 = Complex::copy_of(&z);
+            z3.inc();
+            z3.div(&z2);
+            z3.log();
+            z3.scale(am * M_2_PI);
+            acc[0] += z3.re;
+            acc[1] += z3.im;
+        }
+        8 => {
+            let norm = 1.0 / M_PI_2 * amount * qa;
+            acc[0] += norm * (q1a * x).atan();
+            acc[1] += norm * (q1b * y).atan();
+        }
+        9 => {
+            let tau = bipolar_tau();
+            let mut sigma = bipolar_sigma();
+            let (bcn_pi, pi_bcn) = (q1a * M_1_PI, M_PI / q1a);
+            let bca_bcn = M_PI * q1b / q1a;
+            let alt = (sigma * bcn_pi) as i32;
+            sigma = if alt % 2 == 0 {
+                alt as f64 * pi_bcn + fmod(sigma + bca_bcn, pi_bcn)
+            } else {
+                alt as f64 * pi_bcn + fmod(sigma - bca_bcn, pi_bcn)
+            };
+            let temp = tau.cosh() - sigma.cos();
+            acc[0] += am * tau.sinh() / temp;
+            acc[1] += am * sigma.sin() / temp;
+        }
+        10 | 11 => {
+            let mut tau = bipolar_tau();
+            let mut sigma = bipolar_sigma();
+            if q[0] as i32 == 10 {
+                if tau < q1a && -tau < q1a {
+                    tau = fmod(tau + q1a + q1b * q1a, 2.0 * q1a) - q1a;
+                }
+            } else {
+                sigma = sigma + tau * q1b + q1a / tau;
+            }
+            let temp = tau.cosh() - sigma.cos();
+            if temp == 0.0 {
+                return false;
+            }
+            acc[0] += am * tau.sinh() / temp;
+            acc[1] += am * sigma.sin() / temp;
+        }
+        12 => {
+            let mut tau = bipolar_tau() / q1a + 0.0;
+            let mut sigma = bipolar_sigma() + 0.0;
+            sigma = sigma / q1a + M_2PI / q1a * (ctx.random() * q1a).floor();
+            if x >= 0.0 {
+                tau += q1b;
+            } else {
+                tau -= q1b;
+            }
+            let temp = tau.cosh() - sigma.cos();
+            acc[0] += am * tau.sinh() / temp;
+            acc[1] += am * sigma.sin() / temp;
+        }
+        13 => {
+            let nx = if x < 0.0 { x * q1a } else { x };
+            let ny = if y < 0.0 { y * q1b } else { y };
+            acc[0] += am * nx;
+            acc[1] += am * ny;
+        }
+        14 => {
+            let x2y2 = x * x + y * y;
+            let t = x2y2 + q1b;
+            let x2 = 2.0 * x;
+            let mut yb = 0.5 * (2.0 * y).atan2(x2y2 - 1.0) + -M_PI_2 * q1a;
+            if yb > M_PI_2 {
+                yb = -M_PI_2 + fmod(yb + M_PI_2, M_PI);
+            } else if yb < -M_PI_2 {
+                yb = M_PI_2 - fmod(M_PI_2 - yb, M_PI);
+            }
+            let (f, g) = (t + x2, t - x2);
+            if g == 0.0 || f / g <= 0.0 {
+                return false;
+            }
+            acc[0] += am * 0.25 * M_2_PI * ((t + x2) / (t - x2)).ln();
+            acc[1] += am * M_2_PI * yb;
+        }
+        15 => {
+            let an = x.atan2(y);
+            let r = (x * x + y * y).sqrt() * (q1a + (q1b - q1a) * (0.5 + 0.5 * (6.0 * an).sin()));
+            acc[0] += am * (an.sin() * r);
+            acc[1] += am * (an.cos() * r);
+        }
+        16 => {
+            let wx = am * q1a;
+            let y2 = y * q1b;
+            let r = wx * ((y * x).abs() / (SMALL_EPSILON + x * x + y2 * y2)).sqrt();
+            acc[0] += r * x;
+            acc[1] += r * y2;
+        }
+        17 => {
+            let mut aaa = y.atan2(x);
+            let r = am * (sqr(x) + sqr(y)).sqrt();
+            let (kn_pi, pi_kn) = (q1b * M_1_PI, M_PI / q1b);
+            let ka_kn = M_PI * q1a / q1b;
+            if aaa >= 0.0 {
+                let alt = (aaa * kn_pi) as i32;
+                aaa = if alt % 2 == 0 { alt as f64 * pi_kn + fmod(ka_kn + aaa, pi_kn) } else { alt as f64 * pi_kn + fmod(-ka_kn + aaa, pi_kn) };
+            } else {
+                let alt = (-aaa * kn_pi) as i32;
+                aaa = if alt % 2 != 0 {
+                    -(alt as f64 * pi_kn + fmod(-ka_kn - aaa, pi_kn))
+                } else {
+                    -(alt as f64 * pi_kn + fmod(ka_kn - aaa, pi_kn))
+                };
+            }
+            acc[0] += r * aaa.cos();
+            acc[1] += r * aaa.sin();
+        }
+        18 => {
+            let an = a.atan_yx();
+            let lnr = 0.5 * a.sumsq().ln();
+            let (va, vc, vd) = (2.0 * M_PI / 2.0, q1a / 2.0, q1b / 2.0);
+            let ang = vc * an + vd * lnr + va * (2.0 * ctx.random()).floor();
+            let m = am * (vc * lnr - vd * an).exp();
+            acc[0] += m * ang.cos();
+            acc[1] += m * ang.sin();
+        }
+        19 => {
+            let re = 1.0 + q1a * x + q1b * (sqr(x) - sqr(y));
+            let im = q1a * y + q1b * 2.0 * x * y;
+            let r = am / (sqr(re) + sqr(im));
+            acc[0] += (x * re + y * im) * r;
+            acc[1] += (y * re - x * im) * r;
+        }
+        20 => {
+            let r2 = 1.0 / (x * x + y * y);
+            let r = ((x * x + r2 * 1.0 * y * y).powf(q1b) - (y * y + r2 * 2.0 * x * x).powf(q1b)).clamp(-0.24, 100.0) * q1a;
+            acc[0] += qa * x * (1.0 + r);
+            acc[1] += qa * y * (1.0 + r);
+        }
+        21 => {
+            let rpi = M_PI * (x * x + y * y).sqrt() * q1a;
+            let r = am * a.atan_xy() / M_PI;
+            acc[0] += rpi.sin() * r;
+            acc[1] += rpi.cos() * r;
+        }
+        22 => {
+            let tmp = y * y + x * x + 1.0;
+            let tmp2 = 2.0 * x;
+            let xmax = java_max((quad_sqrt_safe(tmp + tmp2) + quad_sqrt_safe(tmp - tmp2)) * 0.5, 1.0);
+            let t = (x / xmax).clamp(-1.0, 1.0);
+            let mut nu = t.acos();
+            let (ecn_pi, pi_ecn) = (q1a * M_1_PI, M_PI / q1a);
+            let eca_ecn = M_PI * q1b / q1a;
+            let alt = (nu * ecn_pi) as i32;
+            nu = if alt % 2 == 0 { alt as f64 * pi_ecn + fmod(nu + eca_ecn, pi_ecn) } else { alt as f64 * pi_ecn + fmod(nu - eca_ecn, pi_ecn) };
+            if y <= 0.0 {
+                nu *= -1.0;
+            }
+            acc[0] += am * xmax * nu.cos();
+            acc[1] += am * (xmax - 1.0).sqrt() * (xmax + 1.0).sqrt() * nu.sin();
+        }
+        23 => {
+            let tmp = a.sumsq() + 1.0;
+            let tmp2 = 2.0 * x;
+            let xmax = ((tmp + tmp2).sqrt() + (tmp - tmp2).sqrt()) * 0.5;
+            let a1 = (xmax + (xmax - 1.0).sqrt()).ln();
+            let a2 = -(x / xmax).acos();
+            let w = am / 11.57034632;
+            let mut snv = a1.sin();
+            if y > 0.0 {
+                snv = -snv;
+            }
+            acc[0] += w * a2.cosh() * a1.cos();
+            acc[1] += w * a2.sinh() * snv;
+        }
+        24 => {
+            let mut r2 = y * y + x * x;
+            let xx = if q1a >= 0.0 {
+                x
+            } else {
+                r2 = 1.0 / r2;
+                x * r2
+            };
+            let tmp = r2 + 1.0;
+            let tmp2 = 2.0 * xx;
+            let xmax = java_max((quad_sqrt_safe(tmp + tmp2) + quad_sqrt_safe(tmp - tmp2)) * 0.5, 1.0);
+            let mut mu = acosh(xmax);
+            let t = (xx / xmax).clamp(-1.0, 1.0);
+            let mut nu = t.acos();
+            if y < 0.0 {
+                nu *= -1.0;
+            }
+            nu = nu / q1a + M_2PI / q1a * (ctx.random() * q1a).floor();
+            mu /= q1a;
+            acc[0] += am * mu.cosh() * nu.cos();
+            acc[1] += am * mu.sinh() * nu.sin();
+        }
+        25 => {
+            let tmp = y * y + x * x + 1.0;
+            let tmp2 = 2.0 * x;
+            let xmax = java_max((quad_sqrt_safe(tmp + tmp2) + quad_sqrt_safe(tmp - tmp2)) * 0.5, 1.0);
+            let mut mu = acosh(xmax);
+            let t = (x / xmax).clamp(-1.0, 1.0);
+            let mut nu = t.acos();
+            if y < 0.0 {
+                nu *= -1.0;
+            }
+            if mu < cond_1a && -mu < cond_1a {
+                mu = if nu > 0.0 { fmod(mu + q1a + q1b * q1a, 2.0 * q1a) - q1a } else { fmod(mu - q1a - q1b * q1a, 2.0 * q1a) + q1a };
+            }
+            acc[0] += am * mu.cosh() * nu.cos();
+            acc[1] += am * mu.sinh() * nu.sin();
+        }
+        26 => {
+            if y.abs() <= amount {
+                let c2 = (sqr(amount) - sqr(y)).sqrt();
+                if x.abs() <= c2 {
+                    let xn = x + q1a * amount * qa;
+                    if xn.abs() >= c2 {
+                        acc[0] -= am * x;
+                    } else {
+                        acc[0] += am * xn;
+                    }
+                } else {
+                    acc[0] += am * x;
+                }
+                acc[1] += am * y;
+            } else {
+                acc[0] += am * x;
+                acc[1] += am * y;
+            }
+        }
+        27 => {
+            let vv = am / (M_PI / 2.0);
+            let tmp = y * y + x * x + q1a;
+            let x2 = 2.0 * x;
+            let xmax = 0.5 * ((tmp + x2).sqrt() + (tmp - x2).sqrt());
+            let aa = x / xmax;
+            let b = quad_sqrt_safe_e(q1b - aa * aa);
+            acc[0] += vv * aa.atan2(b);
+            if ctx.random() < 0.5 {
+                acc[1] += vv * (xmax + quad_sqrt_safe_e(xmax - 1.0)).ln();
+            } else {
+                acc[1] -= vv * (xmax + quad_sqrt_safe_e(xmax - 1.0)).ln();
+            }
+        }
+        28 => {
+            let r = (x * x + y * y).sqrt();
+            let angle = if !(-SMALL_EPSILON..=SMALL_EPSILON).contains(&x) || !(-SMALL_EPSILON..=SMALL_EPSILON).contains(&y) { x.atan2(y) } else { 0.0 };
+            let ddy = q1b;
+            let ddx = M_PI * (q1a * q1a) + SMALL_EPSILON;
+            let dx2 = ddx * 0.5;
+            let t = angle + ddy - (((angle + ddy) / ddx) as i32) as f64 * ddx;
+            let an = if t > dx2 { angle - dx2 } else { angle + dx2 };
+            acc[0] += am * r * an.sin();
+            acc[1] += am * r * an.cos();
+        }
+        29 => {
+            let expx = x.exp() * 0.5;
+            let expnx = 0.25 / expx;
+            if expx <= SMALL_EPSILON || expnx <= SMALL_EPSILON {
+                return false;
+            }
+            let tmp = expx + expnx - y.cos();
+            if tmp == 0.0 {
+                return false;
+            }
+            let tmp = am / tmp;
+            acc[0] += (expx - expnx) * tmp;
+            acc[1] += y.sin() * tmp;
+        }
+        30 => {
+            let vvar2 = am * 2.0f64.sqrt() / 2.0;
+            let r = (sqr(x) + sqr(y)).sqrt();
+            let sg = if r >= 1.0 { 1.0 } else { -1.0 };
+            if ctx.random() > 0.5 {
+                let dd = (r + x).sqrt();
+                if dd == 0.0 {
+                    return false;
+                }
+                if sg > 0.0 {
+                    acc[0] += vvar2 * dd;
+                } else {
+                    acc[0] -= vvar2 * dd;
+                }
+                acc[1] -= vvar2 / dd * y;
+            } else {
+                let dd = r + x;
+                let dxx = (r * (sqr(y) + sqr(dd))).sqrt();
+                if dxx == 0.0 {
+                    return false;
+                }
+                let r = am / dxx;
+                if sg > 0.0 {
+                    acc[0] += r * dd;
+                } else {
+                    acc[0] -= r * dd;
+                }
+                acc[1] += r * y;
+            }
+        }
+        31 => {
+            let alpha = y.atan2(x);
+            let delta = (alpha / M_PI + 1.0).powf(q1a);
+            let r = if q1b != 0.0 { am * delta / (x * x + y * y + delta) } else { am * (x * x + y * y + delta).sqrt() };
+            acc[0] += r * alpha.cos();
+            acc[1] += r * alpha.sin();
+        }
+        32 => {
+            let an = M_PI / ((sqr(x) + sqr(y)).sqrt() + 1.0);
+            let r = y.atan2(x) * (am * M_1_PI);
+            acc[0] += r * an.cos();
+            acc[1] += r * an.sin();
+        }
+        33 => {
+            let abs_power = ftoi(q1a).unsigned_abs() as usize;
+            let an = (y.atan2(x) + 2.0 * M_PI * ctx.random_int(abs_power) as f64) / q1a;
+            let r = am * (sqr(x) + sqr(y)).powf(q1b / q1a * 0.5);
+            acc[0] += r * an.cos();
+            acc[1] += r * an.sin();
+        }
+        34 => {
+            if q1a != 0.0 {
+                let nr = ((a.x * q1a).floor() as i32) as f64;
+                if (nr >= 0.0 && nr % 2.0 == 1.0) || (nr < 0.0 && nr % 2.0 == 0.0) {
+                    a.x = -a.x;
+                }
+            }
+            if q1b != 0.0 {
+                let nr = ((a.y * q1b).floor() as i32) as f64;
+                if (nr >= 0.0 && nr % 2.0 == 1.0) || (nr < 0.0 && nr % 2.0 == 0.0) {
+                    a.y = -a.y;
+                }
+            }
+            acc[0] += am * a.x;
+            acc[1] += am * a.y;
+        }
+        35 => {
+            let mut rr = (x * x + y * y).sqrt();
+            if rr < amount {
+                let an = y.atan2(x) + q1b + q1a * (am - rr);
+                rr *= am;
+                acc[0] += rr * an.cos() + 0.0;
+                acc[1] += rr * an.sin() - 0.0;
+            } else {
+                rr = am * (1.0 + 0.0 / rr);
+                acc[0] += rr * x + 0.0;
+                acc[1] += rr * y - 0.0;
+            }
+        }
+        36 => {
+            let p2 = q1b / 2.0;
+            let (invp, vp) = if q1b != 0.0 {
+                (1.0 / q1b, if q1a == -1.0 { 0.0 } else { am * (q1a + 1.0).powf(2.0 / q1b) })
+            } else {
+                (100000000000.0, am * (q1a + 1.0).powf(4.0))
+            };
+            let an = y.atan2(x) * q1b;
+            let r = q1a * (sqr(x) + sqr(y)).powf(p2);
+            let (re, im) = (r * an.cos() + 1.0, r * an.sin());
+            let r = (sqr(re) + sqr(im)).powf(invp);
+            let an = im.atan2(re) * 2.0 * invp;
+            let (re, im) = (r * an.cos(), r * an.sin());
+            let rl = vp / sqr(r);
+            acc[0] += rl * (x * re + y * im);
+            acc[1] += rl * (y * re - x * im);
+        }
+        37 => {
+            let r = sqr(x) + sqr(y);
+            if r < 1.0 {
+                if x >= 0.0 {
+                    let xo = (r + 1.0) / (2.0 * x);
+                    let ro = (sqr(x - xo) + sqr(y)).sqrt();
+                    let theta = 1.0f64.atan2(ro);
+                    let an = fmod(q1a * theta + y.atan2(xo - x) + theta, 2.0 * theta) - theta;
+                    acc[0] += am * (xo - an.cos() * ro);
+                    acc[1] += am * an.sin() * ro;
+                } else {
+                    let xo = -(r + 1.0) / (2.0 * x);
+                    let ro = (sqr(-x - xo) + sqr(y)).sqrt();
+                    let theta = 1.0f64.atan2(ro);
+                    let an = fmod(q1a * theta + y.atan2(xo + x) + theta, 2.0 * theta) - theta;
+                    acc[0] -= am * (xo - an.cos() * ro);
+                    acc[1] += am * an.sin() * ro;
+                }
+            } else {
+                let r = 1.0 / r.sqrt();
+                let ta = y.atan2(x);
+                let (px, py) = (r * ta.cos(), r * ta.sin());
+                let neg = px < 0.0;
+                let xo = if neg { -(sqr(px) + sqr(py) + 1.0) / (2.0 * px) } else { (sqr(px) + sqr(py) + 1.0) / (2.0 * px) };
+                let ro = if neg { (sqr(-px - xo) + sqr(py)).sqrt() } else { (sqr(px - xo) + sqr(py)).sqrt() };
+                let theta = 1.0f64.atan2(ro);
+                let an = fmod(q1b * theta + if neg { py.atan2(xo + px) } else { py.atan2(xo - px) } + theta, 2.0 * theta) - theta;
+                let (nx, ny) = (xo - an.cos() * ro, an.sin() * ro);
+                let ta = ny.atan2(nx);
+                let r = 1.0 / (sqr(nx) + sqr(ny)).sqrt();
+                if neg {
+                    acc[0] -= am * r * ta.cos();
+                } else {
+                    acc[0] += am * r * ta.cos();
+                }
+                acc[1] += am * r * ta.sin();
+            }
+        }
+        38 => {
+            acc[0] += if q1a.abs() < EPSILON { am * x } else { am * ((2.0 * (x / q1a).floor() + 1.0) * q1a - x) };
+            acc[1] += if q1b.abs() < EPSILON { am * y } else { am * ((2.0 * (y / q1b).floor() + 1.0) * q1b - y) };
+        }
+        39 => {
+            acc[0] += am * x.sin();
+            acc[1] += am * y.sin();
+        }
+        40 => {
+            let r = (sqr(x) + sqr(y)).sqrt().powf(q1b);
+            let n = (q1a * ctx.random()).floor() as i32;
+            let alpha = y.atan2(x) + n as f64 * M_2PI / q1a.floor();
+            if r > SMALL_EPSILON {
+                acc[0] += am * alpha.cos() / r;
+                acc[1] += am * alpha.sin() / r;
+            }
+        }
+        41 => {
+            acc[0] += am * (x + q1a * (y * q1b).sin());
+            acc[1] += am * (y + q1a * (x * q1b).sin());
+        }
+        42 => {
+            let offsetx = (y * q1b).sin().powf(2.0) * q1a;
+            let offsety = (x * q1b).sin().powf(2.0) * q1a;
+            acc[0] += am * (x + offsetx);
+            acc[1] += am * (y + offsety);
+        }
+        43 => {
+            let mx = y * q1b * M_1_2PI;
+            let mut fx = mx - mx.floor();
+            if fx > 0.5 {
+                fx = 0.5 - fx;
+            }
+            let my = x * q1b * M_1_2PI;
+            let mut fy = my - my.floor();
+            if fy > 0.5 {
+                fy = 0.5 - fy;
+            }
+            acc[0] += am * (x + fx * q1a);
+            acc[1] += am * (y + fy * q1a);
+        }
+        44 => {
+            let sxx = 0.5 * q1a * (1.0 + (y * 0.0).sin());
+            let syy = 0.5 * q1a * (1.0 + (x * 2.0).sin());
+            acc[0] += am * (x + (y * q1b).sin() * sxx);
+            acc[1] += am * (y + (x * q1b).sin() * syy);
+        }
+        45 | 46 => {
+            let mut ax = if q[0] as i32 == 45 { (y * q1b / M_2PI).floor() } else { (y * q1b).floor() };
+            ax = (ax * 12.9898 + ax * 78.233 + 1.0 + y * 0.001 * 0.1).sin() * 43758.5453;
+            ax -= (ax as i32) as f64;
+            acc[0] += am * (x + (y * q1b).sin() * ax * ax * q1a);
+            acc[1] += am * (y + (x * q1b).sin() * q1a);
+        }
+        47 => {
+            let mut an = M_PI / ((sqr(x) + sqr(y)).sqrt() + q1a);
+            let r = y.atan2(x) * M_1_PI;
+            if r > 0.0 {
+                an = M_PI - an;
+            }
+            acc[0] += am * r * an.cos();
+            acc[1] += am * r * an.sin();
+        }
+        48 => {
+            let r = a.rad();
+            let an = if r < amount { a.atan_yx() + q1a / (amount - r) } else { a.atan_yx() + q1b / (amount - r) };
+            acc[0] += am * r * an.cos();
+            acc[1] += am * r * an.sin();
+        }
+        _ => {}
+    }
+    true
+}
+
+/// Parameters of `QuadFunc`: `mode` and per quadrant (ul, ur, ll, lr)
+/// `quad, amount, shiftx, shifty, seed, 1a, 1b`.
+const QUAD_PARAMS: &[ParamDef] = &{
+    const NAMES: [&str; 29] = [
+        "mode", "ul_quad", "ul_amount", "ul_shiftx", "ul_shifty", "ul_seed", "ul_1a", "ul_1b", "ur_quad", "ur_amount", "ur_shiftx", "ur_shifty",
+        "ur_seed", "ur_1a", "ur_1b", "ll_quad", "ll_amount", "ll_shiftx", "ll_shifty", "ll_seed", "ll_1a", "ll_1b", "lr_quad", "lr_amount",
+        "lr_shiftx", "lr_shifty", "lr_seed", "lr_1a", "lr_1b",
+    ];
+    let mut p = [ParamDef::new("", 0.0); 29];
+    p[0] = ParamDef::int(NAMES[0], 0.0, 0.0, 1.0);
+    let mut i = 1;
+    while i < 29 {
+        p[i] = match (i - 1) % 7 {
+            // ll and lr default to spherical (1), ul and ur to linear (0)
+            0 => ParamDef::int(NAMES[i], if i >= 15 { 1.0 } else { 0.0 }, 0.0, 48.0),
+            1 | 5 | 6 => ParamDef::new(NAMES[i], 1.0),
+            4 => ParamDef::int(NAMES[i], 0.0, 0.0, 10000.0),
+            _ => ParamDef::new(NAMES[i], 0.0),
+        };
+        i += 1;
+    }
+    p
+};
+
 /// In-place `Complex` operation.
 type ComplexOp = fn(&mut Complex);
 
@@ -4119,6 +4695,502 @@ let im = D(0) * y + 2.0 * D(1) * x * y;
 let r = AMOUNT / (re * re + im * im);
 a.x = (x * re + y * im) * r;
 a.y = (y * re - x * im) * r;",
+    },
+    VarDef {
+        name: "quad",
+        params: QUAD_PARAMS,
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            // d = [mode, ul (1..8), ur (8..15), ll (15..22), lr (22..29)] with per quadrant
+            // [quad, amount, shiftx, shifty, seed, 1a, 1b]
+            let mut acc = [0.0; 2];
+            let mut count = 0;
+            for (o, cond_1a) in [(22, d[27]), (8, d[13]), (15, d[20]), (1, d[20])] {
+                let q = &d[o..o + 7];
+                let inside = match o {
+                    22 => a.x > q[2] && a.y > q[3],
+                    8 => a.x > q[2] && a.y < q[3],
+                    15 => a.x < q[2] && a.y > q[3],
+                    _ => a.x < q[2] && a.y < q[3],
+                };
+                if inside {
+                    if !quad_sub(q, cond_1a, ctx, a, amount, &mut acc) {
+                        return;
+                    }
+                    count += 1;
+                }
+            }
+            let c = count as f64;
+            if d[0] as i32 != 0 {
+                if count == 0 {
+                    v.x += amount / a.y;
+                    v.y += amount / a.x;
+                } else {
+                    v.x += amount / acc[1] / c;
+                    v.y += amount / acc[0] / c;
+                }
+            } else if count == 0 {
+                v.x += amount * a.x;
+                v.y += amount * a.y;
+            } else {
+                v.x += amount * acc[0] / c;
+                v.y += amount * acc[1] / c;
+            }
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: Some(|p, _| {
+            // The seeds only matter when 1a / 1b are not set (they are, when a flame is loaded).
+            let mut d = p.to_vec();
+            d[0] = limit_value(p[0], 0.0, 1.0) as i32 as f64;
+            for o in [1, 8, 15, 22] {
+                d[o] = limit_value(p[o], 0.0, 50.0) as i32 as f64;
+                d[o + 4] = ftoi(p[o + 4]) as f64;
+            }
+            d
+        }),
+        wgsl: "fn quad_sub(pa: ptr<function, Pt>, o: u32, c1a: f32, amount: f32, acc: ptr<function, vec2<f32>>) -> bool {
+  let qa = prm[o + 1u];
+  let q1a = prm[o + 5u];
+  let q1b = prm[o + 6u];
+  let x = (*pa).x;
+  let y = (*pa).y;
+  let am = amount * qa;
+  let tau0 = 0.5 * (log((x + 1.0) * (x + 1.0) + y * y) - log((x - 1.0) * (x - 1.0) + y * y));
+  let sigma0 = PI - atan2(y, x + 1.0) - atan2(y, 1.0 - x);
+  var d = vec2<f32>(0.0);
+  switch (i32(prm[o])) {
+    case 0: { d = am * vec2<f32>(x, y); }
+    case 1: { d = vec2<f32>(x, y) * (am / (x * x * q1a + y * y * q1b + EPS)); }
+    case 2, 3: {
+      var z = cx_acosh(vec2<f32>(x, y));
+      if (i32(prm[o]) == 2) { z = cx_flip(cx_acosech(vec2<f32>(x, y))); }
+      z = cx_scale(z, am * 2.0 / PI);
+      if (rnd() < 0.5) { d = z; } else { d = -z; }
+    }
+    case 4, 6: {
+      var z = cx_asinh(vec2<f32>(x, y));
+      if (i32(prm[o]) == 4) { z = cx_flip(cx_acoth(vec2<f32>(x, y))); }
+      d = cx_scale(z, am * 2.0 / PI);
+    }
+    case 5: {
+      let r = sqrt(3.0);
+      let den = (1.0 + r - x) * (1.0 + r - x) + y * y;
+      let a0 = 3.0 * (1.0 + r - x) / den - (1.0 + r) / (2.0 + r);
+      let b0 = 3.0 * y / den;
+      let f1x = a0 / (a0 * a0 + b0 * b0);
+      let f1y = -b0 / (a0 * a0 + b0 * b0);
+      let w = i32(4.0 * rnd()) % 3;
+      d = vec2<f32>(a0, b0);
+      if (w == 1) { d = vec2<f32>(-f1x / 2.0 - f1y * r / 2.0, f1x * r / 2.0 - f1y / 2.0); }
+      if (w == 2) { d = vec2<f32>(-f1x / 2.0 + f1y * r / 2.0, -f1x * r / 2.0 - f1y / 2.0); }
+      d = d * am;
+    }
+    case 7: {
+      let z = vec2<f32>(x, y);
+      d = cx_scale(cx_log(cx_div(cx_inc(z), cx_inc(cx_scale(z, -1.0)))), am * 2.0 / PI);
+    }
+    case 8: { d = (am / HALF_PI) * vec2<f32>(atan(q1a * x), atan(q1b * y)); }
+    case 9: {
+      var sigma = sigma0;
+      let pi_bcn = PI / q1a;
+      let bca_bcn = PI * q1b / q1a;
+      let alt = i32(sigma * q1a / PI);
+      if (alt % 2 == 0) { sigma = f32(alt) * pi_bcn + fmod(sigma + bca_bcn, pi_bcn); } else { sigma = f32(alt) * pi_bcn + fmod(sigma - bca_bcn, pi_bcn); }
+      let temp = cosh(tau0) - cos(sigma);
+      d = am * vec2<f32>(sinh(tau0), sin(sigma)) / temp;
+    }
+    case 10, 11: {
+      var tau = tau0;
+      var sigma = sigma0;
+      if (i32(prm[o]) == 10) {
+        if (tau < q1a && -tau < q1a) { tau = fmod(tau + q1a + q1b * q1a, 2.0 * q1a) - q1a; }
+      } else {
+        sigma = sigma + tau * q1b + q1a / tau;
+      }
+      let temp = cosh(tau) - cos(sigma);
+      if (temp == 0.0) { return false; }
+      d = am * vec2<f32>(sinh(tau), sin(sigma)) / temp;
+    }
+    case 12: {
+      var tau = tau0 / q1a;
+      let sigma = sigma0 / q1a + TWO_PI / q1a * floor(rnd() * q1a);
+      if (x >= 0.0) { tau += q1b; } else { tau -= q1b; }
+      let temp = cosh(tau) - cos(sigma);
+      d = am * vec2<f32>(sinh(tau), sin(sigma)) / temp;
+    }
+    case 13: {
+      var n = vec2<f32>(x, y);
+      if (n.x < 0.0) { n.x *= q1a; }
+      if (n.y < 0.0) { n.y *= q1b; }
+      d = am * n;
+    }
+    case 14: {
+      let x2y2 = x * x + y * y;
+      let t = x2y2 + q1b;
+      let x2 = 2.0 * x;
+      var yb = 0.5 * atan2(2.0 * y, x2y2 - 1.0) - HALF_PI * q1a;
+      if (yb > HALF_PI) { yb = -HALF_PI + fmod(yb + HALF_PI, PI); } else if (yb < -HALF_PI) { yb = HALF_PI - fmod(HALF_PI - yb, PI); }
+      let f = t + x2;
+      let g = t - x2;
+      if (g == 0.0 || f / g <= 0.0) { return false; }
+      d = am * vec2<f32>(0.25 * 2.0 / PI * log(f / g), 2.0 / PI * yb);
+    }
+    case 15: {
+      let an = atan2(x, y);
+      let r = sqrt(x * x + y * y) * (q1a + (q1b - q1a) * (0.5 + 0.5 * sin(6.0 * an)));
+      d = am * vec2<f32>(sin(an) * r, cos(an) * r);
+    }
+    case 16: {
+      let y2 = y * q1b;
+      let r = am * q1a * sqrt(abs(y * x) / (EPS + x * x + y2 * y2));
+      d = vec2<f32>(r * x, r * y2);
+    }
+    case 17: {
+      var aaa = atan2(y, x);
+      let r = am * sqrt(x * x + y * y);
+      let kn_pi = q1b / PI;
+      let pi_kn = PI / q1b;
+      let ka_kn = PI * q1a / q1b;
+      if (aaa >= 0.0) {
+        let alt = i32(aaa * kn_pi);
+        if (alt % 2 == 0) { aaa = f32(alt) * pi_kn + fmod(ka_kn + aaa, pi_kn); } else { aaa = f32(alt) * pi_kn + fmod(-ka_kn + aaa, pi_kn); }
+      } else {
+        let alt = i32(-aaa * kn_pi);
+        if (alt % 2 != 0) { aaa = -(f32(alt) * pi_kn + fmod(-ka_kn - aaa, pi_kn)); } else { aaa = -(f32(alt) * pi_kn + fmod(ka_kn - aaa, pi_kn)); }
+      }
+      d = r * vec2<f32>(cos(aaa), sin(aaa));
+    }
+    case 18: {
+      let an = atan2(y, x);
+      let lnr = 0.5 * log(x * x + y * y);
+      let ang = q1a / 2.0 * an + q1b / 2.0 * lnr + PI * floor(2.0 * rnd());
+      d = am * exp(q1a / 2.0 * lnr - q1b / 2.0 * an) * vec2<f32>(cos(ang), sin(ang));
+    }
+    case 19: {
+      let re = 1.0 + q1a * x + q1b * (x * x - y * y);
+      let im = q1a * y + q1b * 2.0 * x * y;
+      let r = am / (re * re + im * im);
+      d = vec2<f32>(x * re + y * im, y * re - x * im) * r;
+    }
+    case 20: {
+      let r2 = 1.0 / (x * x + y * y);
+      let r = q1a * clamp(java_pow(x * x + r2 * y * y, q1b) - java_pow(y * y + r2 * 2.0 * x * x, q1b), -0.24, 100.0);
+      d = qa * vec2<f32>(x, y) * (1.0 + r);
+    }
+    case 21: {
+      let rpi = PI * sqrt(x * x + y * y) * q1a;
+      d = am * atan2(x, y) / PI * vec2<f32>(sin(rpi), cos(rpi));
+    }
+    case 22: {
+      let tmp = y * y + x * x + 1.0;
+      let tmp2 = 2.0 * x;
+      let xmax = max((sqrt(max(tmp + tmp2, 0.0)) + sqrt(max(tmp - tmp2, 0.0))) * 0.5, 1.0);
+      var nu = acos(clamp(x / xmax, -1.0, 1.0));
+      let pi_ecn = PI / q1a;
+      let eca_ecn = PI * q1b / q1a;
+      let alt = i32(nu * q1a / PI);
+      if (alt % 2 == 0) { nu = f32(alt) * pi_ecn + fmod(nu + eca_ecn, pi_ecn); } else { nu = f32(alt) * pi_ecn + fmod(nu - eca_ecn, pi_ecn); }
+      if (y <= 0.0) { nu = -nu; }
+      d = am * vec2<f32>(xmax * cos(nu), sqrt(xmax - 1.0) * sqrt(xmax + 1.0) * sin(nu));
+    }
+    case 23: {
+      let tmp = x * x + y * y + 1.0;
+      let tmp2 = 2.0 * x;
+      let xmax = (sqrt(tmp + tmp2) + sqrt(tmp - tmp2)) * 0.5;
+      let a1 = log(xmax + sqrt(xmax - 1.0));
+      let a2 = -acos(clamp(x / xmax, -1.0, 1.0));
+      var snv = sin(a1);
+      if (y > 0.0) { snv = -snv; }
+      d = am / 11.57034632 * vec2<f32>(cosh(a2) * cos(a1), sinh(a2) * snv);
+    }
+    case 24: {
+      var r2 = y * y + x * x;
+      var xx = x;
+      if (q1a < 0.0) {
+        r2 = 1.0 / r2;
+        xx = x * r2;
+      }
+      let tmp = r2 + 1.0;
+      let tmp2 = 2.0 * xx;
+      let xmax = max((sqrt(max(tmp + tmp2, 0.0)) + sqrt(max(tmp - tmp2, 0.0))) * 0.5, 1.0);
+      let mu = acosh(xmax) / q1a;
+      var nu = acos(clamp(xx / xmax, -1.0, 1.0));
+      if (y < 0.0) { nu = -nu; }
+      nu = nu / q1a + TWO_PI / q1a * floor(rnd() * q1a);
+      d = am * vec2<f32>(cosh(mu) * cos(nu), sinh(mu) * sin(nu));
+    }
+    case 25: {
+      let tmp = y * y + x * x + 1.0;
+      let tmp2 = 2.0 * x;
+      let xmax = max((sqrt(max(tmp + tmp2, 0.0)) + sqrt(max(tmp - tmp2, 0.0))) * 0.5, 1.0);
+      var mu = acosh(xmax);
+      var nu = acos(clamp(x / xmax, -1.0, 1.0));
+      if (y < 0.0) { nu = -nu; }
+      if (mu < c1a && -mu < c1a) {
+        if (nu > 0.0) { mu = fmod(mu + q1a + q1b * q1a, 2.0 * q1a) - q1a; } else { mu = fmod(mu - q1a - q1b * q1a, 2.0 * q1a) + q1a; }
+      }
+      d = am * vec2<f32>(cosh(mu) * cos(nu), sinh(mu) * sin(nu));
+    }
+    case 26: {
+      d = am * vec2<f32>(x, y);
+      if (abs(y) <= amount) {
+        let c2 = sqrt(amount * amount - y * y);
+        if (abs(x) <= c2) {
+          let xn = x + q1a * am;
+          if (abs(xn) >= c2) { d.x = -am * x; } else { d.x = am * xn; }
+        }
+      }
+    }
+    case 27: {
+      let vv = am / HALF_PI;
+      let tmp = y * y + x * x + q1a;
+      let x2 = 2.0 * x;
+      let xmax = 0.5 * (sqrt(tmp + x2) + sqrt(tmp - x2));
+      let aa = x / xmax;
+      var b = 0.0;
+      if (q1b - aa * aa >= EPS) { b = sqrt(q1b - aa * aa); }
+      var e = 0.0;
+      if (xmax - 1.0 >= EPS) { e = sqrt(xmax - 1.0); }
+      d.x = vv * atan2(aa, b);
+      d.y = vv * log(xmax + e);
+      if (!(rnd() < 0.5)) { d.y = -d.y; }
+    }
+    case 28: {
+      let r = sqrt(x * x + y * y);
+      var angle = 0.0;
+      if (x < -EPS || x > EPS || y < -EPS || y > EPS) { angle = atan2(x, y); }
+      let ddx = PI * (q1a * q1a) + EPS;
+      let dx2 = ddx * 0.5;
+      let t = angle + q1b - trunc((angle + q1b) / ddx) * ddx;
+      var an = angle + dx2;
+      if (t > dx2) { an = angle - dx2; }
+      d = am * r * vec2<f32>(sin(an), cos(an));
+    }
+    case 29: {
+      let expx = exp(x) * 0.5;
+      let expnx = 0.25 / expx;
+      if (expx <= EPS || expnx <= EPS) { return false; }
+      let tmp = expx + expnx - cos(y);
+      if (tmp == 0.0) { return false; }
+      d = vec2<f32>(expx - expnx, sin(y)) * (am / tmp);
+    }
+    case 30: {
+      let vvar2 = am * sqrt(2.0) / 2.0;
+      let r = sqrt(x * x + y * y);
+      var sg = -1.0;
+      if (r >= 1.0) { sg = 1.0; }
+      if (rnd() > 0.5) {
+        let dd = sqrt(r + x);
+        if (dd == 0.0) { return false; }
+        d = vec2<f32>(sg * vvar2 * dd, -vvar2 / dd * y);
+      } else {
+        let dd = r + x;
+        let dxx = sqrt(r * (y * y + dd * dd));
+        if (dxx == 0.0) { return false; }
+        let rr = am / dxx;
+        d = vec2<f32>(sg * rr * dd, rr * y);
+      }
+    }
+    case 31: {
+      let alpha = atan2(y, x);
+      let delta = java_pow(alpha / PI + 1.0, q1a);
+      var r = am * sqrt(x * x + y * y + delta);
+      if (q1b != 0.0) { r = am * delta / (x * x + y * y + delta); }
+      d = r * vec2<f32>(cos(alpha), sin(alpha));
+    }
+    case 32: {
+      let an = PI / (sqrt(x * x + y * y) + 1.0);
+      d = atan2(y, x) * (am / PI) * vec2<f32>(cos(an), sin(an));
+    }
+    case 33: {
+      let abs_power = abs(ftoi(q1a));
+      let an = (atan2(y, x) + TWO_PI * floor(rnd() * f32(abs_power))) / q1a;
+      d = am * java_pow(x * x + y * y, q1b / q1a * 0.5) * vec2<f32>(cos(an), sin(an));
+    }
+    case 34: {
+      if (q1a != 0.0) {
+        let nr = f32(i32(floor((*pa).x * q1a)));
+        if ((nr >= 0.0 && fmod(nr, 2.0) == 1.0) || (nr < 0.0 && fmod(nr, 2.0) == 0.0)) { (*pa).x = -(*pa).x; }
+      }
+      if (q1b != 0.0) {
+        let nr = f32(i32(floor((*pa).y * q1b)));
+        if ((nr >= 0.0 && fmod(nr, 2.0) == 1.0) || (nr < 0.0 && fmod(nr, 2.0) == 0.0)) { (*pa).y = -(*pa).y; }
+      }
+      d = am * vec2<f32>((*pa).x, (*pa).y);
+    }
+    case 35: {
+      let rr = sqrt(x * x + y * y);
+      if (rr < amount) {
+        let an = atan2(y, x) + q1b + q1a * (am - rr);
+        d = am * rr * vec2<f32>(cos(an), sin(an));
+      } else {
+        d = am * vec2<f32>(x, y);
+      }
+    }
+    case 36: {
+      var invp = 100000000000.0;
+      var vp = am * java_pow(q1a + 1.0, 4.0);
+      if (q1b != 0.0) {
+        invp = 1.0 / q1b;
+        vp = 0.0;
+        if (q1a != -1.0) { vp = am * java_pow(q1a + 1.0, 2.0 / q1b); }
+      }
+      let an = atan2(y, x) * q1b;
+      let r = q1a * java_pow(x * x + y * y, q1b / 2.0);
+      let re = r * cos(an) + 1.0;
+      let im = r * sin(an);
+      let r2 = java_pow(re * re + im * im, invp);
+      let an2 = atan2(im, re) * 2.0 * invp;
+      let re2 = r2 * cos(an2);
+      let im2 = r2 * sin(an2);
+      let rl = vp / (r2 * r2);
+      d = rl * vec2<f32>(x * re2 + y * im2, y * re2 - x * im2);
+    }
+    case 37: {
+      let r = x * x + y * y;
+      if (r < 1.0) {
+        var xo = (r + 1.0) / (2.0 * x);
+        var ro = sqrt((x - xo) * (x - xo) + y * y);
+        var at = atan2(y, xo - x);
+        var sg = 1.0;
+        if (x < 0.0) {
+          xo = -xo;
+          ro = sqrt((-x - xo) * (-x - xo) + y * y);
+          at = atan2(y, xo + x);
+          sg = -1.0;
+        }
+        let theta = atan2(1.0, ro);
+        let an = fmod(q1a * theta + at + theta, 2.0 * theta) - theta;
+        d = vec2<f32>(sg * am * (xo - cos(an) * ro), am * sin(an) * ro);
+      } else {
+        let ri = 1.0 / sqrt(r);
+        let ta = atan2(y, x);
+        let px = ri * cos(ta);
+        let py = ri * sin(ta);
+        var xo = (px * px + py * py + 1.0) / (2.0 * px);
+        var ro = sqrt((px - xo) * (px - xo) + py * py);
+        var at = atan2(py, xo - px);
+        var sg = 1.0;
+        if (px < 0.0) {
+          xo = -xo;
+          ro = sqrt((-px - xo) * (-px - xo) + py * py);
+          at = atan2(py, xo + px);
+          sg = -1.0;
+        }
+        let theta = atan2(1.0, ro);
+        let an = fmod(q1b * theta + at + theta, 2.0 * theta) - theta;
+        let nx = xo - cos(an) * ro;
+        let ny = sin(an) * ro;
+        let ta2 = atan2(ny, nx);
+        let r2 = 1.0 / sqrt(nx * nx + ny * ny);
+        d = vec2<f32>(sg * am * r2 * cos(ta2), am * r2 * sin(ta2));
+      }
+    }
+    case 38: {
+      d = am * vec2<f32>(x, y);
+      if (abs(q1a) >= EPSILON) { d.x = am * ((2.0 * floor(x / q1a) + 1.0) * q1a - x); }
+      if (abs(q1b) >= EPSILON) { d.y = am * ((2.0 * floor(y / q1b) + 1.0) * q1b - y); }
+    }
+    case 39: { d = am * vec2<f32>(sin(x), sin(y)); }
+    case 40: {
+      let r = pow(sqrt(x * x + y * y), q1b);
+      let n = floor(q1a * rnd());
+      let alpha = atan2(y, x) + n * TWO_PI / floor(q1a);
+      if (r > EPS) { d = am * vec2<f32>(cos(alpha), sin(alpha)) / r; }
+    }
+    case 41: { d = am * vec2<f32>(x + q1a * sin(y * q1b), y + q1a * sin(x * q1b)); }
+    case 42: {
+      let sx = sin(y * q1b);
+      let sy = sin(x * q1b);
+      d = am * vec2<f32>(x + sx * sx * q1a, y + sy * sy * q1a);
+    }
+    case 43: {
+      let mx = y * q1b / TWO_PI;
+      var fx = mx - floor(mx);
+      if (fx > 0.5) { fx = 0.5 - fx; }
+      let my = x * q1b / TWO_PI;
+      var fy = my - floor(my);
+      if (fy > 0.5) { fy = 0.5 - fy; }
+      d = am * vec2<f32>(x + fx * q1a, y + fy * q1a);
+    }
+    case 44: {
+      let sxx = 0.5 * q1a;
+      let syy = 0.5 * q1a * (1.0 + sin(x * 2.0));
+      d = am * vec2<f32>(x + sin(y * q1b) * sxx, y + sin(x * q1b) * syy);
+    }
+    case 45, 46: {
+      var ax = floor(y * q1b);
+      if (i32(prm[o]) == 45) { ax = floor(y * q1b / TWO_PI); }
+      ax = sin(ax * 12.9898 + ax * 78.233 + 1.0 + y * 0.0001) * 43758.5453;
+      ax = ax - trunc(ax);
+      d = am * vec2<f32>(x + sin(y * q1b) * ax * ax * q1a, y + sin(x * q1b) * q1a);
+    }
+    case 47: {
+      var an = PI / (sqrt(x * x + y * y) + q1a);
+      let r = atan2(y, x) / PI;
+      if (r > 0.0) { an = PI - an; }
+      d = am * r * vec2<f32>(cos(an), sin(an));
+    }
+    case 48: {
+      let r = sqrt(x * x + y * y);
+      var an = atan2(y, x) + q1b / (amount - r);
+      if (r < amount) { an = atan2(y, x) + q1a / (amount - r); }
+      d = am * r * vec2<f32>(cos(an), sin(an));
+    }
+    default: {}
+  }
+  *acc = *acc + d;
+  return true;
+}
+@body
+var acc = vec2<f32>(0.0);
+var count = 0;
+var aborted = false;
+for (var k = 0; k < 4; k++) {
+  var o = base + 22u;
+  var c1a = D(27);
+  var inside = a.x > D(24) && a.y > D(25);
+  if (k == 1) {
+    o = base + 8u;
+    c1a = D(13);
+    inside = a.x > D(10) && a.y < D(11);
+  } else if (k == 2) {
+    o = base + 15u;
+    c1a = D(20);
+    inside = a.x < D(17) && a.y > D(18);
+  } else if (k == 3) {
+    o = base + 1u;
+    c1a = D(20);
+    inside = a.x < D(3) && a.y < D(4);
+  }
+  if (inside) {
+    if (!quad_sub(&a, o, c1a, AMOUNT, &acc)) {
+      aborted = true;
+      break;
+    }
+    count += 1;
+  }
+}
+if (!aborted) {
+  let c = f32(count);
+  if (i32(D(0)) != 0) {
+    if (count == 0) {
+      v.x += AMOUNT / a.y;
+      v.y += AMOUNT / a.x;
+    } else {
+      v.x += AMOUNT / acc.y / c;
+      v.y += AMOUNT / acc.x / c;
+    }
+  } else if (count == 0) {
+    v.x += AMOUNT * a.x;
+    v.y += AMOUNT * a.y;
+  } else {
+    v.x += AMOUNT * acc.x / c;
+    v.y += AMOUNT * acc.y / c;
+  }
+  if (PRESERVE_Z) { v.z += AMOUNT * a.z; }
+}",
     },
     VarDef {
         name: "quadrupole",
