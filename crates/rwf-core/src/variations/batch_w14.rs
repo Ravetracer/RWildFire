@@ -53,6 +53,66 @@ fn hex_lattice_step(d: &[f64], ctx: &mut Ctx) -> (bool, usize, usize) {
     (mode60, fcycle, bcycle)
 }
 
+/// `HexPrism3DFunc.sdHexPrism`
+fn hexprism3d_sd(p: [f64; 3], hx: f64, hy: f64) -> f64 {
+    let k = [-0.8660254, 0.5, 0.57735];
+    let mut p = p.map(f64::abs);
+    let t = 2.0 * java_min(k[0] * p[0] + k[1] * p[1], 0.0);
+    p[0] -= k[0] * t;
+    p[1] -= k[1] * t;
+    let cx = java_min(java_max(p[0], -k[2] * hx), k[2] * hx);
+    let (ex, ey) = (p[0] - cx, p[1] - hx);
+    let sgn = if p[1] - hx > 0.0 { 1.0 } else if p[1] - hx < 0.0 { -1.0 } else { 0.0 };
+    let (dx, dy) = ((ex * ex + ey * ey).sqrt() * sgn, p[2] - hy);
+    let (mx, my) = (java_max(dx, 0.0), java_max(dy, 0.0));
+    java_min(java_max(dx, dy), 0.0) + (mx * mx + my * my).sqrt()
+}
+
+/// `HilbertFunc` turtle path as a polyline: d = [level, show_lines, line_thickness, show_points,
+/// point_thickness, line_threshold, point_threshold, line_thickness / 100, point_thickness / 100,
+/// segments, x0, y0, x1, y1, ...].
+fn hilbert_prepare(p: &[f64]) -> Vec<f64> {
+    let level = limit_value(ftoi(p[0]), 1, 10);
+    struct Turtle {
+        x: f64,
+        y: f64,
+        angle: f64,
+        pts: Vec<f64>,
+    }
+    impl Turtle {
+        fn forward(&mut self) {
+            self.x += self.angle.to_radians().cos();
+            self.y += self.angle.to_radians().sin();
+            self.pts.extend([self.x, self.y]);
+        }
+    }
+    fn draw(t: &mut Turtle, n: i32, sign: f64) {
+        if n == 0 {
+            return;
+        }
+        t.angle += 90.0 * sign;
+        draw(t, n - 1, -sign);
+        t.forward();
+        t.angle -= 90.0 * sign;
+        draw(t, n - 1, sign);
+        t.forward();
+        draw(t, n - 1, sign);
+        t.angle -= 90.0 * sign;
+        t.forward();
+        draw(t, n - 1, -sign);
+        t.angle += 90.0 * sign;
+    }
+    let mut t = Turtle { x: 0.0, y: 0.0, angle: 0.0, pts: vec![0.0, 0.0] };
+    draw(&mut t, level, 1.0);
+    let (show_lines, show_points) = (p[1].trunc(), p[3].trunc());
+    let sum = show_lines + show_points;
+    let line_fraction = show_lines / sum;
+    let mut d = vec![level as f64, show_lines, p[2], show_points, p[4], line_fraction, line_fraction + show_points / sum, p[2] / 100.0, p[4] / 100.0];
+    d.push((t.pts.len() / 2 - 1) as f64);
+    d.extend_from_slice(&t.pts);
+    d
+}
+
 pub static DEFS: &[VarDef] = &[
     VarDef {
         name: "harmonograph_js",
@@ -388,5 +448,183 @@ let rx_ft = a.x * k * sg.x - a.y * k * sg.y;
 let ry_ft = a.y * k * sg.x + a.x * k * sg.y;
 v.x = v.x * (1.0 - smooth_f) + rx_tp + rx_ft + smooth_f * AMOUNT * tail * sg.x;
 v.y = v.y * (1.0 - smooth_f) + ry_tp + ry_ft + smooth_f * AMOUNT * tail * sg.y;",
+    },
+    VarDef {
+        name: "hexprism3D",
+        params: &[ParamDef::range("d", 0.3, 0.0, 0.5), ParamDef::range("H", 0.25, 0.0, 0.5)],
+        kind: VarKind::Normal,
+        is_3d: true,
+        apply: |d, ctx, _, v, amount| {
+            for _ in 0..50 {
+                let p = [ctx.random() - 0.5, ctx.random() - 0.5, ctx.random() - 0.5];
+                if hexprism3d_sd(p, d[0], d[1]) < 0.0 {
+                    v.do_hide = false;
+                    v.x += amount * p[0];
+                    v.y += amount * p[1];
+                    v.z += amount * p[2];
+                    return;
+                }
+            }
+            v.do_hide = true;
+        },
+        prepare: Some(|p, _| vec![limit_value(p[0], 0.0, 0.5), limit_value(p[1], 0.0, 0.5)]),
+        wgsl: "fn hexprism3D_sd(p_in: vec3<f32>, h: vec2<f32>) -> f32 {
+  let k = vec3<f32>(-0.8660254, 0.5, 0.57735);
+  var p = abs(p_in);
+  let t = p.xy - 2.0 * min(dot(k.xy, p.xy), 0.0) * k.xy;
+  p = vec3<f32>(t, p.z);
+  let e = p.xy - vec2<f32>(min(max(p.x, -k.z * h.x), k.z * h.x), h.x);
+  let dd = vec2<f32>(length(e) * sign(p.y - h.x), p.z - h.y);
+  return min(max(dd.x, dd.y), 0.0) + length(max(dd, vec2<f32>(0.0)));
+}
+@body
+var found = false;
+for (var i = 0; i < 50; i++) {
+  let p = vec3<f32>(rnd() - 0.5, rnd() - 0.5, rnd() - 0.5);
+  if (hexprism3D_sd(p, vec2<f32>(D(0), D(1))) < 0.0) {
+    v.hide = 0.0;
+    v.x += AMOUNT * p.x;
+    v.y += AMOUNT * p.y;
+    v.z += AMOUNT * p.z;
+    found = true;
+    break;
+  }
+}
+if (!found) { v.hide = 1.0; }",
+    },
+    VarDef {
+        name: "hilbert_js",
+        params: &[
+            ParamDef::int("level", 2.0, 1.0, 10.0),
+            ParamDef::int("show_lines", 1.0, 0.0, 1.0),
+            ParamDef::new("line_thickness", 0.5),
+            ParamDef::int("show_points", 0.0, 0.0, 1.0),
+            ParamDef::new("point_thickness", 3.0),
+        ],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            // Java cycles through the segments; here a random segment is drawn.
+            let nseg = d[9] as usize;
+            let k = ((ctx.random() * nseg as f64) as usize).min(nseg - 1);
+            let (x1, y1, x2, y2) = (d[10 + 2 * k], d[11 + 2 * k], d[12 + 2 * k], d[13 + 2 * k]);
+            let rnd = ctx.random();
+            let (mut xo, mut yo) = (0.0, 0.0);
+            if rnd < d[5] {
+                let (xdiff, ydiff) = (x2 - x1, y2 - y1);
+                let m = if xdiff == 0.0 { 10000.0 } else { ydiff / xdiff };
+                let dd = ctx.random() * (xdiff * xdiff + ydiff * ydiff).sqrt();
+                let mut xoffset = dd / (1.0 + m * m).sqrt();
+                if x2 < x1 {
+                    xoffset = -xoffset;
+                }
+                let mut yoffset = (m * xoffset).abs();
+                if y2 < y1 {
+                    yoffset = -yoffset;
+                }
+                if d[7] != 0.0 {
+                    xoffset += (ctx.random() - 0.5) * d[7];
+                    yoffset += (ctx.random() - 0.5) * d[7];
+                }
+                xo = x1 + xoffset;
+                yo = y1 + yoffset;
+            } else if rnd <= d[6] {
+                let (mut xoffset, mut yoffset) = (0.0, 0.0);
+                if d[8] != 0.0 {
+                    let roffset = ctx.random() * d[8];
+                    let rangle = ctx.random() * M_2PI;
+                    xoffset = roffset * rangle.cos();
+                    yoffset = roffset * rangle.sin();
+                }
+                xo = x1 + xoffset;
+                yo = y1 + yoffset;
+            }
+            v.x += amount * xo;
+            v.y += amount * yo;
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: Some(|p, _| hilbert_prepare(p)),
+        wgsl: "let nseg = u32(D(9));
+let k = min(u32(rnd() * f32(nseg)), nseg - 1u);
+let o = base + 10u + 2u * k;
+let x1 = prm[o];
+let y1 = prm[o + 1u];
+let x2 = prm[o + 2u];
+let y2 = prm[o + 3u];
+let r0 = rnd();
+var q = vec2<f32>(0.0);
+if (r0 < D(5)) {
+  let xdiff = x2 - x1;
+  let ydiff = y2 - y1;
+  var m = 10000.0;
+  if (xdiff != 0.0) { m = ydiff / xdiff; }
+  let dd = rnd() * sqrt(xdiff * xdiff + ydiff * ydiff);
+  var xoffset = dd / sqrt(1.0 + m * m);
+  if (x2 < x1) { xoffset = -xoffset; }
+  var yoffset = abs(m * xoffset);
+  if (y2 < y1) { yoffset = -yoffset; }
+  if (D(7) != 0.0) {
+    xoffset += (rnd() - 0.5) * D(7);
+    yoffset += (rnd() - 0.5) * D(7);
+  }
+  q = vec2<f32>(x1 + xoffset, y1 + yoffset);
+} else if (r0 <= D(6)) {
+  q = vec2<f32>(x1, y1);
+  if (D(8) != 0.0) {
+    let roffset = rnd() * D(8);
+    let rangle = rnd() * TWO_PI;
+    q += roffset * vec2<f32>(cos(rangle), sin(rangle));
+  }
+}
+v.x += AMOUNT * q.x;
+v.y += AMOUNT * q.y;
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "ho",
+        params: &[ParamDef::new("xpow", 3.0), ParamDef::new("ypow", 3.0), ParamDef::new("zpow", 3.0)],
+        kind: VarKind::Normal,
+        is_3d: true,
+        apply: |d, _, a, v, amount| {
+            let (u, w0, w) = (a.x, a.y, a.z);
+            let ax = (w0 * w0).atan2(w * w);
+            let ay = (u * u).atan2(w * w);
+            let (sv, cv, su, cu) = (w0.sin(), w0.cos(), u.sin(), u.cos());
+            v.x += amount * ((cu * cv).powf(d[0]) + ((cu * cv) * d[0]) + (0.25 * ax));
+            v.y += amount * ((su * cv).powf(d[1]) + ((su * cv) * d[1]) + (0.25 * ay));
+            v.z += amount * (sv.powf(d[2]) + sv * d[2]);
+        },
+        prepare: None,
+        wgsl: "let ax = atan2(a.y * a.y, a.z * a.z);
+let ay = atan2(a.x * a.x, a.z * a.z);
+let sv = sin(a.y);
+let cv = cos(a.y);
+let su = sin(a.x);
+let cu = cos(a.x);
+v.x += AMOUNT * (java_pow(cu * cv, D(0)) + cu * cv * D(0) + 0.25 * ax);
+v.y += AMOUNT * (java_pow(su * cv, D(1)) + su * cv * D(1) + 0.25 * ay);
+v.z += AMOUNT * (java_pow(sv, D(2)) + sv * D(2));",
+    },
+    VarDef {
+        name: "hole",
+        params: &[ParamDef::new("a", 1.0), ParamDef::int("inside", 0.0, 0.0, 1.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let alpha = a.y.atan2(a.x);
+            let delta = (alpha / M_PI + 1.0).powf(d[0]);
+            let r = if d[1] != 0.0 { amount * delta / (a.x * a.x + a.y * a.y + delta) } else { amount * (a.x * a.x + a.y * a.y + delta).sqrt() };
+            v.x += r * alpha.cos();
+            v.y += r * alpha.sin();
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: Some(|p, _| vec![p[0], limit_value(ftoi(p[1]), 0, 1) as f64]),
+        wgsl: "let alpha = atan2(a.y, a.x);
+let delta = java_pow(alpha / PI + 1.0, D(0));
+var r = AMOUNT * sqrt(a.x * a.x + a.y * a.y + delta);
+if (D(1) != 0.0) { r = AMOUNT * delta / (a.x * a.x + a.y * a.y + delta); }
+v.x += r * cos(alpha);
+v.y += r * sin(alpha);
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
     },
 ];
