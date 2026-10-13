@@ -6170,6 +6170,162 @@ v.x += p.x * D(11) * AMOUNT;
 v.y += p.y * D(11) * AMOUNT;
 v.z += p.z * D(11) * AMOUNT;",
     },
+    VarDef {
+        name: "ovoid",
+        params: &[ParamDef::new("x", 0.94), ParamDef::new("y", 0.94)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let r = amount / (a.x * a.x + a.y * a.y + SMALL_EPSILON);
+            v.x += a.x * r * d[0];
+            v.y += a.y * r * d[1];
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "let r = AMOUNT / (a.x * a.x + a.y * a.y + 1.0e-30);
+v.x += a.x * r * D(0);
+v.y += a.y * r * D(1);
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "ovoid3d",
+        params: &[ParamDef::new("x", 0.92), ParamDef::new("y", 0.92), ParamDef::new("z", 0.92)],
+        kind: VarKind::Normal,
+        is_3d: true,
+        apply: |d, _, a, v, amount| {
+            let r = amount / (a.x * a.x + a.y * a.y + a.z * a.z + SMALL_EPSILON);
+            v.x += a.x * r * d[0];
+            v.y += a.y * r * d[1];
+            v.z += a.z * r * d[2];
+        },
+        prepare: None,
+        wgsl: "let r = AMOUNT / (a.x * a.x + a.y * a.y + a.z * a.z + 1.0e-30);
+v.x += a.x * r * D(0);
+v.y += a.y * r * D(1);
+v.z += a.z * r * D(2);",
+    },
+    simple(
+        "panorama1",
+        false,
+        |_, ctx, a, v, amount| {
+            let aux = 1.0 / (a.x * a.x + a.y * a.y + 1.0).sqrt();
+            let (x1, y1) = (a.x * aux, a.y * aux);
+            v.x += amount * x1.atan2(y1) * (1.0 / PI);
+            v.y += amount * ((x1 * x1 + y1 * y1).sqrt() - 0.5);
+            ctx.pass_z(a, v, amount);
+        },
+        "let aux = 1.0 / sqrt(a.x * a.x + a.y * a.y + 1.0);
+let x1 = a.x * aux;
+let y1 = a.y * aux;
+v.x += AMOUNT * glsl_atan2(x1, y1) / PI;
+v.y += AMOUNT * (sqrt(x1 * x1 + y1 * y1) - 0.5);
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    ),
+    simple(
+        "panorama2",
+        false,
+        |_, ctx, a, v, amount| {
+            let aux = 1.0 / ((a.x * a.x + a.y * a.y).sqrt() + 1.0);
+            let (x1, y1) = (a.x * aux, a.y * aux);
+            v.x += amount * x1.atan2(y1) * (1.0 / PI);
+            v.y += amount * ((x1 * x1 + y1 * y1).sqrt() - 0.5);
+            ctx.pass_z(a, v, amount);
+        },
+        "let aux = 1.0 / (sqrt(a.x * a.x + a.y * a.y) + 1.0);
+let x1 = a.x * aux;
+let y1 = a.y * aux;
+v.x += AMOUNT * glsl_atan2(x1, y1) / PI;
+v.y += AMOUNT * (sqrt(x1 * x1 + y1 * y1) - 0.5);
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    ),
+    VarDef {
+        name: "parallel",
+        params: &[
+            ParamDef::new("x1width", 5.0),
+            ParamDef::new("x1tilesize", 0.5),
+            ParamDef::new("x1mod1", 0.3),
+            ParamDef::new("x1mod2", 1.0),
+            ParamDef::new("x1height", 0.5),
+            ParamDef::new("x1move", 1.0),
+            ParamDef::new("x2width", 5.0),
+            ParamDef::new("x2tilesize", 0.5),
+            ParamDef::new("x2mod1", 0.3),
+            ParamDef::new("x2mod2", 1.0),
+            ParamDef::new("x2height", 0.5),
+            ParamDef::new("x2move", 1.0),
+        ],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            // the two halves differ only in the sign of the move
+            let (k, sign) = if ctx.random() < 0.5 { (0, 1.0) } else { (6, -1.0) };
+            let (width, tile, m1, m2, height, mv) = (d[k], d[k + 1], d[k + 2], d[k + 3], d[k + 4], d[k + 5]);
+            let xr = m2 * m1;
+            let w = if ctx.random() < 0.5 { width } else { -width };
+            v.x += tile * (a.x + java_round(w * ctx.random().ln()));
+            let y = if a.y > m1 {
+                -m1 + fmod(a.y + m1, xr)
+            } else if a.y < -m1 {
+                m1 - fmod(m1 - a.y, xr)
+            } else {
+                a.y
+            };
+            v.y += height * y + sign * amount * mv;
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "var k = base;
+var sgn = 1.0;
+if (rnd() >= 0.5) { k = base + 6u; sgn = -1.0; }
+let m1 = prm[k + 2u];
+let xr = prm[k + 3u] * m1;
+var w = -prm[k];
+if (rnd() < 0.5) { w = prm[k]; }
+v.x += prm[k + 1u] * (a.x + java_round(w * log(rnd())));
+var y = a.y;
+if (a.y > m1) { y = -m1 + (a.y + m1) % xr; } else if (a.y < -m1) { y = m1 - (m1 - a.y) % xr; }
+v.y += prm[k + 4u] * y + sgn * AMOUNT * prm[k + 5u];
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "pdj3D",
+        params: &[
+            ParamDef::new("a", 1.0),
+            ParamDef::new("b", 2.0),
+            ParamDef::new("c", 3.0),
+            ParamDef::new("d", 4.0),
+            ParamDef::new("e", 2.0),
+            ParamDef::new("f", 0.0),
+            ParamDef::new("g", 2.0),
+            ParamDef::new("h", 0.0),
+        ],
+        kind: VarKind::Normal,
+        is_3d: true,
+        apply: |d, _, a, v, amount| {
+            v.x += amount * ((d[0] * a.y).sin() - (d[1] * a.x).cos());
+            v.y += amount * ((d[2] * a.x).sin() - (d[3] * a.y).cos());
+            v.z += amount * ((d[4] * a.y).sin() - (d[5] * a.z).cos()) * (d[6] * a.x).cos() + (d[7] * a.z).sin();
+        },
+        prepare: None,
+        wgsl: "v.x += AMOUNT * (sin(D(0) * a.y) - cos(D(1) * a.x));
+v.y += AMOUNT * (sin(D(2) * a.x) - cos(D(3) * a.y));
+v.z += AMOUNT * (sin(D(4) * a.y) - cos(D(5) * a.z)) * cos(D(6) * a.x) + sin(D(7) * a.z);",
+    },
+    VarDef {
+        name: "pdj_v2",
+        params: &[ParamDef::new("a", -0.7), ParamDef::new("b", 1.0), ParamDef::new("c", 0.0), ParamDef::new("d", 2.0), ParamDef::new("e", 0.0), ParamDef::new("f", 0.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            v.x += amount * ((d[0] * a.y + d[4]).sin() - (d[1] * a.x + d[4]).cos());
+            v.y += amount * ((d[2] * a.x + d[5]).sin() - (d[3] * a.y + d[5]).cos());
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "v.x += AMOUNT * (sin(D(0) * a.y + D(4)) - cos(D(1) * a.x + D(4)));
+v.y += AMOUNT * (sin(D(2) * a.x + D(5)) - cos(D(3) * a.y + D(5)));
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
 ];
 
 fn mandelbox2d_apply(d: &[f64], ctx: &mut Ctx, a: &Pt, v: &mut Pt, amount: f64) {
