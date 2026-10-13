@@ -6543,6 +6543,123 @@ v.x += AMOUNT * nr * cos(theta);
 v.y += AMOUNT * nr * sin(theta);
 if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
     },
+    VarDef {
+        name: "pickover",
+        params: &[ParamDef::new("a", 1.0), ParamDef::new("b", 2.0), ParamDef::new("c", 0.5), ParamDef::new("d", -0.5)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            v.x += amount * ((d[0] * a.y).sin() + d[2] * (d[0] * a.x).cos());
+            v.y += amount * ((d[1] * a.x).sin() + d[3] * (d[1] * a.y).cos());
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "v.x += AMOUNT * (sin(D(0) * a.y) + D(2) * cos(D(0) * a.x));
+v.y += AMOUNT * (sin(D(1) * a.x) + D(3) * cos(D(1) * a.y));
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "pie3D",
+        params: &[ParamDef::new("slices", 7.0), ParamDef::new("rotation", 0.0), ParamDef::new("thickness", 0.5)],
+        kind: VarKind::Normal,
+        is_3d: true,
+        apply: |d, ctx, _, v, amount| {
+            let sl = (ctx.random() * d[0] + 0.5) as i32;
+            let ang = d[1] + 2.0 * M_PI * (sl as f64 + ctx.random() * d[2]) / d[0];
+            let r = amount * ctx.random();
+            v.x += r * ang.cos();
+            v.y += r * ang.sin();
+            v.z += r * r.sin();
+        },
+        prepare: None,
+        wgsl: "let sl = trunc(rnd() * D(0) + 0.5);
+let ang = D(1) + 2.0 * PI * (sl + rnd() * D(2)) / D(0);
+let r = AMOUNT * rnd();
+v.x += r * cos(ang);
+v.y += r * sin(ang);
+v.z += r * sin(r);",
+    },
+    VarDef {
+        name: "piston",
+        params: &[ParamDef::new("freq", 2.0), ParamDef::new("amp", 0.5), ParamDef::new("offset", 0.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let comp = 1.0 + d[1] * (d[0] * a.x + d[2]).sin();
+            v.x += amount * a.x;
+            v.y += amount * a.y * comp;
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "v.x += AMOUNT * a.x;
+v.y += AMOUNT * a.y * (1.0 + D(1) * sin(D(0) * a.x + D(2)));
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "pixel_flow",
+        params: &[
+            ParamDef::new("angle", 90.0),
+            ParamDef::new("len", 0.1),
+            ParamDef::new("width", 200.0),
+            ParamDef::int("seed", 42.0, 0.0, 100000.0),
+            ParamDef::int("enable_dc", 0.0, 0.0, 1.0),
+        ],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let hash = |a: i32| {
+                let mut a = (a ^ 61) ^ (a >> 16);
+                a = a.wrapping_add(a << 3);
+                a ^= a >> 4;
+                a = a.wrapping_mul(0x27d4eb2d);
+                a ^= a >> 15;
+                a as f64 / i32::MAX as f64
+            };
+            let seed = d[3] as i32;
+            let a_rad = d[0] * 0.0174532925;
+            let mut bx = (a.x * d[2]).floor() as i32;
+            bx = (bx as f64 + (2.0 - 4.0 * hash(bx.wrapping_mul(seed).wrapping_add(1)))) as i32;
+            let mut by = (a.y * d[2]).floor() as i32;
+            by = (by as f64 + (2.0 - 4.0 * hash(by.wrapping_mul(seed).wrapping_add(1)))) as i32;
+            let flen = (hash(by.wrapping_add(bx.wrapping_mul(seed.wrapping_neg()))) + hash(bx.wrapping_add(by.wrapping_mul(seed) / 2))) * 0.5;
+            let r01 = ctx.random();
+            let fade = flen * r01 * r01 * r01 * r01;
+            v.x += amount * d[1] * a_rad.cos() * fade;
+            v.y += amount * d[1] * a_rad.sin() * fade;
+            if d[4] as i32 == 1 {
+                v.color = r01;
+            }
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: Some(|p, _| {
+            let mut d = p.to_vec();
+            d[3] = ftoi(p[3]) as f64;
+            d[4] = (limit_value(p[4], 0.0, 1.0) as i32) as f64;
+            d
+        }),
+        wgsl: "fn pixel_flow_hash(a0: i32) -> f32 {
+  var a = (a0 ^ 61) ^ (a0 >> 16u);
+  a = a + (a << 3u);
+  a = a ^ (a >> 4u);
+  a = a * 0x27d4eb2d;
+  a = a ^ (a >> 15u);
+  return f32(a) / 2147483647.0;
+}
+@body
+let seed = i32(D(3));
+let a_rad = D(0) * 0.0174532925;
+var bx = i32(floor(a.x * D(2)));
+bx = i32(f32(bx) + (2.0 - 4.0 * pixel_flow_hash(bx * seed + 1)));
+var by = i32(floor(a.y * D(2)));
+by = i32(f32(by) + (2.0 - 4.0 * pixel_flow_hash(by * seed + 1)));
+let flen = (pixel_flow_hash(by + bx * -seed) + pixel_flow_hash(bx + by * seed / 2)) * 0.5;
+let r01 = rnd();
+let fade = flen * r01 * r01 * r01 * r01;
+v.x += AMOUNT * D(1) * cos(a_rad) * fade;
+v.y += AMOUNT * D(1) * sin(a_rad) * fade;
+if (i32(D(4)) == 1) { v.color = r01; }
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
 ];
 
 fn mandelbox2d_apply(d: &[f64], ctx: &mut Ctx, a: &Pt, v: &mut Pt, amount: f64) {
