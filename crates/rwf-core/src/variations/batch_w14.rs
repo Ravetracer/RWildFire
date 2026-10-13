@@ -763,6 +763,115 @@ fn klein_group_generators(a_re: f64, a_im: f64, b_re: f64, b_im: f64, recipe: i3
     }
 }
 
+/// Turtle polylines of `HilbertFunc` / `KochFunc`: d = [level, show_lines, line_thickness,
+/// show_points, point_thickness, line_threshold, point_threshold, line_thickness / 100,
+/// point_thickness / 100, segments, x0, y0, x1, y1, ...].
+fn turtle_polyline_apply(d: &[f64], ctx: &mut Ctx, a: &Pt, v: &mut Pt, amount: f64) {
+    // Java cycles through the segments; here a random segment is drawn.
+    let nseg = d[9] as usize;
+    let k = ((ctx.random() * nseg as f64) as usize).min(nseg - 1);
+    let (x1, y1, x2, y2) = (d[10 + 2 * k], d[11 + 2 * k], d[12 + 2 * k], d[13 + 2 * k]);
+    let rnd = ctx.random();
+    let (mut xo, mut yo) = (0.0, 0.0);
+    if rnd < d[5] {
+        let (xdiff, ydiff) = (x2 - x1, y2 - y1);
+        let m = if xdiff == 0.0 { 10000.0 } else { ydiff / xdiff };
+        let dd = ctx.random() * (xdiff * xdiff + ydiff * ydiff).sqrt();
+        let mut xoffset = dd / (1.0 + m * m).sqrt();
+        if x2 < x1 {
+            xoffset = -xoffset;
+        }
+        let mut yoffset = (m * xoffset).abs();
+        if y2 < y1 {
+            yoffset = -yoffset;
+        }
+        if d[7] != 0.0 {
+            xoffset += (ctx.random() - 0.5) * d[7];
+            yoffset += (ctx.random() - 0.5) * d[7];
+        }
+        xo = x1 + xoffset;
+        yo = y1 + yoffset;
+    } else if rnd <= d[6] {
+        let (mut xoffset, mut yoffset) = (0.0, 0.0);
+        if d[8] != 0.0 {
+            let roffset = ctx.random() * d[8];
+            let rangle = ctx.random() * M_2PI;
+            xoffset = roffset * rangle.cos();
+            yoffset = roffset * rangle.sin();
+        }
+        xo = x1 + xoffset;
+        yo = y1 + yoffset;
+    }
+    v.x += amount * xo;
+    v.y += amount * yo;
+    ctx.pass_z(a, v, amount);
+}
+
+const TURTLE_POLYLINE_WGSL: &str = "let nseg = u32(D(9));
+let k = min(u32(rnd() * f32(nseg)), nseg - 1u);
+let o = base + 10u + 2u * k;
+let x1 = prm[o];
+let y1 = prm[o + 1u];
+let x2 = prm[o + 2u];
+let y2 = prm[o + 3u];
+let r0 = rnd();
+var q = vec2<f32>(0.0);
+if (r0 < D(5)) {
+  let xdiff = x2 - x1;
+  let ydiff = y2 - y1;
+  var m = 10000.0;
+  if (xdiff != 0.0) { m = ydiff / xdiff; }
+  let dd = rnd() * sqrt(xdiff * xdiff + ydiff * ydiff);
+  var xoffset = dd / sqrt(1.0 + m * m);
+  if (x2 < x1) { xoffset = -xoffset; }
+  var yoffset = abs(m * xoffset);
+  if (y2 < y1) { yoffset = -yoffset; }
+  if (D(7) != 0.0) {
+    xoffset += (rnd() - 0.5) * D(7);
+    yoffset += (rnd() - 0.5) * D(7);
+  }
+  q = vec2<f32>(x1 + xoffset, y1 + yoffset);
+} else if (r0 <= D(6)) {
+  q = vec2<f32>(x1, y1);
+  if (D(8) != 0.0) {
+    let roffset = rnd() * D(8);
+    let rangle = rnd() * TWO_PI;
+    q += roffset * vec2<f32>(cos(rangle), sin(rangle));
+  }
+}
+v.x += AMOUNT * q.x;
+v.y += AMOUNT * q.y;
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }";
+
+/// `KochFunc.koch` polyline in the layout of [`turtle_polyline_apply`].
+fn koch_prepare(p: &[f64]) -> Vec<f64> {
+    let level = limit_value(ftoi(p[0]), 1, 7);
+    fn koch(n: i32, angle: &mut f64, pos: &mut (f64, f64), pts: &mut Vec<f64>) {
+        if n == 0 {
+            pos.0 += 0.5 * angle.to_radians().cos();
+            pos.1 += 0.5 * angle.to_radians().sin();
+            pts.extend([pos.0, pos.1]);
+            return;
+        }
+        koch(n - 1, angle, pos, pts);
+        *angle += 60.0;
+        koch(n - 1, angle, pos, pts);
+        *angle -= 120.0;
+        koch(n - 1, angle, pos, pts);
+        *angle += 60.0;
+        koch(n - 1, angle, pos, pts);
+    }
+    let mut pts = vec![0.0, 0.0];
+    koch(level, &mut 0.0, &mut (0.0, 0.0), &mut pts);
+    let (show_lines, show_points) = (p[1].trunc(), p[3].trunc());
+    let sum = show_lines + show_points;
+    let lf = show_lines / sum;
+    let mut d = vec![level as f64, show_lines, p[2], show_points, p[4], lf, lf + show_points / sum, p[2] / 100.0, p[4] / 100.0];
+    d.push((pts.len() / 2 - 1) as f64);
+    d.extend_from_slice(&pts);
+    d
+}
+
 pub static DEFS: &[VarDef] = &[
     VarDef {
         name: "harmonograph_js",
@@ -1153,82 +1262,9 @@ if (!found) { v.hide = 1.0; }",
         ],
         kind: VarKind::Normal,
         is_3d: false,
-        apply: |d, ctx, a, v, amount| {
-            // Java cycles through the segments; here a random segment is drawn.
-            let nseg = d[9] as usize;
-            let k = ((ctx.random() * nseg as f64) as usize).min(nseg - 1);
-            let (x1, y1, x2, y2) = (d[10 + 2 * k], d[11 + 2 * k], d[12 + 2 * k], d[13 + 2 * k]);
-            let rnd = ctx.random();
-            let (mut xo, mut yo) = (0.0, 0.0);
-            if rnd < d[5] {
-                let (xdiff, ydiff) = (x2 - x1, y2 - y1);
-                let m = if xdiff == 0.0 { 10000.0 } else { ydiff / xdiff };
-                let dd = ctx.random() * (xdiff * xdiff + ydiff * ydiff).sqrt();
-                let mut xoffset = dd / (1.0 + m * m).sqrt();
-                if x2 < x1 {
-                    xoffset = -xoffset;
-                }
-                let mut yoffset = (m * xoffset).abs();
-                if y2 < y1 {
-                    yoffset = -yoffset;
-                }
-                if d[7] != 0.0 {
-                    xoffset += (ctx.random() - 0.5) * d[7];
-                    yoffset += (ctx.random() - 0.5) * d[7];
-                }
-                xo = x1 + xoffset;
-                yo = y1 + yoffset;
-            } else if rnd <= d[6] {
-                let (mut xoffset, mut yoffset) = (0.0, 0.0);
-                if d[8] != 0.0 {
-                    let roffset = ctx.random() * d[8];
-                    let rangle = ctx.random() * M_2PI;
-                    xoffset = roffset * rangle.cos();
-                    yoffset = roffset * rangle.sin();
-                }
-                xo = x1 + xoffset;
-                yo = y1 + yoffset;
-            }
-            v.x += amount * xo;
-            v.y += amount * yo;
-            ctx.pass_z(a, v, amount);
-        },
+        apply: |d, ctx, a, v, amount| turtle_polyline_apply(d, ctx, a, v, amount),
         prepare: Some(|p, _| hilbert_prepare(p)),
-        wgsl: "let nseg = u32(D(9));
-let k = min(u32(rnd() * f32(nseg)), nseg - 1u);
-let o = base + 10u + 2u * k;
-let x1 = prm[o];
-let y1 = prm[o + 1u];
-let x2 = prm[o + 2u];
-let y2 = prm[o + 3u];
-let r0 = rnd();
-var q = vec2<f32>(0.0);
-if (r0 < D(5)) {
-  let xdiff = x2 - x1;
-  let ydiff = y2 - y1;
-  var m = 10000.0;
-  if (xdiff != 0.0) { m = ydiff / xdiff; }
-  let dd = rnd() * sqrt(xdiff * xdiff + ydiff * ydiff);
-  var xoffset = dd / sqrt(1.0 + m * m);
-  if (x2 < x1) { xoffset = -xoffset; }
-  var yoffset = abs(m * xoffset);
-  if (y2 < y1) { yoffset = -yoffset; }
-  if (D(7) != 0.0) {
-    xoffset += (rnd() - 0.5) * D(7);
-    yoffset += (rnd() - 0.5) * D(7);
-  }
-  q = vec2<f32>(x1 + xoffset, y1 + yoffset);
-} else if (r0 <= D(6)) {
-  q = vec2<f32>(x1, y1);
-  if (D(8) != 0.0) {
-    let roffset = rnd() * D(8);
-    let rangle = rnd() * TWO_PI;
-    q += roffset * vec2<f32>(cos(rangle), sin(rangle));
-  }
-}
-v.x += AMOUNT * q.x;
-v.y += AMOUNT * q.y;
-if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+        wgsl: TURTLE_POLYLINE_WGSL,
     },
     VarDef {
         name: "ho",
@@ -3638,4 +3674,104 @@ v.x += AMOUNT * q.x;
 v.y += AMOUNT * q.y;
 if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
     },
+    VarDef {
+        name: "koch_js",
+        params: &[
+            ParamDef::int("level", 2.0, 1.0, 7.0),
+            ParamDef::int("show_lines", 1.0, 0.0, 1.0),
+            ParamDef::new("line_thickness", 0.5),
+            ParamDef::int("show_points", 0.0, 0.0, 1.0),
+            ParamDef::new("point_thickness", 3.0),
+        ],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| turtle_polyline_apply(d, ctx, a, v, amount),
+        prepare: Some(|p, _| koch_prepare(p)),
+        wgsl: TURTLE_POLYLINE_WGSL,
+    },
+    VarDef {
+        name: "labyrinth",
+        params: &[ParamDef::new("scale", 0.5)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let sc = java_max(d[0].abs(), 0.01);
+            let (ri, ci) = ((a.x / sc + 0.5).floor(), (a.y / sc + 0.5).floor());
+            let (lx, ly) = (a.x - ri * sc, a.y - ci * sc);
+            let fx = if ci.abs() % 2.0 > 0.5 { -lx } else { lx };
+            let fy = if ri.abs() % 2.0 > 0.5 { -ly } else { ly };
+            v.x += amount * (ri * sc + fx);
+            v.y += amount * (ci * sc + fy);
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "let sc = max(abs(D(0)), 0.01);
+let ri = floor(a.x / sc + 0.5);
+let ci = floor(a.y / sc + 0.5);
+var fx = a.x - ri * sc;
+var fy = a.y - ci * sc;
+if (abs(ci) % 2.0 > 0.5) { fx = -fx; }
+if (abs(ri) % 2.0 > 0.5) { fy = -fy; }
+v.x += AMOUNT * (ri * sc + fx);
+v.y += AMOUNT * (ci * sc + fy);
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "lace",
+        params: &[ParamDef::new("freq", 3.0), ParamDef::new("amp", 0.3)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let freq = java_max(d[0].abs(), 0.01);
+            v.x += amount * (a.x + d[1] * (freq * a.y).sin());
+            v.y += amount * (a.y + d[1] * (freq * a.x).sin());
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "let freq = max(abs(D(0)), 0.01);
+v.x += AMOUNT * (a.x + D(1) * sin(freq * a.y));
+v.y += AMOUNT * (a.y + D(1) * sin(freq * a.x));
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    simple(
+        "lace_js",
+        false,
+        |_, ctx, a, v, amount| {
+            let r0 = (a.x * a.x + a.y * a.y).sqrt();
+            let s3 = 3f64.sqrt() / 2.0;
+            let weight = ctx.random();
+            let (x, y) = if weight > 0.75 {
+                let w = a.y.atan2(a.x - 1.0);
+                (-r0 * w.sin() / 2.0, -r0 * w.cos() / 2.0 + 1.0)
+            } else if weight > 0.50 {
+                let w = (a.y - s3).atan2(a.x + 0.5);
+                (-r0 * w.sin() / 2.0 + s3, -r0 * w.cos() / 2.0 - 0.5)
+            } else if weight > 0.25 {
+                let w = (a.y + s3).atan2(a.x + 0.5);
+                (-r0 * w.sin() / 2.0 - s3, -r0 * w.cos() / 2.0 - 0.5)
+            } else {
+                let w = a.y.atan2(a.x);
+                (-r0 * w.sin() / 2.0, -r0 * w.cos() / 2.0)
+            };
+            v.x += x * amount;
+            v.y += y * amount;
+        },
+        "let r0 = sqrt(a.x * a.x + a.y * a.y);
+let s3 = sqrt(3.0) / 2.0;
+let weight = rnd();
+var c = vec2<f32>(0.0);
+var w = atan2(a.y, a.x);
+if (weight > 0.75) {
+  w = atan2(a.y, a.x - 1.0);
+  c = vec2<f32>(0.0, 1.0);
+} else if (weight > 0.50) {
+  w = atan2(a.y - s3, a.x + 0.5);
+  c = vec2<f32>(s3, -0.5);
+} else if (weight > 0.25) {
+  w = atan2(a.y + s3, a.x + 0.5);
+  c = vec2<f32>(-s3, -0.5);
+}
+v.x += (-r0 * sin(w) / 2.0 + c.x) * AMOUNT;
+v.y += (-r0 * cos(w) / 2.0 + c.y) * AMOUNT;",
+    ),
 ];
