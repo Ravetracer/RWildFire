@@ -227,6 +227,7 @@ struct Sample {
 
 /// `getRawSampleFromNodeMesh` / `getRawSampleFromJunctMesh`: `o` = mesh block, `p` = index of
 /// the mesh parameters, `rot` = point record whose rotation applies.
+#[allow(clippy::too_many_arguments)]
 fn mesh_sample(d: &[f64], ctx: &mut Ctx, rg: &mut Marsaglia, o: usize, p: usize, scale: f64, default_color: f64, rot: Option<usize>) -> Sample {
     let k = marsaglia_int(rg, d[o + M_TOTAL] as usize) as f64;
     let fs = d[o + M_FSTART] as usize;
@@ -297,6 +298,7 @@ fn node(d: &[f64], ctx: &mut Ctx, rg: &mut Marsaglia, q: usize, radius: f64, out
 }
 
 /// `displayJunction`.
+#[allow(clippy::too_many_arguments)]
 fn junction(d: &[f64], ctx: &mut Ctx, rg: &mut Marsaglia, q: usize, pq: usize, min_radius: f64, max_radius: f64, rnd: f64) -> Sample {
     let radius = min_radius + (max_radius - min_radius) * rnd;
     let default_color = d[q + 3] + (d[pq + 3] - d[q + 3]) * rnd;
