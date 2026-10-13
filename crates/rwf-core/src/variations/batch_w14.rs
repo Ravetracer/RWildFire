@@ -6069,6 +6069,107 @@ if (i32(D(10)) != 0) { v.z = dz; } else { v.z += dz; }
 v.color = res_uv_color_idx(c);
 if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
     },
+    VarDef {
+        name: "natural_foam",
+        params: &[
+            ParamDef::int("density", 50.0, 1.0, 500.0),
+            ParamDef::int("iterations", 3.0, 0.0, 20.0),
+            ParamDef::new("scale", 0.8),
+            ParamDef::new("spread", 1.0),
+            ParamDef::new("minRadius", 0.1),
+            ParamDef::new("maxRadius", 0.9),
+            ParamDef::int("seed", 123.0, 0.0, 100000.0),
+            ParamDef::new("shapeAmount", 0.0),
+            ParamDef::new("blur_radius", 0.1),
+            ParamDef::int("blur_quality", 1.0, 0.0, 10.0),
+            ParamDef::int("color_data", 0.0, 0.0, 3.0),
+            ParamDef::new("zoom", 1.0),
+        ],
+        kind: VarKind::Normal,
+        is_3d: true,
+        apply: |d, ctx, a, v, amount| natural_foam_apply(d, ctx, a, v, amount),
+        prepare: Some(|p, _| natural_foam_prepare(p)),
+        // GPU: the blur steps use the shared random generator instead of the seeded one.
+        wgsl: "fn natural_foam_b(k: u32) -> vec4<f32> {
+  return vec4<f32>(prm[k], prm[k + 1u], prm[k + 2u], prm[k + 3u]);
+}
+fn natural_foam_nearest(base: u32, n: u32, p: vec3<f32>) -> i32 {
+  var best = -1;
+  var min_d = 3.4e38;
+  for (var j = 0u; j < n; j++) {
+    let b = natural_foam_b(base + 13u + 4u * j);
+    let dd = p - b.xyz;
+    let ds = dot(dd, dd);
+    if (ds < min_d) { min_d = ds; best = i32(j); }
+  }
+  return best;
+}
+@body
+let n = u32(D(0));
+var p = vec3<f32>(a.x, a.y, a.z);
+for (var i = 0; i < i32(D(1)); i++) {
+  for (var j = 0u; j < n; j++) {
+    let b = natural_foam_b(base + 13u + 4u * j);
+    let dd = p - b.xyz;
+    let ds = dot(dd, dd);
+    if (ds < b.w * b.w) {
+      let dist = sqrt(ds);
+      if (dist > 1.0e-6) { p += dd * ((b.w - dist) / dist) * D(2); }
+    }
+  }
+}
+let bq = i32(D(9));
+if (D(8) > 0.0 && bq > 0) {
+  let step = D(8) / f32(bq);
+  for (var i = 0; i < bq; i++) {
+    let prev = p;
+    p.x += (rnd() - 0.5) * 2.0 * step;
+    p.y += (rnd() - 0.5) * 2.0 * step;
+    p.z += (rnd() - 0.5) * 2.0 * step;
+    var inside = false;
+    for (var j = 0u; j < n; j++) {
+      let b = natural_foam_b(base + 13u + 4u * j);
+      let dd = p - b.xyz;
+      if (dot(dd, dd) < b.w * b.w) { inside = true; break; }
+    }
+    if (!inside) { p = prev; }
+  }
+}
+if (D(7) > 0.0) {
+  let k = natural_foam_nearest(base, n, p);
+  if (k >= 0) {
+    let b = natural_foam_b(base + 13u + 4u * u32(k));
+    let l = p - b.xyz;
+    let bp = l * (b.w * b.w / (dot(l, l) + 1.0e-9)) + b.xyz;
+    p = p * (1.0 - D(7)) + bp * D(7);
+  }
+}
+let cd = i32(D(10));
+if (cd > 0) {
+  var ci = 0.5;
+  let k = natural_foam_nearest(base, n, p);
+  if (k >= 0) {
+    if (cd == 1) {
+      let rr = D(5) - D(4);
+      if (rr > 1.0e-6) { ci = (prm[base + 13u + 4u * u32(k) + 3u] - D(4)) / rr; }
+    } else if (cd == 2) {
+      var cnt = 0;
+      for (var j = 0u; j < n; j++) {
+        let b = natural_foam_b(base + 13u + 4u * j);
+        let dd = p - b.xyz;
+        if (dot(dd, dd) < b.w * b.w) { cnt++; }
+      }
+      ci = f32(cnt) / f32(n);
+    } else if (n > 1u) {
+      ci = f32(k) / f32(n - 1u);
+    }
+  }
+  v.color = clamp(ci, 0.0, 1.0);
+}
+v.x += p.x * D(11) * AMOUNT;
+v.y += p.y * D(11) * AMOUNT;
+v.z += p.z * D(11) * AMOUNT;",
+    },
 ];
 
 fn mandelbox2d_apply(d: &[f64], ctx: &mut Ctx, a: &Pt, v: &mut Pt, amount: f64) {
@@ -6732,4 +6833,132 @@ fn ms_truchet_apply(d: &[f64], ctx: &mut Ctx, a: &Pt, v: &mut Pt, amount: f64) {
     }
     v.color = ctx.uv_color_idx(ftoi(c[0]), ftoi(c[1]), ftoi(c[2]));
     ctx.pass_z(a, v, amount);
+}
+
+/// `NaturalFoamFunc`: d = [12 parameters, random seed after the bubble setup, bubbles
+/// (x, y, z, radius)...].
+fn natural_foam_prepare(p: &[f64]) -> Vec<f64> {
+    let mut d = p.to_vec();
+    let n = (p[0] as i32).max(0);
+    for k in [0, 1, 6, 9] {
+        d[k] = (p[k] as i32) as f64;
+    }
+    d[0] = n as f64;
+    d[10] = ftoi(p[10]).clamp(0, 3) as f64;
+    let (spread, min_r, max_r) = (p[3], p[4], p[5]);
+    let mut rnd = crate::rng::JavaRandom::new(p[6] as i32 as i64);
+    let mut bubbles = Vec::with_capacity(4 * n as usize);
+    for _ in 0..n {
+        let x = (2.0 * rnd.next_double() - 1.0) * spread;
+        let y = (2.0 * rnd.next_double() - 1.0) * spread;
+        let z = (2.0 * rnd.next_double() - 1.0) * spread;
+        let r = min_r + (max_r - min_r) * rnd.next_double();
+        bubbles.extend([x, y, z, r]);
+    }
+    d.push(rnd.seed as f64);
+    d.extend(bubbles);
+    d
+}
+
+/// `NaturalFoamFunc.transform`; the seeded generator of the blur steps continues per render
+/// thread (JWildfire: per instance).
+fn natural_foam_apply(d: &[f64], ctx: &mut Ctx, a: &Pt, v: &mut Pt, amount: f64) {
+    let n = d[0] as usize;
+    let bubbles = &d[13..13 + 4 * n];
+    let bubble = |j: usize| (bubbles[4 * j], bubbles[4 * j + 1], bubbles[4 * j + 2], bubbles[4 * j + 3]);
+    let (mut x, mut y, mut z) = (a.x, a.y, a.z);
+    let scale = d[2];
+    for _ in 0..d[1] as i32 {
+        for j in 0..n {
+            let (bx, by, bz, br) = bubble(j);
+            let (dx, dy, dz) = (x - bx, y - by, z - bz);
+            let ds = dx * dx + dy * dy + dz * dz;
+            if ds < br * br {
+                let dist = ds.sqrt();
+                if dist > 1.0e-6 {
+                    let f = (br - dist) / dist;
+                    x += dx * f * scale;
+                    y += dy * f * scale;
+                    z += dz * f * scale;
+                }
+            }
+        }
+    }
+    let bq = d[9] as i32;
+    if d[8] > 0.0 && bq > 0 {
+        let key = d.as_ptr() as usize;
+        let seed = ctx.states.get(&key).map_or(d[12], |s| s[0]);
+        let mut rnd = crate::rng::JavaRandom { seed: seed as u64 };
+        let step = d[8] / bq as f64;
+        for _ in 0..bq {
+            let prev = (x, y, z);
+            x += (rnd.next_double() - 0.5) * 2.0 * step;
+            y += (rnd.next_double() - 0.5) * 2.0 * step;
+            z += (rnd.next_double() - 0.5) * 2.0 * step;
+            let inside = (0..n).any(|j| {
+                let (bx, by, bz, br) = bubble(j);
+                (x - bx) * (x - bx) + (y - by) * (y - by) + (z - bz) * (z - bz) < br * br
+            });
+            if !inside {
+                (x, y, z) = prev;
+            }
+        }
+        ctx.states.insert(key, vec![rnd.seed as f64]);
+    }
+    let nearest = |x: f64, y: f64, z: f64| {
+        let mut best = None;
+        let mut min_d = f64::MAX;
+        for j in 0..n {
+            let (bx, by, bz, _) = bubble(j);
+            let ds = (x - bx) * (x - bx) + (y - by) * (y - by) + (z - bz) * (z - bz);
+            if ds < min_d {
+                min_d = ds;
+                best = Some(j);
+            }
+        }
+        best
+    };
+    let shape = d[7];
+    if shape > 0.0
+        && let Some(j) = nearest(x, y, z)
+    {
+        let (bx, by, bz, br) = bubble(j);
+        let (lx, ly, lz) = (x - bx, y - by, z - bz);
+        let inv = br * br / (lx * lx + ly * ly + lz * lz + 1.0e-9);
+        x = x * (1.0 - shape) + (lx * inv + bx) * shape;
+        y = y * (1.0 - shape) + (ly * inv + by) * shape;
+        z = z * (1.0 - shape) + (lz * inv + bz) * shape;
+    }
+    let cd = d[10] as i32;
+    if cd > 0 {
+        let mut ci = 0.5;
+        if let Some(j) = nearest(x, y, z) {
+            match cd {
+                1 => {
+                    let range = d[5] - d[4];
+                    if range > 1.0e-6 {
+                        ci = (bubble(j).3 - d[4]) / range;
+                    }
+                }
+                2 => {
+                    let cnt = (0..n)
+                        .filter(|&k| {
+                            let (bx, by, bz, br) = bubble(k);
+                            (x - bx) * (x - bx) + (y - by) * (y - by) + (z - bz) * (z - bz) < br * br
+                        })
+                        .count();
+                    ci = cnt as f64 / n as f64;
+                }
+                _ => {
+                    if n > 1 {
+                        ci = j as f64 / (n - 1) as f64;
+                    }
+                }
+            }
+        }
+        v.color = ci.clamp(0.0, 1.0);
+    }
+    v.x += x * d[11] * amount;
+    v.y += y * d[11] * amount;
+    v.z += z * d[11] * amount;
 }

@@ -84,7 +84,7 @@ impl Rng {
 
 /// `java.util.Random` (48-bit LCG), for variations that build their geometry from a seed.
 pub struct JavaRandom {
-    seed: u64,
+    pub(crate) seed: u64,
 }
 
 impl JavaRandom {
