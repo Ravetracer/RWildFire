@@ -5367,6 +5367,227 @@ v.x = AMOUNT * a.x * scale;
 v.y = AMOUNT * a.y * scale;
 if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
     },
+    VarDef {
+        name: "mercator",
+        params: &[ParamDef::new("scale", 1.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let scale = d[0].abs().max(0.01);
+            let lat = (a.y * scale).clamp(-1.5, 1.5);
+            v.x += amount * a.x;
+            v.y += amount * (PI * 0.25 + lat * 0.5).tan().ln() / scale;
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "let scale = max(abs(D(0)), 0.01);
+let lat = clamp(a.y * scale, -1.5, 1.5);
+v.x += AMOUNT * a.x;
+v.y += AMOUNT * log(tan(PI * 0.25 + lat * 0.5)) / scale;
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "mercator_cylinder",
+        params: &[ParamDef::new("scale", 1.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let ty = (a.y * d[0]).clamp(-1.5, 1.5);
+            v.x += amount * a.x;
+            v.y += amount * ((0.7853981633974483 + ty * 0.5).tan() + 0.001).ln() / d[0];
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "let ty = clamp(a.y * D(0), -1.5, 1.5);
+v.x += AMOUNT * a.x;
+v.y += AMOUNT * log(tan(0.7853981633974483 + ty * 0.5) + 0.001) / D(0);
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "minkowskope",
+        params: &[
+            ParamDef::new("separation", 0.5),
+            ParamDef::new("frequencyx", -2.0),
+            ParamDef::new("frequencyy", 2.0),
+            ParamDef::new("amplitude", 0.5),
+            ParamDef::new("perturbation", 1.0),
+            ParamDef::new("damping", 0.0),
+        ],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let alt = d[1] <= 0.0;
+            let pt = d[4] * minkowskope_sine(0.5 * d[2] * a.y, alt);
+            let mut t = d[3] * minkowskope_sine(0.5 * d[1] * a.x + pt - 1.0, alt);
+            if d[5].abs() > EPSILON {
+                t *= (-a.x.abs() * d[5]).exp();
+            }
+            t += d[0];
+            if a.y.abs() <= t {
+                v.x -= amount * a.x;
+                v.y -= amount * a.y;
+            } else {
+                v.x += amount * a.x;
+                v.y += amount * a.y;
+            }
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "fn minkowskope_minkowski(x: f32) -> f32 {
+  var p = 0.0;
+  var q = 1.0;
+  var r = 1.0;
+  var s = 1.0;
+  var dd = 1.0;
+  var y = 0.0;
+  for (var it = 0; it < 20; it++) {
+    dd *= 0.5;
+    let m = p + r;
+    let n = q + s;
+    if (x < m / n) { r = m; s = n; } else { y += dd; p = m; q = n; }
+  }
+  return y + dd;
+}
+fn minkowskope_sine(x: f32, alt: bool) -> f32 {
+  let lp = abs(x) % 4.0;
+  var p = abs(x) % 2.0;
+  if (p > 1.0) { p = 2.0 - p; }
+  var mink = minkowskope_minkowski(p);
+  if (alt) { mink -= p; }
+  if ((lp < 2.0) != (x > 0.0)) { return mink; }
+  return -mink;
+}
+@body
+let alt = D(1) <= 0.0;
+let pt = D(4) * minkowskope_sine(0.5 * D(2) * a.y, alt);
+var t = D(3) * minkowskope_sine(0.5 * D(1) * a.x + pt - 1.0, alt);
+if (abs(D(5)) > 1.0e-8) { t *= exp(-abs(a.x) * D(5)); }
+t += D(0);
+if (abs(a.y) <= t) {
+  v.x -= AMOUNT * a.x;
+  v.y -= AMOUNT * a.y;
+} else {
+  v.x += AMOUNT * a.x;
+  v.y += AMOUNT * a.y;
+}
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "minkQM",
+        params: &[
+            ParamDef::new("a", 1.0),
+            ParamDef::new("b", 1.0),
+            ParamDef::new("c", 1.0),
+            ParamDef::new("dd", 1.0),
+            ParamDef::new("e", 0.5),
+            ParamDef::int("f", 20.0, 1.0, 50.0),
+        ],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let mink = |x: f64| {
+                let (mut p, mut q, mut r, mut s) = (0.0, d[0], d[1], d[2]);
+                let (mut dd, mut y) = (d[3], 0.0);
+                for _ in 0..d[5] as i32 {
+                    dd *= d[4];
+                    let (m, n) = (p + r, q + s);
+                    if x < m / n {
+                        (r, s) = (m, n);
+                    } else {
+                        y += dd;
+                        (p, q) = (m, n);
+                    }
+                }
+                y + dd
+            };
+            let f = |x: f64| {
+                let ax = x.abs();
+                let m = if ax > 0.0 && ax < 1.0 { mink(ax) } else { ax };
+                if x < 0.0 { -m } else { m }
+            };
+            v.x += amount * f(a.x);
+            v.y += amount * f(a.y);
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: Some(|p, _| {
+            let mut d = p.to_vec();
+            d[5] = ftoi(p[5]).clamp(1, 50) as f64;
+            d
+        }),
+        wgsl: "fn minkQM_minkowski(x: f32, k: u32) -> f32 {
+  var p = 0.0;
+  var q = prm[k];
+  var r = prm[k + 1u];
+  var s = prm[k + 2u];
+  var dd = prm[k + 3u];
+  var y = 0.0;
+  for (var it = 0; it < i32(prm[k + 5u]); it++) {
+    dd *= prm[k + 4u];
+    let m = p + r;
+    let n = q + s;
+    if (x < m / n) { r = m; s = n; } else { y += dd; p = m; q = n; }
+  }
+  return y + dd;
+}
+fn minkQM_f(x: f32, k: u32) -> f32 {
+  let ax = abs(x);
+  var m = ax;
+  if (ax > 0.0 && ax < 1.0) { m = minkQM_minkowski(ax, k); }
+  return select(m, -m, x < 0.0);
+}
+@body
+v.x += AMOUNT * minkQM_f(a.x, base);
+v.y += AMOUNT * minkQM_f(a.y, base);
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "mirror_rotate",
+        params: &[ParamDef::new("angle", 45.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let ang = d[0] * 0.017453292519943295;
+            let (c2, s2) = ((2.0 * ang).cos(), (2.0 * ang).sin());
+            v.x += amount * (a.x * c2 + a.y * s2);
+            v.y += amount * (a.x * s2 - a.y * c2);
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "let ang = D(0) * 0.017453292519943295;
+let c2 = cos(2.0 * ang);
+let s2 = sin(2.0 * ang);
+v.x += AMOUNT * (a.x * c2 + a.y * s2);
+v.y += AMOUNT * (a.x * s2 - a.y * c2);
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "mitosis",
+        params: &[ParamDef::new("sep", 1.0), ParamDef::new("width", 0.5), ParamDef::new("phase", 0.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let w = d[1].abs().max(0.01);
+            let (ca, sa) = (d[2].cos(), d[2].sin());
+            let u = a.x * ca + a.y * sa;
+            let vv = -a.x * sa + a.y * ca;
+            let nu = (u / w).tanh() * d[0] * 0.5;
+            let nv = vv * (1.0 - 0.5 * (-(u * u) / (w * w)).exp());
+            v.x += amount * (nu * ca - nv * sa);
+            v.y += amount * (nu * sa + nv * ca);
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "let w = max(abs(D(1)), 0.01);
+let ca = cos(D(2));
+let sa = sin(D(2));
+let u = a.x * ca + a.y * sa;
+let vv = -a.x * sa + a.y * ca;
+let nu = tanh(u / w) * D(0) * 0.5;
+let nv = vv * (1.0 - 0.5 * exp(-(u * u) / (w * w)));
+v.x += AMOUNT * (nu * ca - nv * sa);
+v.y += AMOUNT * (nu * sa + nv * ca);
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
 ];
 
 fn mandelbox2d_apply(d: &[f64], ctx: &mut Ctx, a: &Pt, v: &mut Pt, amount: f64) {
@@ -5591,4 +5812,30 @@ fn meeple_prepare(p: &[f64]) -> Vec<f64> {
     d.extend(xs);
     d.extend(ys);
     d
+}
+
+/// `MinkowskopeFunc.minkosine`.
+fn minkowskope_sine(x: f64, alt: bool) -> f64 {
+    let lp = x.abs() % 4.0;
+    let mut p = x.abs() % 2.0;
+    if p > 1.0 {
+        p = 2.0 - p;
+    }
+    // Minkowski question mark function
+    let (mut pp, mut q, mut r, mut s, mut dd, mut y) = (0.0, 1.0, 1.0, 1.0, 1.0, 0.0);
+    for _ in 0..20 {
+        dd *= 0.5;
+        let (m, n) = (pp + r, q + s);
+        if p < m / n {
+            (r, s) = (m, n);
+        } else {
+            y += dd;
+            (pp, q) = (m, n);
+        }
+    }
+    let mut mink = y + dd;
+    if alt {
+        mink -= p;
+    }
+    if (lp < 2.0) ^ (x > 0.0) { mink } else { -mink }
 }
