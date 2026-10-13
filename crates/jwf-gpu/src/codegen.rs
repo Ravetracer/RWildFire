@@ -128,7 +128,7 @@ fn dof_rotate(o: vec2<f32>, d: vec2<f32>) -> vec2<f32> {{\n  if ({rot} < 0.5) {{
             match mode {
                 ShapeMode::Offset | ShapeMode::OffsetNoRotate | ShapeMode::Rect => {
                     let mut s = format!(
-                        "  let dr = {abs_dr}({k} * zdist * {sc} * dof_fade());\n  let src = Pt(x, y, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);\n  let r = {f}(src, src, {vb}, dr);\n  var d = vec2<f32>(r.v.x, r.v.y);\n"
+                        "  let dr = {abs_dr}({k} * zdist * {sc} * dof_fade());\n  let src = Pt(x, y, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);\n  let r = {f}(src, src, {vb}, dr);\n  var d = vec2<f32>(r.v.x, r.v.y);\n"
                     );
                     if mode == ShapeMode::Rect {
                         let _ = writeln!(s, "  d.x = r.a.x + (d.x - r.a.x) * {};", p(dofo::WIDTH));
@@ -141,13 +141,13 @@ fn dof_rotate(o: vec2<f32>, d: vec2<f32>) -> vec2<f32> {{\n  if ({rot} < 0.5) {{
                 }
                 ShapeMode::RandomSource { scale_by_fade, dr_factor, refade } => {
                     format!(
-                        "  let fade = dof_fade();\n  let drf = {};\n  let dr = abs({k} * zdist * {sc} * drf) * {dr_factor:.6};\n  let fs = {};\n  let s = Pt((1.0 - 2.0 * rnd()) * fs, (1.0 - 2.0 * rnd()) * fs, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);\n  let r = {f}(s, Pt(x, y, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0), {vb}, dr);\n  return dof_rotate(vec2<f32>(x, y), vec2<f32>(r.v.x, r.v.y));\n",
+                        "  let fade = dof_fade();\n  let drf = {};\n  let dr = abs({k} * zdist * {sc} * drf) * {dr_factor:.6};\n  let fs = {};\n  let s = Pt((1.0 - 2.0 * rnd()) * fs, (1.0 - 2.0 * rnd()) * fs, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);\n  let r = {f}(s, Pt(x, y, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0), {vb}, dr);\n  return dof_rotate(vec2<f32>(x, y), vec2<f32>(r.v.x, r.v.y));\n",
                         if refade { "dof_fade()" } else { "fade" },
                         if scale_by_fade { "fade" } else { "1.0" },
                     )
                 }
                 ShapeMode::Taurus => format!(
-                    "  let fade = dof_fade();\n  let dr = abs({k} * zdist * {sc} * fade) * 0.25;\n  let s = Pt((TWO_PI - 4.0 * rnd() * PI) * fade, (TWO_PI - 4.0 * rnd() * PI) * fade, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);\n  let r = {f}(s, Pt(x, y, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0), {vb}, dr);\n  return dof_rotate(vec2<f32>(x, y), vec2<f32>(r.v.x, r.v.y));\n"
+                    "  let fade = dof_fade();\n  let dr = abs({k} * zdist * {sc} * fade) * 0.25;\n  let s = Pt((TWO_PI - 4.0 * rnd() * PI) * fade, (TWO_PI - 4.0 * rnd() * PI) * fade, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);\n  let r = {f}(s, Pt(x, y, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0), {vb}, dr);\n  return dof_rotate(vec2<f32>(x, y), vec2<f32>(r.v.x, r.v.y));\n"
                 ),
             }
         }
@@ -243,14 +243,14 @@ fn emit_xform(out: &mut String, fname: &str, xf: &PreparedXForm, base: usize, la
     let b = format!("{base}u");
     let _ = writeln!(out, "fn {fname}(src: Pt) -> Pt {{");
     let _ = writeln!(out, "  let B = {b};");
-    out.push_str("  var a = Pt(0.0, 0.0, 0.0, 0.0, src.r, src.g, src.b, 0.0, src.hide);\n");
+    out.push_str("  var a = Pt(0.0, 0.0, 0.0, 0.0, src.r, src.g, src.b, 0.0, src.hide, 0.0);\n");
     if xf.color_type == ColorType::Cyclic {
         let _ = writeln!(out, "  var c = fmod(src.color + prm[B + {}u], 1.0); if (c < 0.0) {{ c += 1.0; }} a.color = c;", xo::COLOR_SYM);
     } else {
         let _ = writeln!(out, "  a.color = src.color * prm[B + {}u] + prm[B + {}u];", xo::C1, xo::C2);
     }
     emit_affine(out, xf.affine_mode, "B", xo::COEFS, xo::YZ, xo::ZX, "a", "src");
-    out.push_str("  var v = Pt(0.0, 0.0, 0.0, a.color, a.r, a.g, a.b, a.rgbc, a.hide);\n");
+    out.push_str("  var v = Pt(0.0, 0.0, 0.0, a.color, a.r, a.g, a.b, a.rgbc, a.hide, a.rso);\n");
     let mut off = xo::VARS;
     let mut emit_steps = |out: &mut String, list: &[VarStep]| {
         for s in list {
@@ -272,7 +272,7 @@ fn emit_xform(out: &mut String, fname: &str, xf: &PreparedXForm, base: usize, la
         }
     };
     emit_steps(out, &xf.pre);
-    out.push_str("  v.color = a.color; v.r = a.r; v.g = a.g; v.b = a.b; v.rgbc = a.rgbc; v.hide = a.hide;\n");
+    out.push_str("  v.color = a.color; v.r = a.r; v.g = a.g; v.b = a.b; v.rgbc = a.rgbc; v.hide = a.hide; v.rso = a.rso;\n");
     emit_steps(out, &xf.normal);
     emit_steps(out, &xf.post_vars);
     out.push_str("  var d = v;\n");
@@ -526,7 +526,7 @@ impl Program {
                 cb = lay.cmap_base,
                 mat_step = if solid { format!(" mat = mat_xf_{li}(xf, mat);") } else { String::new() },
                 mat_reset = if solid { " mat = rnd();" } else { "" },
-                mat_plot = if solid { " cur_mat = mat;" } else { "" },
+                mat_plot = if solid { " cur_rso = p.rso; cur_mat = select(mat, -1.0, p.rso != 0.0);" } else { "" },
             );
         }
         w.push_str(ITER_MAIN_TAIL);
@@ -682,6 +682,7 @@ fn pack_xform(p: &mut [f32], base: usize, xf: &PreparedXForm) {
 fn solid_plot_wgsl(base: usize, maps: u32, map_size: usize, dof: bool) -> String {
     let mut w = String::from(
         "var<private> cur_mat: f32;\n\
+var<private> cur_rso: f32;\n\
 @group(0) @binding(6) var<storage, read_write> zbuf: array<atomic<u32>>;\n\
 @group(0) @binding(7) var<storage, read_write> sattr: array<f32>;\n",
     );
@@ -690,7 +691,7 @@ fn solid_plot_wgsl(base: usize, maps: u32, map_size: usize, dof: bool) -> String
     }
     w.push_str(
         "fn zkey(f: f32) -> u32 { let b = bitcast<u32>(f); if ((b & 0x80000000u) != 0u) { return ~b; } return b | 0x80000000u; }\n\
-fn plot(px_in: f32, py_in: f32, pz: f32, col_in: vec3<f32>) {\n  let wp = vec3<f32>(px_in, py_in, pz);\n",
+fn plot(px_in: f32, py_in: f32, pz: f32, col_in: vec3<f32>) {\n  let wp = vec3<f32>(px_in, py_in, pz);\n  if (cur_rso == 0.0) {\n",
     );
     for k in 0..maps as usize {
         let o = base + k * SOLID_LIGHT_STRIDE;
@@ -713,6 +714,7 @@ fn plot(px_in: f32, py_in: f32, pz: f32, col_in: vec3<f32>) {\n  let wp = vec3<f
             off = k * map_size * map_size,
         );
     }
+    w.push_str("  }\n");
     w.push_str(
         "  let cx = U.m0.x * px_in + U.m1.x * py_in + U.m2.x * pz + U.cam_pos.x;\n\
   let cy = U.m0.y * px_in + U.m1.y * py_in + U.m2.y * pz + U.cam_pos.y;\n\
@@ -781,7 +783,7 @@ fn bad(p: Pt) -> bool {
 }
 
 fn fresh_point() -> Pt {
-    return Pt(2.0 * rnd() - 1.0, 2.0 * rnd() - 1.0, 0.0, rnd(), 0.0, 0.0, 0.0, 0.0, 0.0);
+    return Pt(2.0 * rnd() - 1.0, 2.0 * rnd() - 1.0, 0.0, rnd(), 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
 }
 "#;
 
@@ -894,7 +896,7 @@ fn iterate(@builtin(global_invocation_id) gid: vec3<u32>) {
     if (tid >= U.thread_count) { return; }
     var s = states[tid];
     rng_state = s.rng;
-    var p = Pt(s.x, s.y, s.z, s.color, s.r, s.g, s.b, 0.0, s.hide);
+    var p = Pt(s.x, s.y, s.z, s.color, s.r, s.g, s.b, 0.0, s.hide, 0.0);
     var xf = s.xf;
     var skip = s.skip;
     var mat = s.mat;

@@ -328,6 +328,16 @@ fn import_jwf_curves(flame: &mut Flame) {
             }
         }
     }
+    // Solid rendering light curves (`sld_render_light_altitude0_*`)
+    for (i, _) in flame.solid.lights.clone().iter().enumerate() {
+        for field in ["altitude", "azimuth"] {
+            let prefix = format!("sld_render_light_{field}{i}_");
+            if let Some(t) = jwf_curve_track(&flame.extra_attrs, &prefix, &format!("solid.light{i}.{field}")) {
+                tracks.push(t);
+            }
+            flame.extra_attrs.retain(|(k, _)| !k.starts_with(&prefix));
+        }
+    }
     flame.animation.tracks.extend(tracks);
 }
 

@@ -464,20 +464,15 @@ pub struct ReflectionMap {
 }
 
 impl ReflectionMap {
-    /// Loads a PNG reflection map (other formats are not supported yet).
+    /// Loads a PNG or JPEG reflection map.
     pub fn load(path: &str) -> Option<Self> {
-        let file = std::fs::File::open(path).ok()?;
-        let mut dec = png::Decoder::new(std::io::BufReader::new(file));
-        dec.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
-        let mut reader = dec.read_info().ok()?;
-        let mut buf = vec![0; reader.output_buffer_size()?];
-        let info = reader.next_frame(&mut buf).ok()?;
-        let ch = info.color_type.samples();
-        let rgb = buf[..info.buffer_size()]
-            .chunks_exact(ch)
-            .map(|p| if ch >= 3 { [p[0] as f64, p[1] as f64, p[2] as f64].map(|v| v / 255.0) } else { [p[0] as f64 / 255.0; 3] })
-            .collect();
-        Some(Self { width: info.width, height: info.height, rgb })
+        let img = image::open(path).ok()?.into_rgb8();
+        let (width, height) = img.dimensions();
+        if width == 0 || height == 0 {
+            return None;
+        }
+        let rgb = img.pixels().map(|p| [p[0] as f64 / 255.0, p[1] as f64 / 255.0, p[2] as f64 / 255.0]).collect();
+        Some(Self { width, height, rgb })
     }
 
     /// `UVPairD.getColorFromMap`

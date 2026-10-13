@@ -172,9 +172,9 @@ pub fn solid_section(ui: &mut Ui, f: &mut Flame) {
                 ui.end_row();
                 widgets::label(ui, "Reflection map");
                 ui.horizontal(|ui| {
-                    ui.add(egui::TextEdit::singleline(&mut m.refl_map_filename).desired_width(140.0).hint_text("PNG file"));
+                    ui.add(egui::TextEdit::singleline(&mut m.refl_map_filename).desired_width(140.0).hint_text("PNG / JPEG file"));
                     if ui.small_button("…").clicked()
-                        && let Some(p) = rfd::FileDialog::new().add_filter("PNG image", &["png"]).pick_file()
+                        && let Some(p) = rfd::FileDialog::new().add_filter("Image", &["png", "jpg", "jpeg"]).pick_file()
                     {
                         m.refl_map_filename = p.display().to_string();
                     }

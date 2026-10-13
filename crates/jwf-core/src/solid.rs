@@ -506,3 +506,20 @@ mod tests {
         assert!(d[0].abs() < 1e-12 && (d[1] - 1.0).abs() < 1e-12 && d[2].abs() < 1e-12, "{d:?}");
     }
 }
+
+#[cfg(test)]
+mod io_tests {
+    #[test]
+    fn jwildfire_light_curves_become_tracks() {
+        let xml = r#"<flame sld_render_enabled="1" sld_render_ligtht_count="1" sld_render_light_altitude0="30"
+            sld_render_light_altitude0_enabled="true" sld_render_light_altitude0_point_count="2"
+            sld_render_light_altitude0_x0="0" sld_render_light_altitude0_y0="10"
+            sld_render_light_altitude0_x1="100" sld_render_light_altitude0_y1="80"
+            sld_render_light_altitude0_interpolation="LINEAR">
+            <xform weight="1" linear="1" /></flame>"#;
+        let f = crate::io::read_flames(xml).unwrap().remove(0);
+        assert!(f.extra_attrs.iter().all(|(k, _)| !k.starts_with("sld_render")), "{:?}", f.extra_attrs);
+        assert_eq!(f.solid.lights[0].altitude, 30.0);
+        assert!((f.at_frame(50.0).solid.lights[0].altitude - 45.0).abs() < 1e-9);
+    }
+}

@@ -1003,6 +1003,8 @@ dependencies = [
  "num-traits",
  "png",
  "tiff",
+ "zune-core",
+ "zune-jpeg",
 ]
 
 [[package]]
@@ -1131,6 +1133,7 @@ dependencies = [
 name = "jwf-core"
 version = "0.1.0"
 dependencies = [
+ "image",
  "naga",
  "png",
  "rayon",

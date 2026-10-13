@@ -282,9 +282,32 @@ fn set_xform_prop(xf: &mut XForm, rest: &str, v: f64) -> bool {
     true
 }
 
+/// Animatable fields of a solid rendering light (`solid.light<i>.<field>`).
+const LIGHT_FIELDS: [&str; 4] = ["altitude", "azimuth", "intensity", "shadow_intensity"];
+
+/// `solid.light<i>.<field>` -> (light index, field)
+fn light_path(path: &str) -> Option<(usize, &str)> {
+    let (l, field) = path.strip_prefix("solid.")?.split_once('.')?;
+    Some((index_after(l, "light")?, field))
+}
+
+fn light_field<'a>(light: &'a mut crate::solid::DistantLight, field: &str) -> Option<&'a mut f64> {
+    match field {
+        "altitude" => Some(&mut light.altitude),
+        "azimuth" => Some(&mut light.azimuth),
+        "intensity" => Some(&mut light.intensity),
+        "shadow_intensity" => Some(&mut light.shadow_intensity),
+        _ => None,
+    }
+}
+
 pub fn get_prop(flame: &Flame, path: &str) -> Option<f64> {
     if let Some((_, g, _)) = FLAME_PROPS.iter().find(|(n, _, _)| *n == path) {
         return Some(g(flame));
+    }
+    if let Some((i, field)) = light_path(path) {
+        let mut light = flame.solid.lights.get(i)?.clone();
+        return light_field(&mut light, field).map(|v| *v);
     }
     if let Some((l, rest)) = path.split_once('.')
         && let Some(li) = index_after(l, "layer")
@@ -308,6 +331,9 @@ pub fn set_prop(flame: &mut Flame, path: &str, v: f64) -> bool {
         s(flame, v);
         return true;
     }
+    if let Some((i, field)) = light_path(path) {
+        return flame.solid.lights.get_mut(i).and_then(|l| light_field(l, field)).map(|f| *f = v).is_some();
+    }
     if let Some((l, rest)) = path.split_once('.')
         && let Some(li) = index_after(l, "layer")
         && !rest.contains('.')
@@ -329,6 +355,13 @@ pub fn set_prop(flame: &mut Flame, path: &str, v: f64) -> bool {
 /// All animatable properties of a flame with their current values.
 pub fn all_props(flame: &Flame) -> Vec<(String, f64)> {
     let mut out: Vec<(String, f64)> = FLAME_PROPS.iter().map(|(n, g, _)| (n.to_string(), g(flame))).collect();
+    if flame.solid.enabled {
+        for (i, l) in flame.solid.lights.iter().enumerate() {
+            for (f, v) in LIGHT_FIELDS.iter().zip([l.altitude, l.azimuth, l.intensity, l.shadow_intensity]) {
+                out.push((format!("solid.light{i}.{f}"), v));
+            }
+        }
+    }
     for (li, layer) in flame.layers.iter().enumerate() {
         out.push((format!("layer{li}.weight"), layer.weight));
         out.push((format!("layer{li}.density"), layer.density));
@@ -376,6 +409,11 @@ pub fn label(flame: &Flame, path: &str) -> String {
             rest.to_string()
         };
         return format!("{layer_prefix}{xf_name} · {rest_label}");
+    }
+    if let Some((l, field)) = path.strip_prefix("solid.").and_then(|r| r.split_once('.'))
+        && let Some(i) = index_after(l, "light")
+    {
+        return format!("Light {} · {}", i + 1, field.replace('_', " "));
     }
     path.replace('_', " ")
 }
@@ -521,6 +559,7 @@ mod tests {
     #[test]
     fn props_roundtrip() {
         let mut f = Flame::default();
+        f.solid.enabled = true;
         let mut xf = XForm::with_variation("julian", 1.0);
         xf.coefs.c20 = 0.3;
         f.first_layer_mut().xforms.push(xf);
