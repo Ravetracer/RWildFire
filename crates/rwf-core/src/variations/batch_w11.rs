@@ -740,6 +740,18 @@ fn glsl_randomoctree_rgb(d: &[f64], (xp, yp): (f64, f64)) -> Vec3 {
     super::glsl::sqrt(color)
 }
 
+/// `GlynnSim2Func.init`: limits and appends [phi10, gamma, delta, abs_pow] to
+/// [radius, thickness, contrast, pow, phi1, phi2].
+fn glynn_sim2_prepare(p: &[f64]) -> Vec<f64> {
+    let mut d = p.to_vec();
+    d[1] = limit_value(p[1], 0.0, 1.0);
+    d[2] = limit_value(p[2], 0.0, 1.0);
+    let (radius, thickness) = (d[0], d[1]);
+    let (phi10, phi20) = (M_PI * p[4] / 180.0, M_PI * p[5] / 180.0);
+    d.extend([phi10, thickness * (2.0 * radius + thickness) / (radius + thickness), phi20 - phi10, p[3].abs()]);
+    d
+}
+
 pub static DEFS: &[VarDef] = &[
     VarDef {
         name: "barycentroid",
@@ -3309,6 +3321,300 @@ if (r < abs(radius)) {
     v.x += AMOUNT * xi;
     v.y += AMOUNT * yi;
   }
+}
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "glynnSim1",
+        params: &[
+            ParamDef::new("radius", 1.0),
+            ParamDef::new("radius1", 0.1),
+            ParamDef::new("phi1", 110.0),
+            ParamDef::range("thickness", 0.1, 0.0, 1.0),
+            ParamDef::new("pow", 1.5),
+            ParamDef::range("contrast", 0.5, 0.0, 1.0),
+        ],
+        kind: VarKind::Normal,
+        is_3d: false,
+        // d = [radius, radius1, phi1, thickness, pow, contrast, x1, y1, abs_pow]
+        apply: |d, ctx, a, v, amount| {
+            let (radius, radius1, thickness, x1, y1) = (d[0], d[1], d[3], d[6], d[7]);
+            let circle = |ctx: &mut Ctx| {
+                let r = radius1 * (thickness + (1.0 - thickness) * ctx.random());
+                let phi = 2.0 * M_PI * ctx.random();
+                (r * phi.cos() + x1, r * phi.sin() + y1)
+            };
+            let r = (a.x * a.x + a.y * a.y).sqrt();
+            let alpha = radius / r;
+            let (tx, ty) = if r < radius {
+                circle(ctx)
+            } else {
+                let (tx, ty) = if ctx.random() > d[5] * alpha.powf(d[8]) { (a.x, a.y) } else { (alpha * alpha * a.x, alpha * alpha * a.y) };
+                if (tx - x1) * (tx - x1) + (ty - y1) * (ty - y1) < radius1 * radius1 { circle(ctx) } else { (tx, ty) }
+            };
+            v.x += amount * tx;
+            v.y += amount * ty;
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: Some(|p, _| {
+            let mut d = p.to_vec();
+            d[3] = limit_value(p[3], 0.0, 1.0);
+            d[5] = limit_value(p[5], 0.0, 1.0);
+            let ph = M_PI * p[2] / 180.0;
+            d.extend([p[0] * ph.cos(), p[0] * ph.sin(), p[4].abs()]);
+            d
+        }),
+        wgsl: "let radius = D(0);
+let radius1 = D(1);
+let c1 = vec2<f32>(D(6), D(7));
+let r = sqrt(a.x * a.x + a.y * a.y);
+let alpha = radius / r;
+var t = vec2<f32>(a.x, a.y);
+var circ = r < radius;
+if (!circ) {
+  if (rnd() <= D(5) * java_pow(alpha, D(8))) { t = alpha * alpha * t; }
+  circ = dot(t - c1, t - c1) < radius1 * radius1;
+}
+if (circ) {
+  let cr = radius1 * (D(3) + (1.0 - D(3)) * rnd());
+  let phi = TWO_PI * rnd();
+  t = cr * vec2<f32>(cos(phi), sin(phi)) + c1;
+}
+v.x += AMOUNT * t.x;
+v.y += AMOUNT * t.y;
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "glynnSim2",
+        params: &[
+            ParamDef::new("radius", 1.0),
+            ParamDef::range("thickness", 0.1, 0.0, 1.0),
+            ParamDef::range("contrast", 0.5, 0.0, 1.0),
+            ParamDef::new("pow", 1.5),
+            ParamDef::new("phi1", 110.0),
+            ParamDef::new("phi2", 150.0),
+        ],
+        kind: VarKind::Normal,
+        is_3d: false,
+        // d = [radius, thickness, contrast, pow, phi1, phi2, phi10, gamma, delta, abs_pow]
+        apply: |d, ctx, a, v, amount| {
+            let r = (a.x * a.x + a.y * a.y).sqrt();
+            let alpha = d[0] / r;
+            if r < d[0] {
+                let cr = d[0] + d[1] - d[7] * ctx.random();
+                let phi = d[6] + d[8] * ctx.random();
+                v.x += amount * cr * phi.cos();
+                v.y += amount * cr * phi.sin();
+            } else if ctx.random() > d[2] * alpha.powf(d[9]) {
+                v.x += amount * a.x;
+                v.y += amount * a.y;
+            } else {
+                v.x += amount * alpha * alpha * a.x;
+                v.y += amount * alpha * alpha * a.y;
+            }
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: Some(|p, _| glynn_sim2_prepare(p)),
+        wgsl: "let r = sqrt(a.x * a.x + a.y * a.y);
+let alpha = D(0) / r;
+if (r < D(0)) {
+  let cr = D(0) + D(1) - D(7) * rnd();
+  let phi = D(6) + D(8) * rnd();
+  v.x += AMOUNT * cr * cos(phi);
+  v.y += AMOUNT * cr * sin(phi);
+} else if (rnd() > D(2) * java_pow(alpha, D(9))) {
+  v.x += AMOUNT * a.x;
+  v.y += AMOUNT * a.y;
+} else {
+  v.x += AMOUNT * alpha * alpha * a.x;
+  v.y += AMOUNT * alpha * alpha * a.y;
+}
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "glynnSim2B",
+        params: &[
+            ParamDef::new("radius", 1.0),
+            ParamDef::range("thickness", 0.1, 0.0, 1.0),
+            ParamDef::range("contrast", 0.5, 0.0, 1.0),
+            ParamDef::new("pow", 1.5),
+            ParamDef::new("phi1", 110.0),
+            ParamDef::new("phi2", 150.0),
+            ParamDef::new("rotX", 0.0),
+            ParamDef::new("rotY", 0.0),
+            ParamDef::new("rotZ", 0.0),
+            ParamDef::new("offsetZ", 0.0),
+            ParamDef::new("scaleX", 1.0),
+            ParamDef::new("scaleY", 1.0),
+            ParamDef::new("scaleZ", 1.0),
+            ParamDef::new("shearXY", 0.0),
+            ParamDef::new("shearXZ", 0.0),
+            ParamDef::new("shearYX", 0.0),
+            ParamDef::new("shearYZ", 0.0),
+            ParamDef::new("shearZX", 0.0),
+            ParamDef::new("shearZY", 0.0),
+            ParamDef::new("circleRotX", 0.0),
+            ParamDef::new("circleRotY", 0.0),
+            ParamDef::new("circleThicknessZ", 0.0),
+            ParamDef::int("colorMode", 0.0, 0.0, 4.0),
+            ParamDef::range("fixedHue", 0.0, 0.0, 1.0),
+            ParamDef::new("zHueScale", 1.0),
+            ParamDef::range("randomHueAmount", 0.0, 0.0, 1.0),
+        ],
+        kind: VarKind::Normal,
+        is_3d: true,
+        // d = [<params>, phi10, gamma, delta, abs_pow (26..30), rotX, rotY, rotZ, circleRotX, circleRotY (radians, 30..35)]
+        apply: |d, ctx, a, v, amount| {
+            let (mut x, mut y, mut z) = (a.x, a.y, a.z);
+            let r = (x * x + y * y).sqrt();
+            let alpha = d[0] / r;
+            if r < d[0] {
+                let cr = d[0] + d[1] - d[27] * ctx.random();
+                let phi = d[26] + d[28] * ctx.random();
+                let (cx, cy) = (cr * phi.cos(), cr * phi.sin());
+                let cz = (ctx.random() - 0.5) * 2.0 * d[21];
+                let (s, c) = d[33].sin_cos();
+                let (cy, cz) = (cy * c - cz * s, cy * s + cz * c);
+                let (s, c) = d[34].sin_cos();
+                x = cx * c + cz * s;
+                y = cy;
+                z = -cx * s + cz * c;
+            } else if ctx.random() <= d[2] * alpha.powf(d[29]) {
+                x *= alpha * alpha;
+                y *= alpha * alpha;
+            }
+            x *= d[10];
+            y *= d[11];
+            z *= d[12];
+            let (tx, ty, tz) = (x + d[15] * y + d[17] * z, y + d[13] * x + d[18] * z, z + d[14] * x + d[16] * y);
+            let (s, c) = d[30].sin_cos();
+            let (y1, z1) = (ty * c - tz * s, ty * s + tz * c);
+            let (s, c) = d[31].sin_cos();
+            let (x1, z2) = (tx * c + z1 * s, -tx * s + z1 * c);
+            let (s, c) = d[32].sin_cos();
+            let (x2, y2) = (x1 * c - y1 * s, x1 * s + y1 * c);
+            v.x += amount * x2;
+            v.y += amount * y2;
+            v.z += amount * (z2 + d[9]);
+            let mode = d[22] as i32;
+            if mode != 0 {
+                let mut hue = 0.0;
+                if mode == 1 || mode == 3 {
+                    hue = fmod((z2 + d[9]) * d[24], 1.0);
+                    if hue < 0.0 {
+                        hue += 1.0;
+                    }
+                }
+                if mode == 2 || mode == 3 {
+                    let shift = (ctx.random() - 0.5) * 2.0 * d[25];
+                    hue = fmod(hue + shift, 1.0);
+                    if hue < 0.0 {
+                        hue += 1.0;
+                    }
+                }
+                if mode == 4 {
+                    hue = d[23];
+                }
+                v.color = hue;
+            }
+        },
+        prepare: Some(|p, _| {
+            let mut d = glynn_sim2_prepare(&p[..6]);
+            // glynn_sim2_prepare appends [phi10, gamma, delta, abs_pow] after the first 6 values
+            let derived = d.split_off(6);
+            d.extend_from_slice(&p[6..]);
+            d[22] = p[22].trunc();
+            d[23] = limit_value(p[23], 0.0, 1.0);
+            d[25] = limit_value(p[25], 0.0, 1.0);
+            d.extend(&derived[..]);
+            d.extend([p[6], p[7], p[8], p[19], p[20]].map(|deg| M_PI * deg / 180.0));
+            d
+        }),
+        wgsl: "var q = vec3<f32>(a.x, a.y, a.z);
+let r = sqrt(q.x * q.x + q.y * q.y);
+let alpha = D(0) / r;
+if (r < D(0)) {
+  let cr = D(0) + D(1) - D(27) * rnd();
+  let phi = D(26) + D(28) * rnd();
+  let cx = cr * cos(phi);
+  var cy = cr * sin(phi);
+  var cz = (rnd() - 0.5) * 2.0 * D(21);
+  let t = cy * cos(D(33)) - cz * sin(D(33));
+  cz = cy * sin(D(33)) + cz * cos(D(33));
+  cy = t;
+  q = vec3<f32>(cx * cos(D(34)) + cz * sin(D(34)), cy, -cx * sin(D(34)) + cz * cos(D(34)));
+} else if (rnd() <= D(2) * java_pow(alpha, D(29))) {
+  q = vec3<f32>(q.xy * alpha * alpha, q.z);
+}
+q *= vec3<f32>(D(10), D(11), D(12));
+let s = vec3<f32>(q.x + D(15) * q.y + D(17) * q.z, q.y + D(13) * q.x + D(18) * q.z, q.z + D(14) * q.x + D(16) * q.y);
+let y1 = s.y * cos(D(30)) - s.z * sin(D(30));
+let z1 = s.y * sin(D(30)) + s.z * cos(D(30));
+let x1 = s.x * cos(D(31)) + z1 * sin(D(31));
+let z2 = -s.x * sin(D(31)) + z1 * cos(D(31)) + D(9);
+v.x += AMOUNT * (x1 * cos(D(32)) - y1 * sin(D(32)));
+v.y += AMOUNT * (x1 * sin(D(32)) + y1 * cos(D(32)));
+v.z += AMOUNT * z2;
+let mode = i32(D(22));
+if (mode != 0) {
+  var hue = 0.0;
+  if (mode == 1 || mode == 3) {
+    hue = (z2 * D(24)) % 1.0;
+    if (hue < 0.0) { hue += 1.0; }
+  }
+  if (mode == 2 || mode == 3) {
+    hue = (hue + (rnd() - 0.5) * 2.0 * D(25)) % 1.0;
+    if (hue < 0.0) { hue += 1.0; }
+  }
+  if (mode == 4) { hue = D(23); }
+  v.color = hue;
+}",
+    },
+    VarDef {
+        name: "glynnSim3",
+        params: &[ParamDef::new("radius", 1.0), ParamDef::new("thickness", 0.1), ParamDef::range("contrast", 0.5, 0.0, 1.0), ParamDef::new("pow", 1.5)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        // d = [radius, thickness, contrast, pow, radius1, radius2, gamma, abs_pow]
+        apply: |d, ctx, a, v, amount| {
+            let r = (a.x * a.x + a.y * a.y).sqrt();
+            let alpha = d[0] / r;
+            if r < d[4] {
+                let phi = 2.0 * M_PI * ctx.random();
+                let cr = if ctx.random() < d[6] { d[4] } else { d[5] };
+                v.x += amount * cr * phi.cos();
+                v.y += amount * cr * phi.sin();
+            } else if ctx.random() > d[2] * alpha.powf(d[7]) {
+                v.x += amount * a.x;
+                v.y += amount * a.y;
+            } else {
+                v.x += amount * alpha * alpha * a.x;
+                v.y += amount * alpha * alpha * a.y;
+            }
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: Some(|p, _| {
+            let mut d = p.to_vec();
+            d[2] = limit_value(p[2], 0.0, 1.0);
+            let radius1 = p[0] + p[1];
+            let radius2 = p[0] * p[0] / radius1;
+            d.extend([radius1, radius2, radius1 / (radius1 + radius2), p[3].abs()]);
+            d
+        }),
+        wgsl: "let r = sqrt(a.x * a.x + a.y * a.y);
+let alpha = D(0) / r;
+if (r < D(4)) {
+  let phi = TWO_PI * rnd();
+  var cr = D(5);
+  if (rnd() < D(6)) { cr = D(4); }
+  v.x += AMOUNT * cr * cos(phi);
+  v.y += AMOUNT * cr * sin(phi);
+} else if (rnd() > D(2) * java_pow(alpha, D(7))) {
+  v.x += AMOUNT * a.x;
+  v.y += AMOUNT * a.y;
+} else {
+  v.x += AMOUNT * alpha * alpha * a.x;
+  v.y += AMOUNT * alpha * alpha * a.y;
 }
 if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
     },
