@@ -795,7 +795,7 @@ fn glynn_prepare(p: &[f64], radius: f64, phi1: f64, pow: f64, contrast_idx: usiz
 fn gosperisland_prepare(p: &[f64]) -> Vec<f64> {
     // JWildfire allows level 10 (6 * 7^10 segments); capped to keep the point list manageable.
     let level = limit_value(ftoi(p[0]), 1, 6);
-    const ANGLE: f64 = 19.106605350869094394;
+    const ANGLE: f64 = 19.106605350869096;
     struct Turtle {
         x: f64,
         y: f64,
