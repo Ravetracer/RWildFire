@@ -4817,8 +4817,1032 @@ v.x += AMOUNT * (a.x * cosz - a.y * sinz);
 v.y += AMOUNT * (a.x * sinz + a.y * cosz);
 if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
     },
+    VarDef {
+        name: "sunvoroni",
+        params: &[
+            ParamDef::int("nPoints", 50.0, 10.0, 1000.0),
+            ParamDef::int("Iters", 3.0, 2.0, 4.0),
+            ParamDef::range("angle", 180.0, 0.0, 360.0),
+            ParamDef::int("color mode", 0.0, 0.0, 2.0),
+            ParamDef::int("outline", 0.0, 0.0, 1.0),
+            ParamDef::int("fill", 1.0, 0.0, 1.0),
+            ParamDef::range("outline color", 0.5, 0.0, 1.0),
+        ],
+        kind: VarKind::Normal,
+        is_3d: false,
+        // d = [7 params, n, n x (type (2 line, 3 triangle), x1, y1, x2, y2, x3, y3, color)]
+        apply: |d, ctx, a, v, amount| {
+            let n = d[7] as usize;
+            if n == 0 {
+                return;
+            }
+            let idx = (ctx.random() * n as f64) as usize;
+            let p = &d[8 + 8 * idx..16 + 8 * idx];
+            let (ox, oy) = if p[0] == 2.0 {
+                let (x1, y1, x2, y2) = (p[1], p[2], p[3], p[4]);
+                let (xdiff, ydiff) = (x2 - x1, y2 - y1);
+                let m = if xdiff == 0.0 { 10000.0 } else { ydiff / xdiff };
+                let line_length = (xdiff * xdiff + ydiff * ydiff).sqrt();
+                let dd = ctx.random() * line_length;
+                let mut xoffset = dd / (1.0 + m * m).sqrt();
+                if x2 < x1 {
+                    xoffset = -xoffset;
+                }
+                let mut yoffset = (m * xoffset).abs();
+                if y2 < y1 {
+                    yoffset = -yoffset;
+                }
+                (x1 + xoffset, y1 + yoffset)
+            } else {
+                super::draw::triangle_point(ctx, [(p[1], p[2]), (p[3], p[4]), (p[5], p[6])])
+            };
+            v.x += amount * ox;
+            v.y += amount * oy;
+            v.color = p[7];
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: Some(sunvoroni_prepare),
+        wgsl: "let n = i32(D(7));
+if (n > 0) {
+  let o = base + 8u + 8u * u32(min(i32(rnd() * f32(n)), n - 1));
+  var q = vec2<f32>(0.0);
+  if (prm[o] == 2.0) {
+    let x1 = prm[o + 1u];
+    let y1 = prm[o + 2u];
+    let x2 = prm[o + 3u];
+    let y2 = prm[o + 4u];
+    let xdiff = x2 - x1;
+    let ydiff = y2 - y1;
+    var m = 10000.0;
+    if (xdiff != 0.0) { m = ydiff / xdiff; }
+    var xoffset = rnd() * sqrt(xdiff * xdiff + ydiff * ydiff) / sqrt(1.0 + m * m);
+    if (x2 < x1) { xoffset = -xoffset; }
+    var yoffset = abs(m * xoffset);
+    if (y2 < y1) { yoffset = -yoffset; }
+    q = vec2<f32>(x1 + xoffset, y1 + yoffset);
+  } else {
+    q = res_triangle_point(vec2<f32>(prm[o + 1u], prm[o + 2u]), vec2<f32>(prm[o + 3u], prm[o + 4u]), vec2<f32>(prm[o + 5u], prm[o + 6u]));
+  }
+  v.x += AMOUNT * q.x;
+  v.y += AMOUNT * q.y;
+  v.color = prm[o + 7u];
+  if (PRESERVE_Z) { v.z += AMOUNT * a.z; }
+}",
+    },
     // @@NEXT@@
 ];
+
+/// `SunflowerVoroniFunc.build_with_mesh`: the Voronoi diagram of a sunflower point set
+/// (megamu.mesh.Voronoi), as line and triangle primitives in JWildfire's order.
+fn sunvoroni_prepare(p: &[f64], _: &Affine) -> Vec<f64> {
+    let n_points = limit_value(p[0], 10.0, 1000.0) as i32;
+    let angle = limit_value(p[2], 0.0, 360.0);
+    let colormode = limit_value(p[3], 0.0, 2.0) as i32;
+    let mut outline = limit_value(p[4], 0.0, 1.0) as i32;
+    let fill = limit_value(p[5], 0.0, 1.0) as i32;
+    let outlinecolor = limit_value(p[6], 0.0, 1.0);
+    if outline == 0 && fill == 0 {
+        outline = 1;
+    }
+    let ang = angle * (3.0 - 5f64.sqrt());
+    let rmax = ((n_points + 1) as f64).sqrt() / 30.0;
+    let points: Vec<[f32; 2]> = (0..n_points)
+        .map(|i| {
+            let r = ((i + 1) as f64).sqrt() / 30.0;
+            let t = (i + 1) as f64 * ang * M_PI / 180.0;
+            [(r * t.cos() / rmax) as f32, (r * t.sin() / rmax) as f32]
+        })
+        .collect();
+    let (edges, regions) = qhull::voronoi(&points);
+    let mut d = vec![n_points as f64, limit_value(p[1], 2.0, 4.0) as i32 as f64, angle, colormode as f64, outline as f64, fill as f64, outlinecolor, 0.0];
+    let mut count = 0usize;
+    if outline == 1 {
+        for e in &edges {
+            d.extend([2.0, e[0] as f64, e[1] as f64, e[2] as f64, e[3] as f64, 0.0, 0.0, outlinecolor]);
+            count += 1;
+        }
+    }
+    if fill == 1 {
+        let mut color = 0.0;
+        for (i, region) in regions.iter().enumerate() {
+            let a: Vec<(f64, f64)> = region.iter().map(|c| (c[0] as f64, c[1] as f64)).collect();
+            let area = sunvoroni_area(&a);
+            let mut rnd = crate::rng::JavaRandom::new(area as i64);
+            if colormode == 0 {
+                color = fmod(1.0 + area, 1.0);
+            } else if colormode == 1 {
+                color = i as f64 / regions.len() as f64;
+            }
+            for t in sunvoroni_triangulate(&a).as_chunks::<3>().0 {
+                if colormode == 2 {
+                    color = rnd.next_double();
+                }
+                d.extend([3.0, t[0].0, t[0].1, t[1].0, t[1].1, t[2].0, t[2].1, color]);
+                count += 1;
+            }
+        }
+    }
+    d[7] = count as f64;
+    d
+}
+
+/// `csk.taprats.geometry.Triangulate.Area`
+fn sunvoroni_area(c: &[(f64, f64)]) -> f64 {
+    let n = c.len();
+    let mut a = 0.0;
+    let mut p = n.wrapping_sub(1);
+    for q in 0..n {
+        a += c[p].0 * c[q].1 - c[q].0 * c[p].1;
+        p = q;
+    }
+    a * 0.5
+}
+
+/// `csk.taprats.geometry.Triangulate.Process` (ear clipping): the triangle corners.
+fn sunvoroni_triangulate(c: &[(f64, f64)]) -> Vec<(f64, f64)> {
+    let mut result = Vec::new();
+    let n = c.len();
+    if n < 3 {
+        return result;
+    }
+    let mut vv: Vec<usize> = if 0.0 < sunvoroni_area(c) { (0..n).collect() } else { (0..n).rev().collect() };
+    let mut nv = n;
+    let mut count = 2 * nv as i64;
+    let mut v = nv - 1;
+    let eps = 1e-10_f32 as f64;
+    let inside = |a: (f64, f64), b: (f64, f64), cc: (f64, f64), p: (f64, f64)| {
+        let (ax, ay) = (cc.0 - b.0, cc.1 - b.1);
+        let (bx, by) = (a.0 - cc.0, a.1 - cc.1);
+        let (cx, cy) = (b.0 - a.0, b.1 - a.1);
+        let (apx, apy) = (p.0 - a.0, p.1 - a.1);
+        let (bpx, bpy) = (p.0 - b.0, p.1 - b.1);
+        let (cpx, cpy) = (p.0 - cc.0, p.1 - cc.1);
+        let a_cross_bp = ax * bpy - ay * bpx;
+        let c_cross_ap = cx * apy - cy * apx;
+        let b_cross_cp = bx * cpy - by * cpx;
+        a_cross_bp >= 0.0 && b_cross_cp >= 0.0 && c_cross_ap >= 0.0
+    };
+    while nv > 2 {
+        if 0 >= count {
+            return result;
+        }
+        count -= 1;
+        let mut u = v;
+        if nv <= u {
+            u = 0;
+        }
+        v = u + 1;
+        if nv <= v {
+            v = 0;
+        }
+        let mut w = v + 1;
+        if nv <= w {
+            w = 0;
+        }
+        // Snip
+        let (a, b, cc) = (c[vv[u]], c[vv[v]], c[vv[w]]);
+        let cross = ((b.0 - a.0) * (cc.1 - a.1)) - ((b.1 - a.1) * (cc.0 - a.0));
+        let mut snip = cross >= eps || cross.is_nan();
+        if snip {
+            for pi in 0..nv {
+                if pi == u || pi == v || pi == w {
+                    continue;
+                }
+                if inside(a, b, cc, c[vv[pi]]) {
+                    snip = false;
+                    break;
+                }
+            }
+        }
+        if snip {
+            result.extend([c[vv[u]], c[vv[v]], c[vv[w]]]);
+            vv.remove(v);
+            nv -= 1;
+            count = 2 * nv as i64;
+        }
+    }
+    result
+}
+
+/// Port of `quickhull3d.QuickHull3D` (John E. Lloyd, version 1.4) and `megamu.mesh.Voronoi`,
+/// reproducing their face, edge and region order.
+mod qhull {
+    const NIL: usize = usize::MAX;
+    const VISIBLE: u8 = 1;
+    const NON_CONVEX: u8 = 2;
+    const DELETED: u8 = 3;
+    const DOUBLE_PREC: f64 = 2.220446049250313e-16;
+
+    #[derive(Clone)]
+    struct Vertex {
+        pnt: [f64; 3],
+        index: i32,
+        prev: usize,
+        next: usize,
+        face: usize,
+    }
+
+    struct Edge {
+        vertex: usize,
+        face: usize,
+        next: usize,
+        prev: usize,
+        opposite: usize,
+    }
+
+    struct Face {
+        he0: usize,
+        normal: [f64; 3],
+        area: f64,
+        centroid: [f64; 3],
+        plane_offset: f64,
+        num_verts: i32,
+        next: usize,
+        mark: u8,
+        outside: usize,
+    }
+
+    #[derive(Clone, Copy)]
+    struct List {
+        head: usize,
+        tail: usize,
+    }
+
+    const EMPTY: List = List { head: NIL, tail: NIL };
+
+    struct Hull {
+        v: Vec<Vertex>,
+        e: Vec<Edge>,
+        f: Vec<Face>,
+        faces: Vec<usize>,
+        new_faces: List,
+        claimed: List,
+        unclaimed: List,
+        tolerance: f64,
+        vertex_point_indices: Vec<usize>,
+        discarded: [usize; 3],
+    }
+
+    fn sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+        [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+    }
+    fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+        [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
+    }
+    fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
+        a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+    }
+    fn normalize(a: &mut [f64; 3]) {
+        let len_sqr = a[0] * a[0] + a[1] * a[1] + a[2] * a[2];
+        let err = len_sqr - 1.0;
+        if err > 2.0 * DOUBLE_PREC || err < -2.0 * DOUBLE_PREC {
+            let len = len_sqr.sqrt();
+            a[0] /= len;
+            a[1] /= len;
+            a[2] /= len;
+        }
+    }
+
+    impl Hull {
+        fn head(&self, he: usize) -> usize {
+            self.e[he].vertex
+        }
+        fn tail(&self, he: usize) -> usize {
+            self.e[self.e[he].prev].vertex
+        }
+        fn opp_face(&self, he: usize) -> usize {
+            let o = self.e[he].opposite;
+            if o == NIL { NIL } else { self.e[o].face }
+        }
+        fn set_opposite(&mut self, a: usize, b: usize) {
+            self.e[a].opposite = b;
+            self.e[b].opposite = a;
+        }
+        fn get_edge(&self, f: usize, mut i: i32) -> usize {
+            let mut he = self.f[f].he0;
+            while i > 0 {
+                he = self.e[he].next;
+                i -= 1;
+            }
+            while i < 0 {
+                he = self.e[he].prev;
+                i += 1;
+            }
+            he
+        }
+        fn dist(&self, f: usize, p: [f64; 3]) -> f64 {
+            let n = self.f[f].normal;
+            n[0] * p[0] + n[1] * p[1] + n[2] * p[2] - self.f[f].plane_offset
+        }
+
+        // ---- VertexList
+        fn list(&mut self, which: u8) -> &mut List {
+            if which == 0 { &mut self.claimed } else { &mut self.unclaimed }
+        }
+        fn list_add(&mut self, which: u8, vtx: usize) {
+            let l = *self.list(which);
+            if l.head == NIL {
+                self.list(which).head = vtx;
+            } else {
+                self.v[l.tail].next = vtx;
+            }
+            self.v[vtx].prev = l.tail;
+            self.v[vtx].next = NIL;
+            self.list(which).tail = vtx;
+        }
+        fn list_add_all(&mut self, which: u8, mut vtx: usize) {
+            let l = *self.list(which);
+            if l.head == NIL {
+                self.list(which).head = vtx;
+            } else {
+                self.v[l.tail].next = vtx;
+            }
+            self.v[vtx].prev = l.tail;
+            while self.v[vtx].next != NIL {
+                vtx = self.v[vtx].next;
+            }
+            self.list(which).tail = vtx;
+        }
+        fn list_delete(&mut self, which: u8, vtx: usize) {
+            let (prev, next) = (self.v[vtx].prev, self.v[vtx].next);
+            if prev == NIL {
+                self.list(which).head = next;
+            } else {
+                self.v[prev].next = next;
+            }
+            if next == NIL {
+                self.list(which).tail = prev;
+            } else {
+                self.v[next].prev = prev;
+            }
+        }
+        fn list_delete_range(&mut self, which: u8, v1: usize, v2: usize) {
+            let (prev, next) = (self.v[v1].prev, self.v[v2].next);
+            if prev == NIL {
+                self.list(which).head = next;
+            } else {
+                self.v[prev].next = next;
+            }
+            if next == NIL {
+                self.list(which).tail = prev;
+            } else {
+                self.v[next].prev = prev;
+            }
+        }
+        fn list_insert_before(&mut self, which: u8, vtx: usize, next: usize) {
+            let np = self.v[next].prev;
+            self.v[vtx].prev = np;
+            if np == NIL {
+                self.list(which).head = vtx;
+            } else {
+                self.v[np].next = vtx;
+            }
+            self.v[vtx].next = next;
+            self.v[next].prev = vtx;
+        }
+
+        // ---- Face
+        fn compute_normal(&mut self, f: usize) {
+            let he0 = self.f[f].he0;
+            let he1 = self.e[he0].next;
+            let mut he2 = self.e[he1].next;
+            let p0 = self.v[self.head(he0)].pnt;
+            let mut p2 = self.v[self.head(he1)].pnt;
+            let (mut d2x, mut d2y, mut d2z) = (p2[0] - p0[0], p2[1] - p0[1], p2[2] - p0[2]);
+            let mut normal = [0.0; 3];
+            let mut num_verts = 2;
+            while he2 != he0 {
+                let (d1x, d1y, d1z) = (d2x, d2y, d2z);
+                p2 = self.v[self.head(he2)].pnt;
+                d2x = p2[0] - p0[0];
+                d2y = p2[1] - p0[1];
+                d2z = p2[2] - p0[2];
+                normal[0] += d1y * d2z - d1z * d2y;
+                normal[1] += d1z * d2x - d1x * d2z;
+                normal[2] += d1x * d2y - d1y * d2x;
+                he2 = self.e[he2].next;
+                num_verts += 1;
+            }
+            let area = (normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2]).sqrt();
+            let s = 1.0 / area;
+            let face = &mut self.f[f];
+            face.num_verts = num_verts;
+            face.area = area;
+            face.normal = [s * normal[0], s * normal[1], s * normal[2]];
+        }
+        fn compute_normal_and_centroid(&mut self, f: usize) {
+            self.compute_normal(f);
+            let he0 = self.f[f].he0;
+            let mut c = [0.0; 3];
+            let mut he = he0;
+            loop {
+                let p = self.v[self.head(he)].pnt;
+                c[0] += p[0];
+                c[1] += p[1];
+                c[2] += p[2];
+                he = self.e[he].next;
+                if he == he0 {
+                    break;
+                }
+            }
+            let s = 1.0 / self.f[f].num_verts as f64;
+            let c = [s * c[0], s * c[1], s * c[2]];
+            let face = &mut self.f[f];
+            face.centroid = c;
+            face.plane_offset = dot(face.normal, c);
+        }
+        fn create_triangle(&mut self, v0: usize, v1: usize, v2: usize) -> usize {
+            let f = self.f.len();
+            let e0 = self.e.len();
+            self.f.push(Face {
+                he0: e0,
+                normal: [0.0; 3],
+                area: 0.0,
+                centroid: [0.0; 3],
+                plane_offset: 0.0,
+                num_verts: 0,
+                next: NIL,
+                mark: VISIBLE,
+                outside: NIL,
+            });
+            for (k, vtx) in [v0, v1, v2].into_iter().enumerate() {
+                self.e.push(Edge { vertex: vtx, face: f, next: e0 + (k + 1) % 3, prev: e0 + (k + 2) % 3, opposite: NIL });
+            }
+            self.compute_normal_and_centroid(f);
+            f
+        }
+        fn connect_half_edges(&mut self, f: usize, hedge_prev: usize, hedge: usize) -> usize {
+            let mut discarded = NIL;
+            if self.opp_face(hedge_prev) == self.opp_face(hedge) {
+                let opp_face = self.opp_face(hedge);
+                let hedge_opp;
+                if hedge_prev == self.f[f].he0 {
+                    self.f[f].he0 = hedge;
+                }
+                if self.f[opp_face].num_verts == 3 {
+                    hedge_opp = self.e[self.e[self.e[hedge].opposite].prev].opposite;
+                    self.f[opp_face].mark = DELETED;
+                    discarded = opp_face;
+                } else {
+                    hedge_opp = self.e[self.e[hedge].opposite].next;
+                    if self.f[opp_face].he0 == self.e[hedge_opp].prev {
+                        self.f[opp_face].he0 = hedge_opp;
+                    }
+                    let pp = self.e[self.e[hedge_opp].prev].prev;
+                    self.e[hedge_opp].prev = pp;
+                    self.e[pp].next = hedge_opp;
+                }
+                let hp = self.e[hedge_prev].prev;
+                self.e[hedge].prev = hp;
+                self.e[hp].next = hedge;
+                self.e[hedge].opposite = hedge_opp;
+                self.e[hedge_opp].opposite = hedge;
+                self.compute_normal_and_centroid(opp_face);
+            } else {
+                self.e[hedge_prev].next = hedge;
+                self.e[hedge].prev = hedge_prev;
+            }
+            discarded
+        }
+        fn merge_adjacent_face(&mut self, f: usize, hedge_adj: usize) -> usize {
+            let opp_face = self.opp_face(hedge_adj);
+            let mut num = 0;
+            self.discarded[num] = opp_face;
+            num += 1;
+            self.f[opp_face].mark = DELETED;
+            let hedge_opp = self.e[hedge_adj].opposite;
+            let mut hedge_adj_prev = self.e[hedge_adj].prev;
+            let mut hedge_adj_next = self.e[hedge_adj].next;
+            let mut hedge_opp_prev = self.e[hedge_opp].prev;
+            let mut hedge_opp_next = self.e[hedge_opp].next;
+            while self.opp_face(hedge_adj_prev) == opp_face {
+                hedge_adj_prev = self.e[hedge_adj_prev].prev;
+                hedge_opp_next = self.e[hedge_opp_next].next;
+            }
+            while self.opp_face(hedge_adj_next) == opp_face {
+                hedge_opp_prev = self.e[hedge_opp_prev].prev;
+                hedge_adj_next = self.e[hedge_adj_next].next;
+            }
+            let mut h = hedge_opp_next;
+            while h != self.e[hedge_opp_prev].next {
+                self.e[h].face = f;
+                h = self.e[h].next;
+            }
+            if hedge_adj == self.f[f].he0 {
+                self.f[f].he0 = hedge_adj_next;
+            }
+            let d1 = self.connect_half_edges(f, hedge_opp_prev, hedge_adj_next);
+            if d1 != NIL {
+                self.discarded[num] = d1;
+                num += 1;
+            }
+            let d2 = self.connect_half_edges(f, hedge_adj_prev, hedge_opp_next);
+            if d2 != NIL {
+                self.discarded[num] = d2;
+                num += 1;
+            }
+            self.compute_normal_and_centroid(f);
+            num
+        }
+
+        // ---- QuickHull3D
+        fn add_point_to_face(&mut self, vtx: usize, f: usize) {
+            self.v[vtx].face = f;
+            let outside = self.f[f].outside;
+            if outside == NIL {
+                self.list_add(0, vtx);
+            } else {
+                self.list_insert_before(0, vtx, outside);
+            }
+            self.f[f].outside = vtx;
+        }
+        fn remove_point_from_face(&mut self, vtx: usize, f: usize) {
+            if vtx == self.f[f].outside {
+                let next = self.v[vtx].next;
+                self.f[f].outside = if next != NIL && self.v[next].face == f { next } else { NIL };
+            }
+            self.list_delete(0, vtx);
+        }
+        fn remove_all_points_from_face(&mut self, f: usize) -> usize {
+            let outside = self.f[f].outside;
+            if outside == NIL {
+                return NIL;
+            }
+            let mut end = outside;
+            while self.v[end].next != NIL && self.v[self.v[end].next].face == f {
+                end = self.v[end].next;
+            }
+            self.list_delete_range(0, outside, end);
+            self.v[end].next = NIL;
+            outside
+        }
+        fn delete_face_points(&mut self, f: usize, absorbing: usize) {
+            let face_vtxs = self.remove_all_points_from_face(f);
+            if face_vtxs == NIL {
+                return;
+            }
+            if absorbing == NIL {
+                self.list_add_all(1, face_vtxs);
+            } else {
+                let mut vtx = face_vtxs;
+                while vtx != NIL {
+                    let next = self.v[vtx].next;
+                    if self.dist(absorbing, self.v[vtx].pnt) > self.tolerance {
+                        self.add_point_to_face(vtx, absorbing);
+                    } else {
+                        self.list_add(1, vtx);
+                    }
+                    vtx = next;
+                }
+            }
+        }
+        fn opp_face_distance(&self, he: usize) -> f64 {
+            self.dist(self.e[he].face, self.f[self.e[self.e[he].opposite].face].centroid)
+        }
+        fn do_adjacent_merge(&mut self, f: usize, merge_type: i32) -> bool {
+            let mut hedge = self.f[f].he0;
+            let mut convex = true;
+            loop {
+                let opp_face = self.opp_face(hedge);
+                let mut merge = false;
+                let tol = -self.tolerance;
+                if merge_type == 2 {
+                    if self.opp_face_distance(hedge) > tol || self.opp_face_distance(self.e[hedge].opposite) > tol {
+                        merge = true;
+                    }
+                } else if self.f[f].area > self.f[opp_face].area {
+                    if self.opp_face_distance(hedge) > tol {
+                        merge = true;
+                    } else if self.opp_face_distance(self.e[hedge].opposite) > tol {
+                        convex = false;
+                    }
+                } else if self.opp_face_distance(self.e[hedge].opposite) > tol {
+                    merge = true;
+                } else if self.opp_face_distance(hedge) > tol {
+                    convex = false;
+                }
+                if merge {
+                    let numd = self.merge_adjacent_face(f, hedge);
+                    for i in 0..numd {
+                        let d = self.discarded[i];
+                        self.delete_face_points(d, f);
+                    }
+                    return true;
+                }
+                hedge = self.e[hedge].next;
+                if hedge == self.f[f].he0 {
+                    break;
+                }
+            }
+            if !convex {
+                self.f[f].mark = NON_CONVEX;
+            }
+            false
+        }
+        fn calculate_horizon(&mut self, eye: [f64; 3], edge0: usize, f: usize, horizon: &mut Vec<usize>) {
+            self.delete_face_points(f, NIL);
+            self.f[f].mark = DELETED;
+            let (edge0, mut edge) = if edge0 == NIL {
+                let e0 = self.get_edge(f, 0);
+                (e0, e0)
+            } else {
+                (edge0, self.e[edge0].next)
+            };
+            loop {
+                let opp_face = self.opp_face(edge);
+                if self.f[opp_face].mark == VISIBLE {
+                    if self.dist(opp_face, eye) > self.tolerance {
+                        let o = self.e[edge].opposite;
+                        self.calculate_horizon(eye, o, opp_face, horizon);
+                    } else {
+                        horizon.push(edge);
+                    }
+                }
+                edge = self.e[edge].next;
+                if edge == edge0 {
+                    break;
+                }
+            }
+        }
+        fn add_new_faces(&mut self, eye: usize, horizon: &[usize]) {
+            self.new_faces = EMPTY;
+            let mut hedge_side_prev = NIL;
+            let mut hedge_side_begin = NIL;
+            for &horizon_he in horizon {
+                // addAdjoiningFace
+                let tail = self.tail(horizon_he);
+                let head = self.head(horizon_he);
+                let face = self.create_triangle(eye, tail, head);
+                self.faces.push(face);
+                let em1 = self.get_edge(face, -1);
+                let ho = self.e[horizon_he].opposite;
+                self.set_opposite(em1, ho);
+                let hedge_side = self.get_edge(face, 0);
+                if hedge_side_prev != NIL {
+                    let n = self.e[hedge_side].next;
+                    self.set_opposite(n, hedge_side_prev);
+                } else {
+                    hedge_side_begin = hedge_side;
+                }
+                // newFaces.add
+                let f = self.e[hedge_side].face;
+                if self.new_faces.head == NIL {
+                    self.new_faces.head = f;
+                } else {
+                    let t = self.new_faces.tail;
+                    self.f[t].next = f;
+                }
+                self.f[f].next = NIL;
+                self.new_faces.tail = f;
+                hedge_side_prev = hedge_side;
+            }
+            let n = self.e[hedge_side_begin].next;
+            self.set_opposite(n, hedge_side_prev);
+        }
+        fn next_point_to_add(&self) -> usize {
+            if self.claimed.head == NIL {
+                return NIL;
+            }
+            let eye_face = self.v[self.claimed.head].face;
+            let mut eye = NIL;
+            let mut max_dist = 0.0;
+            let mut vtx = self.f[eye_face].outside;
+            while vtx != NIL && self.v[vtx].face == eye_face {
+                let d = self.dist(eye_face, self.v[vtx].pnt);
+                if d > max_dist {
+                    max_dist = d;
+                    eye = vtx;
+                }
+                vtx = self.v[vtx].next;
+            }
+            eye
+        }
+        fn add_point_to_hull(&mut self, eye: usize) {
+            self.unclaimed = EMPTY;
+            let eye_face = self.v[eye].face;
+            self.remove_point_from_face(eye, eye_face);
+            let mut horizon = Vec::new();
+            let pnt = self.v[eye].pnt;
+            self.calculate_horizon(pnt, NIL, eye_face, &mut horizon);
+            self.add_new_faces(eye, &horizon);
+            let mut f = self.new_faces.head;
+            while f != NIL {
+                if self.f[f].mark == VISIBLE {
+                    while self.do_adjacent_merge(f, 1) {}
+                }
+                f = self.f[f].next;
+            }
+            let mut f = self.new_faces.head;
+            while f != NIL {
+                if self.f[f].mark == NON_CONVEX {
+                    self.f[f].mark = VISIBLE;
+                    while self.do_adjacent_merge(f, 2) {}
+                }
+                f = self.f[f].next;
+            }
+            // resolveUnclaimedPoints
+            let mut vtx = self.unclaimed.head;
+            while vtx != NIL {
+                let next = self.v[vtx].next;
+                let mut max_dist = self.tolerance;
+                let mut max_face = NIL;
+                let mut nf = self.new_faces.head;
+                while nf != NIL {
+                    if self.f[nf].mark == VISIBLE {
+                        let d = self.dist(nf, self.v[vtx].pnt);
+                        if d > max_dist {
+                            max_dist = d;
+                            max_face = nf;
+                        }
+                        if max_dist > 1000.0 * self.tolerance {
+                            break;
+                        }
+                    }
+                    nf = self.f[nf].next;
+                }
+                if max_face != NIL {
+                    self.add_point_to_face(vtx, max_face);
+                }
+                vtx = next;
+            }
+        }
+        fn build(coords: &[[f64; 3]]) -> Option<Hull> {
+            let n = coords.len();
+            if n < 4 {
+                return None;
+            }
+            let v = coords.iter().enumerate().map(|(i, p)| Vertex { pnt: *p, index: i as i32, prev: NIL, next: NIL, face: NIL }).collect();
+            let mut h = Hull {
+                v,
+                e: Vec::new(),
+                f: Vec::new(),
+                faces: Vec::new(),
+                new_faces: EMPTY,
+                claimed: EMPTY,
+                unclaimed: EMPTY,
+                tolerance: 0.0,
+                vertex_point_indices: vec![0; n],
+                discarded: [NIL; 3],
+            };
+            // computeMaxAndMin
+            let mut max_v = [0usize; 3];
+            let mut min_v = [0usize; 3];
+            let mut max = h.v[0].pnt;
+            let mut min = h.v[0].pnt;
+            for i in 1..n {
+                let p = h.v[i].pnt;
+                for k in 0..3 {
+                    if p[k] > max[k] {
+                        max[k] = p[k];
+                        max_v[k] = i;
+                    } else if p[k] < min[k] {
+                        min[k] = p[k];
+                        // quickhull3d 1.4 stores the minimum z vertex in maxVtxs[2]
+                        if k == 2 {
+                            max_v[k] = i;
+                        } else {
+                            min_v[k] = i;
+                        }
+                    }
+                }
+            }
+            h.tolerance = 3.0
+                * DOUBLE_PREC
+                * (max[0].abs().max(min[0].abs()) + max[1].abs().max(min[1].abs()) + max[2].abs().max(min[2].abs()));
+            // createInitialSimplex
+            let mut maxd = 0.0;
+            let mut imax = 0;
+            for i in 0..3 {
+                let diff = h.v[max_v[i]].pnt[i] - h.v[min_v[i]].pnt[i];
+                if diff > maxd {
+                    maxd = diff;
+                    imax = i;
+                }
+            }
+            if maxd <= h.tolerance {
+                return None;
+            }
+            let mut vtx = [max_v[imax], min_v[imax], NIL, NIL];
+            let mut u01 = sub(h.v[vtx[1]].pnt, h.v[vtx[0]].pnt);
+            normalize(&mut u01);
+            let mut max_sqr = 0.0;
+            let mut nrml = [0.0; 3];
+            for i in 0..n {
+                let diff02 = sub(h.v[i].pnt, h.v[vtx[0]].pnt);
+                let xprod = cross(u01, diff02);
+                let len_sqr = dot(xprod, xprod);
+                if len_sqr > max_sqr && i != vtx[0] && i != vtx[1] {
+                    max_sqr = len_sqr;
+                    vtx[2] = i;
+                    nrml = xprod;
+                }
+            }
+            if max_sqr.sqrt() <= 100.0 * h.tolerance {
+                return None;
+            }
+            normalize(&mut nrml);
+            let mut max_dist = 0.0;
+            let d0 = dot(h.v[vtx[2]].pnt, nrml);
+            for i in 0..n {
+                let dist = (dot(h.v[i].pnt, nrml) - d0).abs();
+                if dist > max_dist && i != vtx[0] && i != vtx[1] && i != vtx[2] {
+                    max_dist = dist;
+                    vtx[3] = i;
+                }
+            }
+            if max_dist.abs() <= 100.0 * h.tolerance {
+                return None;
+            }
+            let mut tris = [0usize; 4];
+            if dot(h.v[vtx[3]].pnt, nrml) - d0 < 0.0 {
+                tris[0] = h.create_triangle(vtx[0], vtx[1], vtx[2]);
+                tris[1] = h.create_triangle(vtx[3], vtx[1], vtx[0]);
+                tris[2] = h.create_triangle(vtx[3], vtx[2], vtx[1]);
+                tris[3] = h.create_triangle(vtx[3], vtx[0], vtx[2]);
+                for i in 0..3 {
+                    let k = (i + 1) % 3;
+                    let (a, b) = (h.get_edge(tris[i + 1], 1), h.get_edge(tris[k + 1], 0));
+                    h.set_opposite(a, b);
+                    let (a, b) = (h.get_edge(tris[i + 1], 2), h.get_edge(tris[0], k as i32));
+                    h.set_opposite(a, b);
+                }
+            } else {
+                tris[0] = h.create_triangle(vtx[0], vtx[2], vtx[1]);
+                tris[1] = h.create_triangle(vtx[3], vtx[0], vtx[1]);
+                tris[2] = h.create_triangle(vtx[3], vtx[1], vtx[2]);
+                tris[3] = h.create_triangle(vtx[3], vtx[2], vtx[0]);
+                for i in 0..3 {
+                    let k = (i + 1) % 3;
+                    let (a, b) = (h.get_edge(tris[i + 1], 0), h.get_edge(tris[k + 1], 1));
+                    h.set_opposite(a, b);
+                    let (a, b) = (h.get_edge(tris[i + 1], 2), h.get_edge(tris[0], ((3 - i) % 3) as i32));
+                    h.set_opposite(a, b);
+                }
+            }
+            h.faces.extend(tris);
+            for i in 0..n {
+                if vtx.contains(&i) {
+                    continue;
+                }
+                let mut max_dist = h.tolerance;
+                let mut max_face = NIL;
+                for &t in &tris {
+                    let d = h.dist(t, h.v[i].pnt);
+                    if d > max_dist {
+                        max_face = t;
+                        max_dist = d;
+                    }
+                }
+                if max_face != NIL {
+                    h.add_point_to_face(i, max_face);
+                }
+            }
+            // buildHull
+            loop {
+                let eye = h.next_point_to_add();
+                if eye == NIL {
+                    break;
+                }
+                h.add_point_to_hull(eye);
+            }
+            // reindexFacesAndVertices
+            for vx in h.v.iter_mut() {
+                vx.index = -1;
+            }
+            let faces: Vec<usize> = h.faces.iter().copied().filter(|&f| h.f[f].mark == VISIBLE).collect();
+            for &f in &faces {
+                let he0 = h.f[f].he0;
+                let mut he = he0;
+                loop {
+                    let hv = h.head(he);
+                    h.v[hv].index = 0;
+                    he = h.e[he].next;
+                    if he == he0 {
+                        break;
+                    }
+                }
+            }
+            h.faces = faces;
+            let mut num_vertices = 0;
+            for i in 0..n {
+                if h.v[i].index == 0 {
+                    h.vertex_point_indices[num_vertices] = i;
+                    h.v[i].index = num_vertices as i32;
+                    num_vertices += 1;
+                }
+            }
+            Some(h)
+        }
+        /// `getFaces(POINT_RELATIVE + CLOCKWISE)`
+        fn faces_point_relative_cw(&self) -> Vec<Vec<usize>> {
+            self.faces
+                .iter()
+                .map(|&f| {
+                    let mut idx = Vec::new();
+                    let he0 = self.f[f].he0;
+                    let mut he = he0;
+                    loop {
+                        idx.push(self.vertex_point_indices[self.v[self.head(he)].index as usize]);
+                        he = self.e[he].prev;
+                        if he == he0 {
+                            break;
+                        }
+                    }
+                    idx
+                })
+                .collect()
+        }
+    }
+
+    fn is_edge_shared(f1: &[usize], f2: &[usize]) -> bool {
+        for i in 0..f1.len() {
+            let (cur, next) = (f1[i], f1[(i + 1) % f1.len()]);
+            for j in 0..f2.len() {
+                let (from, to) = (f2[j], f2[(j + 1) % f2.len()]);
+                if cur == from && next == to || cur == to && next == from {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// `megamu.mesh.Voronoi`: (edges [x1, y1, x2, y2], regions); a region keeps its unused
+    /// trailing (0, 0) coordinates like `MPolygon.getCoords`.
+    pub(super) fn voronoi(points: &[[f32; 2]]) -> (Vec<[f32; 4]>, Vec<Vec<[f32; 2]>>) {
+        let np = points.len();
+        if np < 1 {
+            return (Vec::new(), Vec::new());
+        }
+        let mut q: Vec<[f64; 3]> = points.iter().map(|p| [p[0] as f64, p[1] as f64, (-(p[0] * p[0] + p[1] * p[1])) as f64]).collect();
+        q.push([-8000.0, 0.0, -64000000.0]);
+        q.push([8000.0, 8000.0, -128000000.0]);
+        q.push([8000.0, -8000.0, -128000000.0]);
+        let Some(hull) = Hull::build(&q) else {
+            return (Vec::new(), Vec::new());
+        };
+        let faces = hull.faces_point_relative_cw();
+        let mut artifact = 0;
+        let mut dual = vec![[0.0f64; 2]; faces.len()];
+        for (i, f) in faces.iter().enumerate() {
+            if f[0] >= np && f[1] >= np && f[2] >= np {
+                artifact = i;
+            }
+            let (x0, y0) = (q[f[0]][0], q[f[0]][1]);
+            let (x1, y1) = (q[f[1]][0], q[f[1]][1]);
+            let (x2, y2) = (q[f[2]][0], q[f[2]][1]);
+            let v1x = 2.0 * (x1 - x0);
+            let v1y = 2.0 * (y1 - y0);
+            let v1z = x0 * x0 - x1 * x1 + y0 * y0 - y1 * y1;
+            let v2x = 2.0 * (x2 - x0);
+            let v2y = 2.0 * (y2 - y0);
+            let v2z = x0 * x0 - x2 * x2 + y0 * y0 - y2 * y2;
+            let tmpx = v1y * v2z - v1z * v2y;
+            let tmpy = v1z * v2x - v1x * v2z;
+            let tmpz = v1x * v2y - v1y * v2x;
+            dual[i] = [tmpx / tmpz, tmpy / tmpz];
+        }
+        let mut edges = Vec::new();
+        let mut links: Vec<Vec<usize>> = vec![Vec::new(); faces.len()];
+        let mut buckets: Vec<Vec<usize>> = vec![Vec::new(); np];
+        for i in 0..faces.len() {
+            for &fv in &faces[i] {
+                if fv < np {
+                    buckets[fv].push(i);
+                }
+            }
+            for j in 0..i {
+                if i != artifact && j != artifact && is_edge_shared(&faces[i], &faces[j]) {
+                    links[i].push(j);
+                    links[j].push(i);
+                    edges.push([dual[i][0] as f32, dual[i][1] as f32, dual[j][0] as f32, dual[j][1] as f32]);
+                }
+            }
+        }
+        let mut regions = Vec::with_capacity(np);
+        for bucket in &buckets {
+            let mut order: Vec<usize> = Vec::new();
+            let mut p = bucket.first().map_or(-1, |&b| b as i64);
+            while p >= 0 {
+                let pu = p as usize;
+                order.push(pu);
+                p = -1;
+                for &nb in &links[pu] {
+                    if !order.contains(&nb) && bucket.contains(&nb) {
+                        p = nb as i64;
+                        break;
+                    }
+                }
+            }
+            let mut region = vec![[0.0f32; 2]; bucket.len()];
+            for (k, &f) in order.iter().enumerate() {
+                region[k] = [dual[f][0] as f32, dual[f][1] as f32];
+            }
+            regions.push(region);
+        }
+        (edges, regions)
+    }
+}
 
 // xtrb data layout: [power, radius, width, dist, a, b, width1(6), width2, width3, sinC, cosC,
 //   ab(11), ac, ba, bc, ca, cb, Ha(17), Hb, Hc, S2a(20), S2b, S2c, S2bc(23), S2ab, S2ac, absN(26), cN]
