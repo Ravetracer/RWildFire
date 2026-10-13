@@ -26,6 +26,7 @@ use crate::math::*;
 #[allow(unused_imports)]
 use crate::model::Affine;
 use super::glsl::{Vec2, Vec3, dc_output, vec2};
+use super::noise;
 
 /// `Cubic_3DFunc` / `CubicLattice3DFunc` node: sign of the lattice offset per axis
 /// (x flips with bit 2, y with bit 0, z with bit 1).
@@ -1049,5 +1050,166 @@ if (i32(D(15)) == 1) { uv = vec2<f32>(a.x, a.y); }
 let color = dc_gmandelbroot_color(base, uv * D(14) - vec2<f32>(D(12), D(13)));
 if (color.x == 0.0 && color.y == 0.0 && color.z == 0.0) { v.hide = 1.0; } else { v.hide = 0.0; }
 dc_output(&v, AMOUNT, uv, color, i32(D(16)), D(17), D(18), i32(D(19)));",
+    },
+    VarDef {
+        name: "dc_perlin",
+        params: &[
+            ParamDef::int("shape", 0.0, 0.0, 2.0),
+            ParamDef::int("map", 0.0, 0.0, 5.0),
+            ParamDef::range("select_centre", 0.0, -1.0, 1.0),
+            ParamDef::range("select_range", 1.0, 0.1, 2.0),
+            ParamDef::new("centre", 0.25),
+            ParamDef::new("range", 0.25),
+            ParamDef::new("edge", 0.0),
+            ParamDef::new("scale", 1.0),
+            ParamDef::int("octaves", 2.0, 1.0, 5.0),
+            ParamDef::new("amps", 2.0),
+            ParamDef::new("freqs", 2.0),
+            ParamDef::new("z", 0.0),
+            ParamDef::int("select_bailout", 10.0, 2.0, 1000.0),
+            ParamDef::int("color_only", 0.0, 0.0, 1.0),
+        ],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            // d = [shape, map, select_centre, select_range, centre, range, edge, scale, octaves, amps,
+            //      freqs, z, select_bailout, color_only, notch_bottom, notch_top]
+            let (edge, scale, z) = (d[6], d[7], d[11]);
+            let (mut vx, mut vy, mut p): (f64, f64, f64);
+            let mut t = 0;
+            loop {
+                let mut e = 0.0;
+                if amount == 0.0 {
+                    vx = a.x;
+                    vy = a.y;
+                } else {
+                    match d[0] as i32 {
+                        0 => {
+                            vx = (1.0 + edge) * ((if d[13] > 0.0 { a.x } else { ctx.random() }) - 0.5);
+                            vy = (1.0 + edge) * ((if d[13] > 0.0 { a.y } else { ctx.random() }) - 0.5);
+                            let r = if vx * vx > vy * vy { vx } else { vy };
+                            if r > 1.0 - edge {
+                                e = 0.5 * (r - 1.0 + edge) / edge;
+                            }
+                        }
+                        shape => {
+                            let mut r = if shape == 1 {
+                                let r = ctx.random() + ctx.random();
+                                (if r > 1.0 { 2.0 - r } else { r }) * (1.0 + edge)
+                            } else {
+                                (1.0 + edge) * ctx.random()
+                            };
+                            if r > 1.0 - edge {
+                                e = 0.5 * (r - 1.0 + edge) / edge;
+                            }
+                            let theta = ctx.random() * M_2PI;
+                            r *= 0.5;
+                            vx = r * theta.sin();
+                            vy = r * theta.cos();
+                        }
+                    }
+                }
+                let rr = vx * vx + vy * vy;
+                let bubble = || {
+                    let r = 0.25 - rr;
+                    if r < 0.0 { (-r).sqrt() } else { r.sqrt() }
+                };
+                let vv = match d[1] as i32 {
+                    0 => [scale * vx, scale * vy, scale * z],
+                    1 => [scale * vx / (rr + SMALL_EPSILON), scale * vy / (rr + SMALL_EPSILON), scale * z],
+                    2 => [scale * vx / (rr + 0.5), scale * vy / (rr + 0.5), scale * z],
+                    3 => [scale * vx / (rr + 0.25), scale * vy / (rr + 0.25), scale * z],
+                    4 => [scale * vx, scale * vy, scale * (bubble() + z)],
+                    _ => [scale * vx, scale * vy, scale * (2.0 * bubble() + z)],
+                };
+                p = noise::perlin_noise3d(vv, d[9], d[10], d[8] as i32);
+                e = if p > 0.0 { p * (1.0 + e * e * 20.0) + 2.0 * e } else { p * (1.0 + e * e * 20.0) - 2.0 * e };
+                let again = (e < d[14] || e > d[15]) && t < d[12] as i32;
+                t += 1;
+                if !again {
+                    break;
+                }
+            }
+            v.x += amount * vx;
+            v.y += amount * vy;
+            if ctx.preserve_z {
+                v.z += amount * a.z;
+            }
+            let col = d[4] + d[5] * p;
+            v.color = col - col.floor();
+        },
+        prepare: Some(|p, _| {
+            let mut d = p.to_vec();
+            d[0] = limit_value(ftoi(p[0]), 0, 2) as f64;
+            d[1] = limit_value(ftoi(p[1]), 0, 5) as f64;
+            d[2] = limit_value(p[2], -1.0, 1.0);
+            d[3] = limit_value(p[3], 0.1, 2.0);
+            d[8] = limit_value(ftoi(p[8]), 1, 5) as f64;
+            d[12] = limit_value(ftoi(p[12]), 2, 1000) as f64;
+            d[13] = limit_value(ftoi(p[13]), 0, 1) as f64;
+            let mut bottom = d[2] - d[3];
+            bottom = if bottom > 0.75 { 0.75 } else { bottom };
+            bottom = if bottom < -2.0 { -3.0 } else { bottom };
+            let mut top = d[2] + d[3];
+            top = if top < -0.75 { -0.75 } else { top };
+            top = if top > 3.0 { 3.0 } else { top };
+            d.push(bottom);
+            d.push(top);
+            d
+        }),
+        wgsl: "let edge = D(6);
+let scale = D(7);
+let zz = D(11);
+var vx = 0.0;
+var vy = 0.0;
+var p = 0.0;
+var t = 0;
+loop {
+  var e = 0.0;
+  if (AMOUNT == 0.0) {
+    vx = a.x;
+    vy = a.y;
+  } else if (i32(D(0)) == 0) {
+    var ux = rnd();
+    var uy = rnd();
+    if (D(13) > 0.0) { ux = a.x; uy = a.y; }
+    vx = (1.0 + edge) * (ux - 0.5);
+    vy = (1.0 + edge) * (uy - 0.5);
+    let r = select(vy, vx, vx * vx > vy * vy);
+    if (r > 1.0 - edge) { e = 0.5 * (r - 1.0 + edge) / edge; }
+  } else {
+    var r = 0.0;
+    if (i32(D(0)) == 1) {
+      r = rnd() + rnd();
+      if (r > 1.0) { r = 2.0 - r; }
+      r *= 1.0 + edge;
+    } else {
+      r = (1.0 + edge) * rnd();
+    }
+    if (r > 1.0 - edge) { e = 0.5 * (r - 1.0 + edge) / edge; }
+    let theta = rnd() * TWO_PI;
+    vx = 0.5 * r * sin(theta);
+    vy = 0.5 * r * cos(theta);
+  }
+  let rr = vx * vx + vy * vy;
+  let bub = sqrt(abs(0.25 - rr));
+  let map = i32(D(1));
+  var vv = vec3<f32>(scale * vx, scale * vy, scale * zz);
+  if (map == 1) { vv = vec3<f32>(vv.xy / (rr + 1e-30), vv.z); }
+  else if (map == 2) { vv = vec3<f32>(vv.xy / (rr + 0.5), vv.z); }
+  else if (map == 3) { vv = vec3<f32>(vv.xy / (rr + 0.25), vv.z); }
+  else if (map == 4) { vv.z = scale * (bub + zz); }
+  else if (map == 5) { vv.z = scale * (2.0 * bub + zz); }
+  p = noise_perlin3d(vv, D(9), D(10), i32(D(8)));
+  if (p > 0.0) { e = p * (1.0 + e * e * 20.0) + 2.0 * e; } else { e = p * (1.0 + e * e * 20.0) - 2.0 * e; }
+  let again = (e < D(14) || e > D(15)) && t < i32(D(12));
+  t++;
+  if (!again) { break; }
+}
+v.x += AMOUNT * vx;
+v.y += AMOUNT * vy;
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }
+let col = D(4) + D(5) * p;
+v.color = col - floor(col);",
     },
 ];

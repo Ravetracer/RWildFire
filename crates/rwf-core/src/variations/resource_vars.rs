@@ -194,15 +194,15 @@ static PRIMITIVE_PARAMS: [ParamDef; 15] = primitive_params();
 
 // Mesh data after the parameters (relative to `o`, the colormap image block).
 const M_DISPL: usize = IMG;
-const M_NV: usize = 2 * IMG;
-const M_NF: usize = M_NV + 1;
-const M_TOTAL: usize = M_NV + 2;
-const M_VSTART: usize = M_NV + 3;
-const M_FSTART: usize = M_NV + 4;
-const M_HEADER: usize = M_NV + 5;
+pub(super) const M_NV: usize = 2 * IMG;
+pub(super) const M_NF: usize = M_NV + 1;
+pub(super) const M_TOTAL: usize = M_NV + 2;
+pub(super) const M_VSTART: usize = M_NV + 3;
+pub(super) const M_FSTART: usize = M_NV + 4;
+pub(super) const M_HEADER: usize = M_NV + 5;
 /// Values per vertex `[x, y, z, u, v, has_uv]` and per face `[v1, v2, v3, cumulative count]`.
-const VREC: usize = 6;
-const FREC: usize = 4;
+pub(super) const VREC: usize = 6;
+pub(super) const FREC: usize = 4;
 
 /// Limits the shared parameters (starting at `p`) and reserves the resource header.
 fn mesh_prepare(params: &[f64], p: usize) -> Vec<f64> {
@@ -232,7 +232,7 @@ fn mesh_load(d: &mut Vec<f64>, p: usize, src: Option<MeshSource>, colormap: &[u8
 }
 
 /// Appends a mesh and fills the mesh header at `o + M_NV`.
-fn pack_mesh(d: &mut Vec<f64>, o: usize, m: &Mesh) {
+pub(super) fn pack_mesh(d: &mut Vec<f64>, o: usize, m: &Mesh) {
     d[o + M_NV] = m.vertices.len() as f64;
     d[o + M_NF] = m.faces.len() as f64;
     d[o + M_TOTAL] = m.face_count() as f64;
