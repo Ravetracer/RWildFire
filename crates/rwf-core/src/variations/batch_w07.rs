@@ -508,10 +508,9 @@ fn dc_kaleidoscopic_rgb(d: &[f64], xp: f64, yp: f64) -> Vec3 {
 // dc_kaleidotile
 // ---------------------------------------------------------------------------------------------
 
-/// Java keeps the color in a per-instance chain (`oldColor`, starting at 0.5, advanced by every
-/// call with the branch chosen for that call). The port is stateless: the chain state is
-/// reconstructed from this many random earlier steps, starting at 0.5.
-const DC_KALEIDOTILE_HISTORY: usize = 16;
+// Java keeps the color in a per-instance chain (`oldColor`, starting at 0.5, advanced by every
+// call with the branch chosen for that call). The CPU keeps it per render thread; the GPU
+// reconstructs it from 16 random earlier steps, starting at 0.5.
 
 // ---------------------------------------------------------------------------------------------
 // dc_kaliset2 / dc_kaliset
@@ -1603,10 +1602,8 @@ dc_output(&v, AMOUNT, uv, col, i32(D(7)), D(8), D(9), i32(D(10)));",
             // d = [pull, rotate, line_up, x, y, color1, speed1, color2, speed2, c11, c12, c21, c22]
             let (c11, c12, c21, c22) = (d[9], d[10], d[11], d[12]);
             let first = ctx.random() < 0.5;
-            let mut old_color = 0.5;
-            for _ in 0..DC_KALEIDOTILE_HISTORY {
-                old_color = if ctx.random() < 0.5 { old_color * c11 + c12 } else { old_color * c21 + c22 };
-            }
+            let key = d.as_ptr() as usize;
+            let old_color = ctx.orbits.get(&key).map_or(0.5, |st| st[0]);
             let (c45, s45) = (45f64.cos(), 45f64.sin());
             let xin = a.x * 0.831;
             let yin = a.y * 0.831;
@@ -1631,6 +1628,7 @@ dc_output(&v, AMOUNT, uv, col, i32(D(7)), D(8), D(9), i32(D(10)));",
                 new_color = old_color * c21 + c22;
             }
             v.color = fmod(new_color, 1.0);
+            ctx.orbits.insert(key, [new_color, 0.0]);
             ctx.pass_z(a, v, amount);
         },
         prepare: Some(|p, _| {
