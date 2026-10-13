@@ -25,7 +25,7 @@ use super::{Ctx, ParamDef, Pt, VarDef, VarKind, simple};
 use crate::math::*;
 #[allow(unused_imports)]
 use crate::model::Affine;
-use super::glsl::{Vec2, Vec3, dc_output, vec2};
+use super::glsl::{Vec2, Vec3, dc_output, fract, glsl_app, glsl_atan2, mat3, glsl_dbl2int, glsl_mod, glsl_rot, length, mat2, mix, normalize, sign, smoothstep, vec2, vec3};
 use super::noise;
 
 /// `Cubic_3DFunc` / `CubicLattice3DFunc` node: sign of the lattice offset per axis
@@ -432,6 +432,155 @@ fn flora_leaf(kind: i32, sm: f64, t0: f64) -> (f64, f64) {
             let r = 0.05 * t;
             (r * t.cos(), r * t.sin())
         }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// glsl_* (GLSLFunc): a random pixel of a resolutionX x 1000000 grid (resolutionY keeps its
+// initial value in JWildfire) is colored by a shader and placed into the unit square.
+// ---------------------------------------------------------------------------------------------
+
+/// JWildfire's `resolutionY` (never updated from the "Density Pixels" parameter).
+const GLSL_RES_Y: f64 = 1000000.0;
+
+/// Random pixel `(i, j)` for the resolution `res_x`.
+fn glsl_pixel(ctx: &mut Ctx, res_x: f64) -> (f64, f64) {
+    let i = (ctx.random() * res_x) as i32;
+    let j = (ctx.random() * GLSL_RES_Y) as i32;
+    (i as f64, j as f64)
+}
+
+/// Output of a pixel: true color (`gradient == 0`) or the gradient index `idx`, and the position.
+fn glsl_out(v: &mut Pt, amount: f64, (i, j): (f64, f64), res_x: f64, color: Vec3, gradient: f64, idx: impl FnOnce(Vec3) -> f64) {
+    if gradient as i32 == 0 {
+        let t = glsl_dbl2int(color);
+        v.rgb_color = true;
+        v.red = t[0] as f64;
+        v.green = t[1] as f64;
+        v.blue = t[2] as f64;
+    } else {
+        v.color = idx(color);
+    }
+    v.x += amount * (i / res_x - 0.5);
+    v.y += amount * (j / GLSL_RES_Y - 0.5);
+}
+
+/// `sin(r / (r + g + b))`, the gradient index of several glsl_* variations.
+fn glsl_red_ratio(c: Vec3) -> f64 {
+    (c.x / (c.x + c.y + c.z)).sin()
+}
+
+/// "Density Pixels": `(int) limitValue(v, 100, 10000000)`.
+fn glsl_density(v: f64) -> f64 {
+    limit_value(v, 100.0, 10000000.0).trunc()
+}
+
+fn glsl_circuits_formula(d: &[f64], mut z: Vec2, t: f64) -> (Vec3, f64) {
+    let (intensity, pulse, loops, zoom) = (d[3], d[5], d[7], d[8]);
+    let mut m = 0.0f64;
+    let (mut ot, mut ot2) = (1000.0f64, 1000.0f64);
+    let mut k = (loops / 4.0 + (5.0 * zoom).floor()).floor();
+    for i in 0..11 {
+        z = super::glsl::abs(z) / (z.x * z.x + z.y * z.y).clamp(0.1, 0.5) - t;
+        let l = length(z);
+        let o = java_min(java_max(java_min(z.x, z.y).abs(), -l + 0.25), (l - 0.25).abs());
+        ot = java_min(ot, o);
+        ot2 = java_min(l * 0.1, ot2);
+        m = java_max(m, i as f64 * (1.0 - sign(ot - o).abs()));
+        if k <= 0.0 {
+            break;
+        }
+        k -= 1.0;
+    }
+    m += 1.0;
+    let w = (intensity * zoom) * m;
+    let circ = (java_max(0.0, w - ot2) / w).powf(6.0);
+    let ds = java_max((java_max(0.0, w - ot) / w).powf(0.25), circ);
+    let col = normalize(Vec3::splat(0.1) + vec3(0.45, 0.75, m * 0.1));
+    let t2 = Vec3::splat(0.4 + glsl_mod(m / 9.0 - t * pulse + ot2 * 2.0, 1.0));
+    (col * t2 + vec3(1.0, 0.7, 0.3) * (circ * (10.0 - m) * 3.0), ds)
+}
+
+/// `GLSLCircuitsFunc.getRGBColor`; JWildfire keeps `S` as a field across all samples (starting at
+/// (101 + glow) * intensity, then divided by floor(loops) per sample), here it starts at 0.
+fn glsl_circuits_rgb(d: &[f64], (xp, yp): (f64, f64)) -> Vec3 {
+    let (time, rate, focus, loops, zoom) = (d[1], d[2], d[4], d[7], d[8]);
+    let pos = vec2((xp + 0.5) / d[0] - 0.5, (yp + 0.5) / GLSL_RES_Y - 0.5);
+    let mut r = 0.0;
+    let mut n = time * 0.01 * rate;
+    let mut t = 2.0 * rate;
+    if n > 6.0 * rate {
+        r += 1.0;
+        n -= r * 8.0 * rate;
+    }
+    if n < 4.0 * rate {
+        t += n;
+    } else {
+        t = 8.0 * rate - n;
+    }
+    let zz = 1.05 - zoom;
+    let mut uv = pos;
+    let sph = length(uv) * 0.1;
+    let sph = (1.0 - sph * sph).sqrt() * 2.0;
+    let a = t * M_PI;
+    let b = a + t;
+    let c = a.cos() + b.sin();
+    uv = uv * mat2(b.cos(), b.sin(), -b.sin(), b.cos());
+    uv = uv * mat2(a.cos(), -a.sin(), a.sin(), a.cos());
+    uv -= vec2(c.sin(), c.cos()) / M_PI;
+    uv *= zz;
+    let pix = 0.5 / d[0] * zz / sph;
+    let dof = zoom * focus + t * 0.25;
+    let mut l = loops.floor();
+    let mut s = 0.0;
+    let mut color = Vec3::splat(0.0);
+    for aa in 0..24 {
+        let aauv = vec2((aa as f64 / 6.0).floor(), glsl_mod(aa as f64, 6.0).floor());
+        let (col, ds) = glsl_circuits_formula(d, uv + aauv * pix * dof, t);
+        color = col;
+        s += ds;
+        if l <= 0.0 {
+            break;
+        }
+        l -= 1.0;
+    }
+    s /= loops.floor();
+    color /= loops.floor();
+    mix(Vec3::splat(0.15), color, s) * (1.0 - length(pos)) * vec3(1.2, 1.1, 1.0)
+}
+
+/// `GLSLGrid3DFunc.field`
+fn glsl_grid3d_field(p: Vec3) -> Vec3 {
+    let mut p = p * 0.1;
+    let mut f = 0.1;
+    for _ in 0..3 {
+        p = vec3(p.y, p.z, p.x);
+        p = super::glsl::abs(fract(p) - 0.5);
+        p = p * 2.0;
+        f *= 2.0;
+    }
+    p = p * p;
+    super::glsl::sqrt(p + vec3(p.y, p.z, p.x)) / f - 0.05
+}
+
+/// `GLSLHyperbolicFunc` helpers.
+fn glsl_hyp_tocart(p: Vec2) -> Vec2 {
+    vec2(p.x * p.y.cos(), p.x * p.y.sin())
+}
+
+fn glsl_hyp_topolar(c: Vec2) -> Vec2 {
+    vec2((c.x * c.x + c.y * c.y).sqrt(), glsl_atan2(c.y, c.x))
+}
+
+fn glsl_hyp_mirror(line: Vec2, point: Vec2) -> Vec2 {
+    if line.x < 100.0 {
+        let lc = glsl_hyp_tocart(line);
+        let cart = glsl_hyp_tocart(point);
+        let (dx, dy) = (cart.x - lc.x, cart.y - lc.y);
+        let rr = (line.x * line.x - 1.0) / (dx * dx + dy * dy);
+        glsl_hyp_topolar(lc + vec2(dx * rr, dy * rr))
+    } else {
+        vec2(point.x, -point.y + 2.0 * line.y + M_PI)
     }
 }
 
@@ -1492,5 +1641,594 @@ if (D(3) != 0.0) { l += D(3) * vec2<f32>(sin(a.y * 5.0), cos(a.x * 5.0)); }
 v.x += r * l.x * D(2);
 v.y += r * l.y * D(2);
 if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "glsl_acrilic",
+        params: &[
+            ParamDef::int("Density Pixels", 1000000.0, 100.0, 10000000.0),
+            ParamDef::int("Seed", 10000.0, 0.0, 100000.0),
+            ParamDef::new("time", 0.0),
+            ParamDef::int("Steps", 10.0, 3.0, 100.0),
+            ParamDef::range("p1", 12.0, 1.0, 100.0),
+            ParamDef::range("p2", 12.0, 1.0, 100.0),
+            ParamDef::range("p3", 12.0, 1.0, 100.0),
+            ParamDef::range("p4", 12.0, 1.0, 100.0),
+            ParamDef::range("p5", 75.0, 1.0, 100.0),
+            ParamDef::range("p6", 75.0, 1.0, 100.0),
+            ParamDef::range("Red Fac.", 1.0, 0.0, 5.0),
+            ParamDef::range("Green Fac.", 1.0, 0.0, 5.0),
+            ParamDef::range("Blue Fac.", 1.0, 0.0, 5.0),
+            ParamDef::int("Gradient", 0.0, 0.0, 1.0),
+        ],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, _, v, amount| {
+            let px = glsl_pixel(ctx, d[0]);
+            let (time, steps) = (d[2], d[3] as i32);
+            let mut p = vec2(0.7 * (px.0 + 0.5) / d[0], 0.7 * (px.1 + 0.5) / GLSL_RES_Y);
+            let mut col = [0.0; 3];
+            for (j, c) in col.iter_mut().enumerate() {
+                let j = j as i32;
+                for i in 1..steps {
+                    let fi = i as f64;
+                    p.x += 0.1 / (i + j) as f64 * (fi * d[4] * p.y + time + ((time / (d[5] * fi)) * fi + j as f64).cos()).sin();
+                    p.y += 0.1 / (i + j) as f64 * (fi * d[6] * p.x + time + ((time / (d[7] * fi)) * fi + j as f64).sin()).cos();
+                }
+                *c = (d[8] * (p.x * p.x)).sin() + (d[9] * (p.y * p.y)).sin();
+            }
+            let color = vec3((col[0] * d[10]).cos(), (col[1] * d[11]).cos(), (col[2] * d[12]).cos());
+            glsl_out(v, amount, px, d[0], color, d[13], glsl_red_ratio);
+        },
+        prepare: Some(|p, _| {
+            let mut d = p.to_vec();
+            d[0] = glsl_density(p[0]);
+            d[3] = limit_value(p[3], 3.0, 100.0).trunc();
+            for i in 4..10 {
+                d[i] = limit_value(p[i], 1.0, 100.0);
+            }
+            for i in 10..13 {
+                d[i] = limit_value(p[i], 0.0, 5.0);
+            }
+            d[13] = limit_value(p[13], 0.0, 1.0).trunc();
+            d
+        }),
+        wgsl: "let gi = floor(rnd() * D(0));
+let gj = floor(rnd() * 1000000.0);
+let tm = D(2);
+let steps = i32(D(3));
+var p = vec2<f32>(0.7 * (gi + 0.5) / D(0), 0.7 * (gj + 0.5) / 1000000.0);
+var col = vec3<f32>(0.0);
+for (var j = 0; j < 3; j++) {
+  let fj = f32(j);
+  for (var i = 1; i < steps; i++) {
+    let fi = f32(i);
+    let w = 0.1 / f32(i + j);
+    p.x += w * sin(fi * D(4) * p.y + tm + cos((tm / (D(5) * fi)) * fi + fj));
+    p.y += w * cos(fi * D(6) * p.x + tm + sin((tm / (D(7) * fi)) * fi + fj));
+  }
+  let cv = sin(D(8) * p.x * p.x) + sin(D(9) * p.y * p.y);
+  if (j == 0) { col.x = cv; } else if (j == 1) { col.y = cv; } else { col.z = cv; }
+}
+let color = vec3<f32>(cos(col.x * D(10)), cos(col.y * D(11)), cos(col.z * D(12)));
+if (i32(D(13)) == 0) {
+  let t = glsl_dbl2int(color);
+  v.rgbc = 1.0; v.r = t.x; v.g = t.y; v.b = t.z;
+} else {
+  v.color = sin(color.x / (color.x + color.y + color.z));
+}
+v.x += AMOUNT * (gi / D(0) - 0.5);
+v.y += AMOUNT * (gj / 1000000.0 - 0.5);",
+    },
+    VarDef {
+        name: "glsl_apollonian",
+        params: &[
+            ParamDef::int("Density Pixels", 1000000.0, 100.0, 10000000.0),
+            ParamDef::int("seed", 10000.0, 0.0, 100000.0),
+            ParamDef::new("time", 0.0),
+            ParamDef::int("Gradient", 0.0, 0.0, 1.0),
+        ],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, _, v, amount| {
+            let px = glsl_pixel(ctx, d[0]);
+            let uv = vec2(2.0 * (px.0 + 0.5) / d[0] - 1.0, 2.0 * (px.1 + 0.5) / GLSL_RES_Y - 1.0);
+            let time = d[2];
+            let m = glsl_rot(Vec3::splat(0.05 * time) + vec3(1.0, 2.0, 3.0));
+            let k = 1.2 + 0.1 * (0.1 * time).sin();
+            let f1 = 2.0 + 0.25 * (0.3 * time).sin();
+            let p = (m * f1) * Vec3::from_vec2(uv * 2.0, 0.0);
+            let color = super::glsl::sin(glsl_app(p, k, m)) * 0.6 + 0.5;
+            glsl_out(v, amount, px, d[0], color, d[3], |c| c.x * c.y);
+        },
+        prepare: Some(|p, _| {
+            let mut d = p.to_vec();
+            d[0] = glsl_density(p[0]);
+            d[3] = limit_value(p[3], 0.0, 1.0).trunc();
+            d
+        }),
+        wgsl: "let gi = floor(rnd() * D(0));
+let gj = floor(rnd() * 1000000.0);
+let uv = vec2<f32>(2.0 * (gi + 0.5) / D(0) - 1.0, 2.0 * (gj + 0.5) / 1000000.0 - 1.0);
+let tm = D(2);
+let m = glsl_rot(vec3<f32>(0.05 * tm) + vec3<f32>(1.0, 2.0, 3.0));
+let k = 1.2 + 0.1 * sin(0.1 * tm);
+let f1 = 2.0 + 0.25 * sin(0.3 * tm);
+let p = (m * f1) * vec3<f32>(uv * 2.0, 0.0);
+let color = sin(glsl_app(p, k, m)) * 0.6 + 0.5;
+if (i32(D(3)) == 0) {
+  let t = glsl_dbl2int(color);
+  v.rgbc = 1.0; v.r = t.x; v.g = t.y; v.b = t.z;
+} else {
+  v.color = color.x * color.y;
+}
+v.x += AMOUNT * (gi / D(0) - 0.5);
+v.y += AMOUNT * (gj / 1000000.0 - 0.5);",
+    },
+    VarDef {
+        name: "glsl_circlesblue",
+        params: &[
+            ParamDef::int("Density Pixels", 1000000.0, 100.0, 10000000.0),
+            ParamDef::int("Seed", 10000.0, 0.0, 100000.0),
+            ParamDef::range("time", 1.0, 1.0, 1000.0),
+            ParamDef::range("Radiusy", 0.04, 0.0, 1.0),
+            ParamDef::int("Bubles", 40.0, 1.0, 100.0),
+            ParamDef::int("Gradient", 0.0, 0.0, 1.0),
+        ],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, _, v, amount| {
+            let px = glsl_pixel(ctx, d[0]);
+            let uv = vec2(2.0 * (px.0 + 0.5) / d[0] - 1.0, 2.0 * (px.1 + 0.5) / GLSL_RES_Y - 1.0);
+            let time = d[2];
+            let mut color = Vec3::splat(0.0);
+            for i in 0..d[4] as i32 {
+                let fi = i as f64;
+                let pha = (fi * 6.0 + 1.0).tan() * 0.5 + 0.5;
+                let siz = ((fi * 2.4 + 5.0).cos() * 0.5 + 0.5).powf(4.0);
+                let pox = (fi * 3.55 + 4.1).cos();
+                let rad = d[3] + fi.sin() * 0.12 + 0.08;
+                let pos = vec2(pox + (time / 15.0 + pha + siz).sin(), -1.0 - rad + (2.0 + 2.0 * rad) * glsl_mod(pha + 0.1 * (time / 5.0) * (0.2 + 0.8 * siz), 1.0));
+                let dis = length(uv - pos);
+                let col = mix(vec3(0.1, 0.2, 0.8), vec3(0.2, 0.8, 0.6), 0.5 + 0.5 * (fi * (time * pox * 0.03).sin() + 1.9).sin());
+                color += col * (1.0 - smoothstep(rad * (0.65 + 0.20 * (pox * time).sin()), rad, dis)) * (1.0 - (pox * time).cos());
+            }
+            glsl_out(v, amount, px, d[0], color * 0.3, d[5], glsl_red_ratio);
+        },
+        prepare: Some(|p, _| {
+            let mut d = p.to_vec();
+            d[0] = glsl_density(p[0]);
+            d[2] = limit_value(p[2], 1.0, 1000.0);
+            d[3] = limit_value(p[3], 0.0, 1.0);
+            d[4] = limit_value(p[4], 1.0, 100.0).trunc();
+            d[5] = limit_value(p[5], 0.0, 1.0).trunc();
+            d
+        }),
+        wgsl: "let gi = floor(rnd() * D(0));
+let gj = floor(rnd() * 1000000.0);
+let uv = vec2<f32>(2.0 * (gi + 0.5) / D(0) - 1.0, 2.0 * (gj + 0.5) / 1000000.0 - 1.0);
+let tm = D(2);
+var color = vec3<f32>(0.0);
+let nb = i32(D(4));
+for (var i = 0; i < nb; i++) {
+  let fi = f32(i);
+  let pha = tan(fi * 6.0 + 1.0) * 0.5 + 0.5;
+  let siz = pow(cos(fi * 2.4 + 5.0) * 0.5 + 0.5, 4.0);
+  let pox = cos(fi * 3.55 + 4.1);
+  let rad = D(3) + sin(fi) * 0.12 + 0.08;
+  let pos = vec2<f32>(pox + sin(tm / 15.0 + pha + siz), -1.0 - rad + (2.0 + 2.0 * rad) * glsl_mod(pha + 0.1 * (tm / 5.0) * (0.2 + 0.8 * siz), 1.0));
+  let dis = length(uv - pos);
+  let col = mix(vec3<f32>(0.1, 0.2, 0.8), vec3<f32>(0.2, 0.8, 0.6), 0.5 + 0.5 * sin(fi * sin(tm * pox * 0.03) + 1.9));
+  color += col * (1.0 - glsl_smoothstep(rad * (0.65 + 0.20 * sin(pox * tm)), rad, dis)) * (1.0 - cos(pox * tm));
+}
+color *= 0.3;
+if (i32(D(5)) == 0) {
+  let t = glsl_dbl2int(color);
+  v.rgbc = 1.0; v.r = t.x; v.g = t.y; v.b = t.z;
+} else {
+  v.color = sin(color.x / (color.x + color.y + color.z));
+}
+v.x += AMOUNT * (gi / D(0) - 0.5);
+v.y += AMOUNT * (gj / 1000000.0 - 0.5);",
+    },
+    VarDef {
+        name: "glsl_circuits",
+        params: &[
+            ParamDef::int("Density Pixels", 1000000.0, 100.0, 10000000.0),
+            ParamDef::new("time", 0.0),
+            ParamDef::new("rate", 0.8),
+            ParamDef::new("intensity", 0.9),
+            ParamDef::new("focus", 1.5),
+            ParamDef::new("pulse", 10.0),
+            ParamDef::new("glow", 2.0),
+            ParamDef::new("loops", 15.0),
+            ParamDef::new("zoom", 1.0),
+            ParamDef::int("Gradient", 0.0, 0.0, 1.0),
+        ],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, _, v, amount| {
+            let px = glsl_pixel(ctx, d[0]);
+            let color = glsl_circuits_rgb(d, px);
+            glsl_out(v, amount, px, d[0], color, d[9], |c| c.x * c.y);
+        },
+        prepare: Some(|p, _| {
+            let mut d = p.to_vec();
+            d[0] = glsl_density(p[0]);
+            d[9] = limit_value(p[9], 0.0, 1.0).trunc();
+            d
+        }),
+        wgsl: "fn glsl_circuits_formula(z_in: vec2<f32>, t: f32, loops: f32, zoom: f32, intensity: f32, pulse: f32) -> vec4<f32> {
+  var z = z_in;
+  var m = 0.0;
+  var ot = 1000.0;
+  var ot2 = 1000.0;
+  var k = floor(loops / 4.0 + floor(5.0 * zoom));
+  for (var i = 0; i < 11; i++) {
+    z = abs(z) / clamp(dot(z, z), 0.1, 0.5) - t;
+    let l = length(z);
+    let o = min(max(abs(min(z.x, z.y)), -l + 0.25), abs(l - 0.25));
+    ot = min(ot, o);
+    ot2 = min(l * 0.1, ot2);
+    m = max(m, f32(i) * (1.0 - abs(sign(ot - o))));
+    if (k <= 0.0) { break; }
+    k -= 1.0;
+  }
+  m += 1.0;
+  let w = (intensity * zoom) * m;
+  let circ = java_pow(max(0.0, w - ot2) / w, 6.0);
+  let ds = max(java_pow(max(0.0, w - ot) / w, 0.25), circ);
+  let col = normalize(vec3<f32>(0.1) + vec3<f32>(0.45, 0.75, m * 0.1));
+  let t2 = vec3<f32>(0.4 + glsl_mod(m / 9.0 - t * pulse + ot2 * 2.0, 1.0));
+  return vec4<f32>(col * t2 + vec3<f32>(1.0, 0.7, 0.3) * (circ * (10.0 - m) * 3.0), ds);
+}
+@body
+let gi = floor(rnd() * D(0));
+let gj = floor(rnd() * 1000000.0);
+let pos = vec2<f32>((gi + 0.5) / D(0) - 0.5, (gj + 0.5) / 1000000.0 - 0.5);
+let rate = D(2);
+let loops = D(7);
+let zoom = D(8);
+var rr = 0.0;
+var nn = D(1) * 0.01 * rate;
+var tt = 2.0 * rate;
+if (nn > 6.0 * rate) {
+  rr += 1.0;
+  nn -= rr * 8.0 * rate;
+}
+if (nn < 4.0 * rate) { tt += nn; } else { tt = 8.0 * rate - nn; }
+let zz = 1.05 - zoom;
+var q = pos;
+var sph = length(q) * 0.1;
+sph = sqrt(1.0 - sph * sph) * 2.0;
+let ca = tt * PI;
+let cb = ca + tt;
+let cc = cos(ca) + sin(cb);
+q = q * mat2x2<f32>(cos(cb), sin(cb), -sin(cb), cos(cb));
+q = q * mat2x2<f32>(cos(ca), -sin(ca), sin(ca), cos(ca));
+q = q - vec2<f32>(sin(cc), cos(cc)) / PI;
+q = q * zz;
+let pix = 0.5 / D(0) * zz / sph;
+let dof = zoom * D(4) + tt * 0.25;
+var ll = floor(loops);
+var s = 0.0;
+var color = vec3<f32>(0.0);
+for (var ai = 0; ai < 24; ai++) {
+  let aauv = floor(vec2<f32>(f32(ai) / 6.0, glsl_mod(f32(ai), 6.0)));
+  let r = glsl_circuits_formula(q + aauv * pix * dof, tt, loops, zoom, D(3), D(5));
+  color = r.xyz;
+  s += r.w;
+  if (ll <= 0.0) { break; }
+  ll -= 1.0;
+}
+s /= floor(loops);
+color = color / floor(loops);
+let colo = mix(vec3<f32>(0.15), color, s) * (1.0 - length(pos)) * vec3<f32>(1.2, 1.1, 1.0);
+if (i32(D(9)) == 0) {
+  let t = glsl_dbl2int(colo);
+  v.rgbc = 1.0; v.r = t.x; v.g = t.y; v.b = t.z;
+} else {
+  v.color = colo.x * colo.y;
+}
+v.x += AMOUNT * (gi / D(0) - 0.5);
+v.y += AMOUNT * (gj / 1000000.0 - 0.5);",
+    },
+    VarDef {
+        name: "glsl_fractaldots",
+        params: &[
+            ParamDef::int("Density Pixels", 1000000.0, 100.0, 10000000.0),
+            ParamDef::int("iterations", 9.0, 1.0, 100.0),
+            ParamDef::new("DotSize", 400.0),
+            ParamDef::new("MaxIterations", 10.0),
+            ParamDef::new("complexity", 0.001245675),
+            ParamDef::new("pattern", 2.5),
+            ParamDef::new("spacing", 12.0),
+            ParamDef::new("rotate1", 1.5),
+            ParamDef::new("rotate2", 64.0),
+            ParamDef::new("zoom", 64.0),
+            ParamDef::int("Gradient", 0.0, 0.0, 1.0),
+        ],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, _, v, amount| {
+            let px = glsl_pixel(ctx, d[0]);
+            let rot = |uv: Vec2, a: f64| vec2(uv.x * a.cos() - uv.y * a.sin(), uv.y * a.cos() + uv.x * a.sin());
+            let mut uv = vec2((px.0 + 0.5) / d[0] - 0.5, (px.1 + 0.5) / GLSL_RES_Y - 0.5);
+            uv = rot(uv, d[7]) * d[9];
+            let mut s = d[6];
+            let mut i = 0;
+            while (i as f64) < d[3] {
+                uv = super::glsl::abs(uv) - s;
+                uv = uv - d[4];
+                uv = rot(uv, d[8]);
+                s /= d[5];
+                if (d[1] as i32) < i {
+                    break;
+                }
+                i += 1;
+            }
+            // circleSize keeps its initial value (DotSize 400, MaxIterations 10) in JWildfire
+            let c = if length(uv) > 400.0 / (3.0 * 2f64.powf(10.0)) { 0.0 } else { 1.0 };
+            glsl_out(v, amount, px, d[0], Vec3::splat(c), d[10], |c| c.x * c.y);
+        },
+        prepare: Some(|p, _| {
+            let mut d = p.to_vec();
+            d[0] = glsl_density(p[0]);
+            d[1] = limit_value(p[1], 1.0, 100.0).trunc();
+            d[10] = limit_value(p[10], 0.0, 1.0).trunc();
+            d
+        }),
+        wgsl: "let gi = floor(rnd() * D(0));
+let gj = floor(rnd() * 1000000.0);
+var uv = vec2<f32>((gi + 0.5) / D(0) - 0.5, (gj + 0.5) / 1000000.0 - 0.5);
+let r1 = D(7);
+uv = vec2<f32>(uv.x * cos(r1) - uv.y * sin(r1), uv.y * cos(r1) + uv.x * sin(r1)) * D(9);
+var s = D(6);
+let r2 = D(8);
+var i = 0;
+loop {
+  if (f32(i) >= D(3)) { break; }
+  uv = abs(uv) - s - D(4);
+  uv = vec2<f32>(uv.x * cos(r2) - uv.y * sin(r2), uv.y * cos(r2) + uv.x * sin(r2));
+  s /= D(5);
+  if (i32(D(1)) < i) { break; }
+  i++;
+}
+let c = select(1.0, 0.0, length(uv) > 400.0 / 3072.0);
+if (i32(D(10)) == 0) {
+  let t = glsl_dbl2int(vec3<f32>(c));
+  v.rgbc = 1.0; v.r = t.x; v.g = t.y; v.b = t.z;
+} else {
+  v.color = c * c;
+}
+v.x += AMOUNT * (gi / D(0) - 0.5);
+v.y += AMOUNT * (gj / 1000000.0 - 0.5);",
+    },
+    VarDef {
+        name: "glsl_grid3D",
+        params: &[
+            ParamDef::int("Density Pixels", 1000000.0, 100.0, 10000000.0),
+            ParamDef::int("Seed", 10000.0, 0.0, 100000.0),
+            ParamDef::range("time", 200.0, 1.0, 1000.0),
+        ],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, _, v, amount| {
+            let px = glsl_pixel(ctx, d[0]);
+            const MAXITER: i32 = 30;
+            let time = d[2];
+            let mut dir = normalize(vec3((px.0 + 0.5) / d[0] - 0.5, (px.1 + 0.5) / GLSL_RES_Y - 0.5, 1.0));
+            let a = time * 0.021;
+            let mut pos = vec3(0.0, time * 0.1, 0.0);
+            dir = dir * mat3(1.0, 0.0, 0.0, 0.0, a.cos(), -a.sin(), 0.0, a.sin(), a.cos());
+            dir = dir * mat3(a.cos(), 0.0, -a.sin(), 0.0, 1.0, 0.0, a.sin(), 0.0, a.cos());
+            let mut color = Vec3::splat(0.0);
+            for i in 0..MAXITER {
+                let f2 = glsl_grid3d_field(pos);
+                let f = java_min(java_min(f2.x, f2.y), f2.z);
+                pos = pos + dir * f;
+                color = color + Vec3::splat((MAXITER - i) as f64) / (f2 + 0.1);
+            }
+            let c3 = Vec3::splat(1.0) - Vec3::splat(1.0) / (Vec3::splat(1.0) + color * (0.09 / (MAXITER * MAXITER) as f64));
+            glsl_out(v, amount, px, d[0], Vec3::splat(c3.x + c3.y + c3.z), 0.0, |_| 0.0);
+        },
+        prepare: Some(|p, _| {
+            let mut d = p.to_vec();
+            d[0] = glsl_density(p[0]);
+            d[2] = limit_value(p[2], 1.0, 1000.0);
+            d
+        }),
+        wgsl: "fn glsl_grid3D_field(p_in: vec3<f32>) -> vec3<f32> {
+  var p = p_in * 0.1;
+  var f = 0.1;
+  for (var i = 0; i < 3; i++) {
+    p = abs(fract(p.yzx) - 0.5) * 2.0;
+    f *= 2.0;
+  }
+  p = p * p;
+  return sqrt(p + p.yzx) / f - 0.05;
+}
+@body
+let gi = floor(rnd() * D(0));
+let gj = floor(rnd() * 1000000.0);
+let tm = D(2);
+var dir = normalize(vec3<f32>((gi + 0.5) / D(0) - 0.5, (gj + 0.5) / 1000000.0 - 0.5, 1.0));
+let a = tm * 0.021;
+var pos = vec3<f32>(0.0, tm * 0.1, 0.0);
+dir = dir * mat3x3<f32>(1.0, 0.0, 0.0, 0.0, cos(a), -sin(a), 0.0, sin(a), cos(a));
+dir = dir * mat3x3<f32>(cos(a), 0.0, -sin(a), 0.0, 1.0, 0.0, sin(a), 0.0, cos(a));
+var color = vec3<f32>(0.0);
+for (var i = 0; i < 30; i++) {
+  let f2 = glsl_grid3D_field(pos);
+  pos += dir * min(min(f2.x, f2.y), f2.z);
+  color += vec3<f32>(f32(30 - i)) / (f2 + 0.1);
+}
+let c3 = vec3<f32>(1.0) - vec3<f32>(1.0) / (vec3<f32>(1.0) + color * (0.09 / 900.0));
+let t = glsl_dbl2int(vec3<f32>(c3.x + c3.y + c3.z));
+v.rgbc = 1.0; v.r = t.x; v.g = t.y; v.b = t.z;
+v.x += AMOUNT * (gi / D(0) - 0.5);
+v.y += AMOUNT * (gj / 1000000.0 - 0.5);",
+    },
+    VarDef {
+        name: "glsl_hoshi",
+        params: &[
+            ParamDef::int("Density Pixels", 1000000.0, 100.0, 10000000.0),
+            ParamDef::int("Seed", 100000.0, 0.0, 10000.0),
+            ParamDef::new("time", 10.0),
+            ParamDef::int("Steps", 28.0, 1.0, 60.0),
+            ParamDef::range("Scale", 1.25, 1.0, 5.0),
+            ParamDef::range("Translate", 1.5, 0.0, 5.0),
+            ParamDef::int("Gradient", 0.0, 0.0, 1.0),
+        ],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, _, v, amount| {
+            let px = glsl_pixel(ctx, d[0]);
+            let time = d[2];
+            let fold = vec2(-0.5, -0.5);
+            let mut p = vec2(2.0 * px.0 / d[0] - 1.0, 2.0 * px.1 / GLSL_RES_Y - 1.0) * 0.182;
+            let x = p.y;
+            p = super::glsl::abs(glsl_mod(p, 4.0) - 2.0);
+            let mut i = d[3] as i32;
+            while i > 0 {
+                p = super::glsl::abs(p - fold) + fold;
+                p = p * d[4] - d[5];
+                let a = 3.14159 / (0.10 + (time * 0.0005 + i as f64 * 0.5000001).sin() * 0.4999 + 0.5 + (10.0 / time) + time.sin() / 100.0);
+                p = vec2(p.x * a.cos() - p.y * a.sin(), p.x * a.sin() + p.y * a.cos());
+                i -= 1;
+            }
+            let i = x * x + glsl_atan2(p.y, p.x) + time * 0.02;
+            let mut h = (i * 4.0).floor() / 8.0 + 1.107;
+            h += smoothstep(-0.1, 0.8, glsl_mod(i * 2.0 / 5.0, 1.0 / 4.0) * 900.0) / 0.010 - 0.5;
+            // hsv(h, 1, value)
+            let value = smoothstep(-3.0, 3.0, length(p) * 1.0);
+            let t2 = super::glsl::clamp(super::glsl::abs(fract((vec3(3.0, 2.0, 1.0) + h) / 3.0) * 6.0 - 3.0) - 1.0, 0.0, 1.0);
+            let color = mix(Vec3::splat(3.1), t2, 1.0) * value;
+            glsl_out(v, amount, px, d[0], color, d[6], |c| c.x * c.y);
+        },
+        prepare: Some(|p, _| {
+            let mut d = p.to_vec();
+            d[0] = glsl_density(p[0]);
+            d[3] = limit_value(p[3], 1.0, 60.0).trunc();
+            d[4] = limit_value(p[4], 1.0, 5.0);
+            d[5] = limit_value(p[5], 0.0, 5.0);
+            d[6] = limit_value(p[6], 0.0, 1.0).trunc();
+            d
+        }),
+        wgsl: "let gi = floor(rnd() * D(0));
+let gj = floor(rnd() * 1000000.0);
+let tm = D(2);
+var p = vec2<f32>(2.0 * gi / D(0) - 1.0, 2.0 * gj / 1000000.0 - 1.0) * 0.182;
+let x = p.y;
+p = abs(glsl_mod2(p, vec2<f32>(4.0)) - 2.0);
+for (var i = i32(D(3)); i > 0; i--) {
+  p = abs(p + 0.5) - 0.5;
+  p = p * D(4) - D(5);
+  let a = 3.14159 / (0.10 + sin(tm * 0.0005 + f32(i) * 0.5000001) * 0.4999 + 0.5 + (10.0 / tm) + sin(tm) / 100.0);
+  p = vec2<f32>(p.x * cos(a) - p.y * sin(a), p.x * sin(a) + p.y * cos(a));
+}
+let ii = x * x + glsl_atan2(p.y, p.x) + tm * 0.02;
+var h = floor(ii * 4.0) / 8.0 + 1.107;
+h += glsl_smoothstep(-0.1, 0.8, glsl_mod(ii * 2.0 / 5.0, 0.25) * 900.0) / 0.010 - 0.5;
+let value = glsl_smoothstep(-3.0, 3.0, length(p));
+let color = clamp(abs(fract((vec3<f32>(3.0, 2.0, 1.0) + h) / 3.0) * 6.0 - 3.0) - 1.0, vec3<f32>(0.0), vec3<f32>(1.0)) * value;
+if (i32(D(6)) == 0) {
+  let t = glsl_dbl2int(color);
+  v.rgbc = 1.0; v.r = t.x; v.g = t.y; v.b = t.z;
+} else {
+  v.color = color.x * color.y;
+}
+v.x += AMOUNT * (gi / D(0) - 0.5);
+v.y += AMOUNT * (gj / 1000000.0 - 0.5);",
+    },
+    VarDef {
+        name: "glsl_hyperbolictile",
+        params: &[ParamDef::int("Density Pixels", 1000000.0, 100.0, 10000000.0), ParamDef::int("Gradient", 0.0, 0.0, 1.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, _, v, amount| {
+            let px = glsl_pixel(ctx, d[0]);
+            let position = vec2(2.0 * (px.0 + 0.5) / d[0] - 1.0, 2.0 * (px.1 + 0.5) / GLSL_RES_Y - 1.0);
+            let l1 = vec2(1000.0, 0.0);
+            let l2 = vec2(1000.0, M_PI / 8.0);
+            let l3 = vec2((2f64.sqrt() + 1.0).sqrt(), M_PI / 2.0);
+            let mut p = glsl_hyp_topolar(position);
+            let color = if p.x > 1.0 {
+                0.0
+            } else {
+                let mut g2 = 0;
+                let mut k1 = 1;
+                for _ in 0..7 {
+                    if k1 == 0 {
+                        continue;
+                    }
+                    let mut k = 1;
+                    for _ in 1..8 {
+                        if k == 0 || (p.y >= M_PI / 2.0 && p.y < M_PI * 0.75) {
+                            k = 0;
+                        } else {
+                            g2 += 1;
+                            p = glsl_hyp_mirror(l2, glsl_hyp_mirror(l1, p));
+                        }
+                    }
+                    let p1 = glsl_hyp_mirror(l3, p);
+                    if p1.y >= M_PI / 2.0 && p1.y < M_PI * 0.75 {
+                        k1 = 0;
+                    }
+                    p = p1;
+                }
+                glsl_mod(g2 as f64, 2.0)
+            };
+            glsl_out(v, amount, px, d[0], Vec3::splat(color), d[1], glsl_red_ratio);
+        },
+        prepare: Some(|p, _| vec![glsl_density(p[0]), limit_value(p[1], 0.0, 1.0).trunc()]),
+        wgsl: "fn glsl_hyperbolictile_topolar(c: vec2<f32>) -> vec2<f32> {
+  return vec2<f32>(length(c), glsl_atan2(c.y, c.x));
+}
+fn glsl_hyperbolictile_mirror(line: vec2<f32>, point: vec2<f32>) -> vec2<f32> {
+  if (line.x < 100.0) {
+    let lc = line.x * vec2<f32>(cos(line.y), sin(line.y));
+    let cart = point.x * vec2<f32>(cos(point.y), sin(point.y));
+    let dd = cart - lc;
+    return glsl_hyperbolictile_topolar(lc + dd * ((line.x * line.x - 1.0) / dot(dd, dd)));
+  }
+  return vec2<f32>(point.x, -point.y + 2.0 * line.y + PI);
+}
+@body
+let gi = floor(rnd() * D(0));
+let gj = floor(rnd() * 1000000.0);
+let position = vec2<f32>(2.0 * (gi + 0.5) / D(0) - 1.0, 2.0 * (gj + 0.5) / 1000000.0 - 1.0);
+let l1 = vec2<f32>(1000.0, 0.0);
+let l2 = vec2<f32>(1000.0, PI / 8.0);
+let l3 = vec2<f32>(sqrt(sqrt(2.0) + 1.0), PI / 2.0);
+var p = glsl_hyperbolictile_topolar(position);
+var color = 0.0;
+if (p.x <= 1.0) {
+  var g2 = 0;
+  var k1 = 1;
+  for (var i = 0; i < 7; i++) {
+    if (k1 == 0) { continue; }
+    var k = 1;
+    for (var j = 1; j < 8; j++) {
+      if (k == 0 || (p.y >= PI / 2.0 && p.y < PI * 0.75)) {
+        k = 0;
+      } else {
+        g2 += 1;
+        p = glsl_hyperbolictile_mirror(l2, glsl_hyperbolictile_mirror(l1, p));
+      }
+    }
+    let p1 = glsl_hyperbolictile_mirror(l3, p);
+    if (p1.y >= PI / 2.0 && p1.y < PI * 0.75) { k1 = 0; }
+    p = p1;
+  }
+  color = f32(g2 % 2);
+}
+if (i32(D(1)) == 0) {
+  let t = glsl_dbl2int(vec3<f32>(color));
+  v.rgbc = 1.0; v.r = t.x; v.g = t.y; v.b = t.z;
+} else {
+  v.color = sin(color / (color + color + color));
+}
+v.x += AMOUNT * (gi / D(0) - 0.5);
+v.y += AMOUNT * (gj / 1000000.0 - 0.5);",
     },
 ];
