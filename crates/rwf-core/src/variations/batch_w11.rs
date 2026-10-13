@@ -1684,9 +1684,7 @@ if (abs(cs) < 1e-9) {
         apply: |d, ctx, a, v, amount| {
             // d = [offset, angle, scale, x, y, blur, 1 / scale, cos(angle), sin(angle)]
             let (sr, cr) = (ctx.random() * M_2PI).sin_cos();
-            // JWildfire sums a sliding window of four randoms (one new per call); four fresh
-            // ones give the same distribution per sample
-            let rr = d[5] * (ctx.random() + ctx.random() + ctx.random() + ctx.random() - 2.0);
+            let rr = d[5] * (ctx.gauss_ring(d.as_ptr() as usize, 4, 3) - 2.0);
             v.x += amount * (a.x + rr * sr).sin() * d[3];
             v.y += rr + a.y * d[4];
             v.z += amount * (a.x + rr * cr).cos();
@@ -1697,8 +1695,22 @@ if (abs(cs) < 1e-9) {
             d.extend([1.0 / if p[2] == 0.0 { 10e-6 } else { p[2] }, p[1].cos(), p[1].sin()]);
             d
         }),
-        wgsl: "let ang = rnd() * TWO_PI;
-let rr = D(5) * (rnd() + rnd() + rnd() + rnd() - 2.0);
+        wgsl: "var<private> dc_cylinder_ring: array<f32, 4>;
+var<private> dc_cylinder_idx: u32;
+var<private> dc_cylinder_init: bool;
+fn dc_cylinder_gauss() -> f32 {
+  if (!dc_cylinder_init) {
+    dc_cylinder_init = true;
+    for (var i = 0; i < 4; i++) { dc_cylinder_ring[i] = rnd(); }
+  }
+  let s = dc_cylinder_ring[0] + dc_cylinder_ring[1] + dc_cylinder_ring[2] + dc_cylinder_ring[3];
+  dc_cylinder_ring[dc_cylinder_idx] = rnd();
+  dc_cylinder_idx = (dc_cylinder_idx + 1u) & 3u;
+  return s;
+}
+@body
+let ang = rnd() * TWO_PI;
+let rr = D(5) * (dc_cylinder_gauss() - 2.0);
 v.x += AMOUNT * sin(a.x + rr * sin(ang)) * D(3);
 v.y += rr + a.y * D(4);
 v.z += AMOUNT * cos(a.x + rr * cos(ang));

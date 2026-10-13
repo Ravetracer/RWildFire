@@ -1925,12 +1925,10 @@ dc_output(&v, AMOUNT, uv, colo, i32(D(10)), D(11), D(12), i32(D(13)));",
         kind: VarKind::Normal,
         is_3d: false,
         // d = [offset, angle, scale, x, y, blur, ldcs, cos(angle), sin(angle)]
-        // Java keeps the last four random numbers in an instance ring buffer; stateless: four
-        // fresh random numbers (same distribution).
         apply: |d, ctx, a, v, amount| {
             let ang = ctx.random() * M_2PI;
             let (sr, cr) = ang.sin_cos();
-            let rr = d[5] * (ctx.random() + ctx.random() + ctx.random() + ctx.random() - 2.0);
+            let rr = d[5] * (ctx.gauss_ring(d.as_ptr() as usize, 4, 3) - 2.0);
             v.x += amount * (a.x + rr * sr).sin() * d[3];
             v.y += rr * a.y * d[4];
             v.z += amount * (a.x + rr * cr).cos();
@@ -1943,10 +1941,24 @@ dc_output(&v, AMOUNT, uv, colo, i32(D(10)), D(11), D(12), i32(D(13)));",
             d.push(p[1].sin());
             d
         }),
-        wgsl: "let ang = rnd() * TWO_PI;
+        wgsl: "var<private> dc_cylinder2_ring: array<f32, 4>;
+var<private> dc_cylinder2_idx: u32;
+var<private> dc_cylinder2_init: bool;
+fn dc_cylinder2_gauss() -> f32 {
+  if (!dc_cylinder2_init) {
+    dc_cylinder2_init = true;
+    for (var i = 0; i < 4; i++) { dc_cylinder2_ring[i] = rnd(); }
+  }
+  let s = dc_cylinder2_ring[0] + dc_cylinder2_ring[1] + dc_cylinder2_ring[2] + dc_cylinder2_ring[3];
+  dc_cylinder2_ring[dc_cylinder2_idx] = rnd();
+  dc_cylinder2_idx = (dc_cylinder2_idx + 1u) & 3u;
+  return s;
+}
+@body
+let ang = rnd() * TWO_PI;
          let sr = sin(ang);
          let cr = cos(ang);
-         let rr = D(5) * (rnd() + rnd() + rnd() + rnd() - 2.0);
+         let rr = D(5) * (dc_cylinder2_gauss() - 2.0);
          v.x += AMOUNT * sin(a.x + rr * sr) * D(3);
          v.y += rr * a.y * D(4);
          v.z += AMOUNT * cos(a.x + rr * cr);
