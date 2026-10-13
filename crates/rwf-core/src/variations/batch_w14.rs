@@ -6493,6 +6493,56 @@ if (abs(style) > 0.7071067811865476) {
 }
 v.z += AMOUNT * pz * D(1);",
     },
+    VarDef {
+        name: "phoenix_julia",
+        // JWildfire draws a random default power (+-2..7)
+        params: &[ParamDef::new("power", 3.0), ParamDef::new("dist", 1.0), ParamDef::new("x_distort", -0.5), ParamDef::new("y_distort", 0.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let (pre_x, pre_y) = (a.x * (d[2] + 1.0), a.y * (d[3] + 1.0));
+            let ang = pre_y.atan2(pre_x) * d[4] + ctx.random_int(i32::MAX as usize) as f64 * d[5];
+            let r = amount * (sqr(a.x) + sqr(a.y)).powf(d[6]);
+            v.x += r * ang.cos();
+            v.y += r * ang.sin();
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: Some(|p, _| {
+            let step = 2.0 * M_PI / p[0];
+            vec![p[0], p[1], p[2], p[3], p[1] / p[0], step, p[1] / p[0] / 2.0, angle_period(step)]
+        }),
+        // GPU: random multiple of 2 pi / power (same angles as Java's random(Integer.MAX_VALUE) * step)
+        wgsl: "var ang = glsl_atan2(a.y * (D(3) + 1.0), a.x * (D(2) + 1.0)) * D(4);
+if (D(7) > 0.0) { ang += floor(rnd() * D(7)) * D(5); } else { ang += rnd() * TWO_PI; }
+let r = AMOUNT * java_pow(a.x * a.x + a.y * a.y, D(6));
+v.x += r * cos(ang);
+v.y += r * sin(ang);
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "phyllotaxis",
+        params: &[ParamDef::new("spread", 0.1), ParamDef::new("angle_step", 137.508)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let spread = d[0].abs().max(1e-4);
+            let step = d[1] * PI / 180.0;
+            let index = (a.x * a.x + a.y * a.y).sqrt() / spread;
+            let theta = index * step;
+            let nr = index.sqrt() * spread;
+            v.x += amount * nr * theta.cos();
+            v.y += amount * nr * theta.sin();
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "let spread = max(abs(D(0)), 1.0e-4);
+let index = sqrt(a.x * a.x + a.y * a.y) / spread;
+let theta = index * (D(1) * PI / 180.0);
+let nr = sqrt(index) * spread;
+v.x += AMOUNT * nr * cos(theta);
+v.y += AMOUNT * nr * sin(theta);
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
 ];
 
 fn mandelbox2d_apply(d: &[f64], ctx: &mut Ctx, a: &Pt, v: &mut Pt, amount: f64) {
