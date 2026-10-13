@@ -507,11 +507,45 @@ fn registry() -> &'static Registry {
     })
 }
 
+/// JWildfire's aliases for renamed variations (`VariationFuncList.aliasMap`), so old flames
+/// load; entries take effect once their target is ported.
 const ALIASES: &[(&str, &str)] = &[
+    ("Mandelbrot", "mandelbrot"),
+    ("Spirograph", "spirograph"),
+    ("Truchet", "truchet"),
+    ("GlynnSim1", "glynnSim1"),
+    ("GlynnSim2", "glynnSim2"),
+    ("GlynnSim3", "glynnSim3"),
     ("Spherical3D", "spherical3D"),
-    ("SphericalN", "sphericaln"),
     ("Epispiral", "epispiral"),
+    ("SphericalN", "sphericalN"),
+    ("Glynnia", "glynnia"),
+    ("SuperShape3d", "superShape3d"),
+    ("t_custom", "custom_wf"),
+    ("t_epispiral", "epispiral_wf"),
+    ("t_colorscale", "colorscale_wf"),
+    ("t_heart", "heart_wf"),
+    ("t_xy_waves", "waves2_wf"),
+    ("t_bubble", "bubble_wf"),
+    ("t_post_bump_map", "post_bumpmap_wf"),
+    ("t_post_mirror", "post_mirror_wf"),
+    ("t_pre_wave3D", "pre_wave3D_wf"),
+    ("t_rose", "rose_wf"),
+    ("SplitBrdr", "splitbrdr"),
+    ("Juliac", "juliac"),
+    ("Voron", "voron"),
     ("cross2", "cross"),
+    ("CircleLinear", "circleLinear"),
+    ("CircleRand", "circleRand"),
+    ("CircleTrans1", "circleTrans1"),
+    ("MobiusN", "mobiusN"),
+    ("FiveFold", "dc_triTile"),
+    ("rays_rk1", "rays1"),
+    ("rays_rk2", "rays2"),
+    ("rays_rk3", "rays3"),
+    ("blur_square", "square"),
+    ("pre_gaussian", "pre_blur"),
+    ("gaussian", "gaussian_blur"),
 ];
 
 pub fn find(name: &str) -> Option<&'static VarDef> {
