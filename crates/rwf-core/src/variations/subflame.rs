@@ -195,7 +195,7 @@ fn iterate(st: &mut SubState, ctx: &mut Ctx, d: &[f64]) {
 }
 
 /// `setColor`
-fn set_color(q: &Pt, mode: i32, v: &mut Pt) {
+pub(crate) fn set_color(q: &Pt, mode: i32, v: &mut Pt) {
     if q.do_hide {
         v.do_hide = true;
         return;
@@ -222,7 +222,7 @@ fn set_color(q: &Pt, mode: i32, v: &mut Pt) {
 }
 
 /// Next point of the sub-flame; `d` starts at the sub-flame parameters.
-fn next_point(d: &[f64], ctx: &mut Ctx) -> Option<Pt> {
+pub(crate) fn next_point(d: &[f64], ctx: &mut Ctx) -> Option<Pt> {
     let id = d[ID] as usize;
     let mut st = match ctx.subflames.remove(&id) {
         Some(st) => st,
@@ -287,7 +287,7 @@ fn glynns3subfl_apply(d: &[f64], ctx: &mut Ctx, a: &Pt, v: &mut Pt, amount: f64)
 }
 
 /// `SubFlameWFFunc` parameters with the default `color_mode`.
-const fn sub_params(color_mode: f64) -> [ParamDef; 12] {
+pub(crate) const fn sub_params(color_mode: f64) -> [ParamDef; 12] {
     [
         ParamDef::new("scale", 1.0),
         ParamDef::range("angle", 0.0, -180.0, 180.0),
@@ -330,7 +330,7 @@ static GLYNNS3SUBFL_PARAMS: [ParamDef; GLYNN + 12] = {
 };
 
 /// Limits the sub-flame parameters at `d[o..]` and reserves the sub-flame id.
-fn prepare_sub(d: &mut Vec<f64>, o: usize) {
+pub(crate) fn prepare_sub(d: &mut Vec<f64>, o: usize) {
     d[o + 6] = ftoi(d[o + 6]).clamp(-2, 4) as f64;
     d[o + 7] = ftoi(d[o + 7]).clamp(0, 2) as f64;
     for x in &mut d[o + 8..o + 12] {
@@ -397,6 +397,22 @@ pub static RESOURCES: &[ResourceVar] = &[ResourceVar {
         ResDef { name: "flame_filename", kind: ResKind::FlameFile, default: "" },
     ],
     load: |d, res, env| load(d, res, env, GLYNN),
+}, ResourceVar {
+    // batch_w12
+    name: "pre_subflame_wf",
+    resources: &[
+        ResDef { name: "flame", kind: ResKind::FlameXml, default: include_str!("../../assets/subflame_wf_default.flame") },
+        ResDef { name: "flame_filename", kind: ResKind::FlameFile, default: "" },
+    ],
+    load: |d, res, env| load(d, res, env, 0),
+}, ResourceVar {
+    // batch_w12 (sub-flame parameters after the 8 ring parameters)
+    name: "ringsubflame",
+    resources: &[
+        ResDef { name: "flame", kind: ResKind::FlameXml, default: include_str!("../../assets/ringsubflame_default.flame") },
+        ResDef { name: "flame_filename", kind: ResKind::FlameFile, default: "" },
+    ],
+    load: |d, res, env| load(d, res, env, 8),
 }];
 
 #[cfg(test)]

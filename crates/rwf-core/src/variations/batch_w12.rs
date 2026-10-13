@@ -1402,6 +1402,30 @@ const QUAD_PARAMS: &[ParamDef] = &{
     p
 };
 
+static PRE_SUBFLAME_PARAMS: [ParamDef; 12] = super::subflame::sub_params(-1.0);
+
+/// `RingSubFlameFunc` parameters: the ring parameters followed by the sub-flame parameters.
+static RINGSUBFLAME_PARAMS: [ParamDef; 20] = {
+    let ring = [
+        ParamDef::int("hide_inner", 0.0, 0.0, 1.0),
+        ParamDef::new("innerradius", 0.5),
+        ParamDef::new("outerradius", 1.0),
+        ParamDef::range("thickness", 0.0, 0.0, 1.0),
+        ParamDef::range("contrast", 0.0, 0.0, 1.0),
+        ParamDef::new("pow", 1.0),
+        ParamDef::range("scatter_area", 0.0, -1.0, 1.0),
+        ParamDef::int("hide_outer", 1.0, 0.0, 1.0),
+    ];
+    let sub = super::subflame::sub_params(-1.0);
+    let mut p = [ring[0]; 20];
+    let mut i = 0;
+    while i < 20 {
+        p[i] = if i < 8 { ring[i] } else { sub[i - 8] };
+        i += 1;
+    }
+    p
+};
+
 /// In-place `Complex` operation.
 type ComplexOp = fn(&mut Complex);
 
@@ -4697,6 +4721,26 @@ a.x = (x * re + y * im) * r;
 a.y = (y * re - x * im) * r;",
     },
     VarDef {
+        name: "pre_subflame_wf",
+        params: &PRE_SUBFLAME_PARAMS,
+        kind: VarKind::Pre,
+        is_3d: true,
+        apply: |d, ctx, a, _v, _| {
+            let Some(q) = super::subflame::next_point(d, ctx) else { return };
+            a.x = q.x;
+            a.y = q.y;
+            a.z = q.z;
+            super::subflame::set_color(&q, d[6] as i32, a);
+        },
+        prepare: Some(|p, _| {
+            let mut d = p.to_vec();
+            super::subflame::prepare_sub(&mut d, 0);
+            d
+        }),
+        // Like subflame_wf there is no GPU implementation (the sub-flame runs its own chaos game).
+        wgsl: "",
+    },
+    VarDef {
         name: "quad",
         params: QUAD_PARAMS,
         kind: VarKind::Normal,
@@ -6392,6 +6436,71 @@ if (dx != 0.0 && l != 0.0) {
   v.y += r * a.y;
   if (PRESERVE_Z) { v.z += AMOUNT * a.z; }
 }",
+    },
+    VarDef {
+        name: "ringsubflame",
+        params: &RINGSUBFLAME_PARAMS,
+        kind: VarKind::Normal,
+        is_3d: true,
+        apply: |d, ctx, _a, v, amount| {
+            // d = [hide_inner, innerradius, outerradius, thickness, contrast, pow, scatter_area, hide_outer,
+            //      sub-flame parameters (8..20), sub-flame id (20), radius1, radius2, gamma, abs_pow, cA]
+            let Some(mut q) = super::subflame::next_point(&d[8..], ctx) else { return };
+            let r = (q.x * q.x + q.y * q.y).sqrt();
+            let alpha = d[1] / r;
+            if r < d[21] {
+                if d[0] as i32 == 0 {
+                    let (sp, cp) = (2.0 * M_PI * ctx.random()).sin_cos();
+                    let rr = if ctx.random() < d[23] { d[21] } else { d[22] };
+                    v.x += amount * (rr * cp);
+                    v.y += amount * (rr * sp);
+                } else {
+                    // The last point is kept across calls (per render thread here).
+                    [v.x, v.y] = *state_slot(ctx, d, 0, [0.0; 2]);
+                }
+            } else if ctx.random() > d[4] * alpha.powf(d[24]) {
+                v.x += amount * q.x;
+                v.y += amount * q.y;
+            } else {
+                v.x += amount * alpha * alpha * q.x;
+                v.y += amount * alpha * alpha * q.y;
+            }
+            *state_slot(ctx, d, 0, [0.0; 2]) = [v.x, v.y];
+            let cr = d[2];
+            let rad = (v.x * v.x + v.y * v.y).sqrt();
+            let ang = v.y.atan2(v.x);
+            let rdc = cr + ctx.random() * 0.5 * d[25];
+            let esc = rad > cr;
+            let cr0 = d[7] as i32 == 1;
+            v.do_hide = false;
+            if cr0 && esc {
+                v.x = 0.0;
+                v.y = 0.0;
+                q.do_hide = true;
+                v.do_hide = true;
+            } else if !cr0 && esc {
+                v.x = amount * rdc * ang.cos();
+                v.y = amount * rdc * ang.sin();
+            } else {
+                v.x *= amount;
+                v.y *= amount;
+            }
+            super::subflame::set_color(&q, d[14] as i32, v);
+        },
+        prepare: Some(|p, _| {
+            let mut d = p.to_vec();
+            d[0] = limit_value(p[0], 0.0, 1.0) as i32 as f64;
+            d[3] = limit_value(p[3], 0.0, 1.0);
+            d[4] = limit_value(p[4], 0.0, 1.0);
+            d[7] = limit_value(p[7], 0.0, 1.0) as i32 as f64;
+            super::subflame::prepare_sub(&mut d, 8);
+            let r1 = d[1] + d[3];
+            let r2 = sqr(d[1]) / r1;
+            d.extend([r1, r2, r1 / (r1 + r2), p[5].abs(), java_max(-1.0, java_min(p[6], 1.0))]);
+            d
+        }),
+        // Like subflame_wf there is no GPU implementation (the sub-flame runs its own chaos game).
+        wgsl: "",
     },
     VarDef {
         name: "ripple",
