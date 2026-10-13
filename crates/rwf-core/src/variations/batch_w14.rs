@@ -511,6 +511,258 @@ fn juliascope_plus_apply(d: &[f64], ctx: &mut Ctx, a: &Pt, v: &mut Pt, amount: f
     ctx.pass_z(a, v, amount);
 }
 
+/// `KIFS3DFunc`; d = [max_iter, bailout_radius, kifs_scale_x, kifs_scale_y, kifs_scale_z,
+/// scale_pivot, center_x/y/z, offset_x/y/z, mirror_fold, fold_type, fold_plane1_nx/ny/nz,
+/// fold_plane1_dist, fold_plane1_intensity, edge_x/y/z, rot_x/y/z, rot_order, rot_pivot,
+/// transform_order, post_symmetry, color_mode, color_scale, bailout_sq, rot_x/y/z (radians),
+/// fold_norm1_len_sq] (31..).
+fn kifs3d_fold(d: &[f64], ctx: &mut Ctx, p: [f64; 3]) -> [f64; 3] {
+    let [x, y, z] = p;
+    let (n, dist, inten, len_sq) = ([d[14], d[15], d[16]], d[17], d[18], d[35]);
+    let edge = [d[19], d[20], d[21]];
+    let plane = |p: [f64; 3]| {
+        let dot = p[0] * n[0] + p[1] * n[1] + p[2] * n[2] - dist;
+        let sf = (1.0 + inten) * dot / len_sq;
+        [p[0] - sf * n[0], p[1] - sf * n[1], p[2] - sf * n[2]]
+    };
+    if d[12] <= 0.0 {
+        match d[13] as i32 {
+            1 => [x.abs(), y.abs(), z.abs()],
+            2 => if x + y < 0.0 { [-y, -x, z] } else { p },
+            3 => {
+                if len_sq > 1e-9 && x * n[0] + y * n[1] + z * n[2] - dist < 0.0 {
+                    plane(p)
+                } else {
+                    p
+                }
+            }
+            4 => [0, 1, 2].map(|k| if edge[k] != 0.0 { edge[k] - (edge[k] - p[k]).abs() } else { p[k] }),
+            _ => p,
+        }
+    } else {
+        let sg = [0; 3].map(|_| if ctx.random() < 0.5 { -1.0 } else { 1.0 });
+        match d[13] as i32 {
+            1 => [x * sg[0], y * sg[1], z * sg[2]],
+            2 => if sg[0] < 0.0 { [-y, -x, z] } else { p },
+            3 => if len_sq > 1e-9 && sg[0] < 0.0 { plane(p) } else { p },
+            4 => [0, 1, 2].map(|k| if edge[k] != 0.0 { edge[k] - sg[k] * (edge[k] - p[k]).abs() } else { p[k] }),
+            _ => p,
+        }
+    }
+}
+
+fn kifs3d_rotate(d: &[f64], p: [f64; 3], pivot: [f64; 3]) -> [f64; 3] {
+    let (ax, ay, az) = (d[32], d[33], d[34]);
+    if ax == 0.0 && ay == 0.0 && az == 0.0 {
+        return p;
+    }
+    let (mut rx, mut ry, mut rz) = (p[0] - pivot[0], p[1] - pivot[1], p[2] - pivot[2]);
+    let (sx, cx) = ax.sin_cos();
+    let (sy, cy) = ay.sin_cos();
+    let (sz, cz) = az.sin_cos();
+    if d[25] as i32 == 0 {
+        (rx, ry) = (rx * cz - ry * sz, rx * sz + ry * cz);
+        (rx, rz) = (rx * cy + rz * sy, -rx * sy + rz * cy);
+        (ry, rz) = (ry * cx - rz * sx, ry * sx + rz * cx);
+    } else {
+        (ry, rz) = (ry * cx - rz * sx, ry * sx + rz * cx);
+        (rx, rz) = (rx * cy + rz * sy, -rx * sy + rz * cy);
+        (rx, ry) = (rx * cz - ry * sz, rx * sz + ry * cz);
+    }
+    [rx + pivot[0], ry + pivot[1], rz + pivot[2]]
+}
+
+fn kifs3d_scale(d: &[f64], p: [f64; 3]) -> [f64; 3] {
+    let offset = [d[9], d[10], d[11]];
+    let pivot_is_offset = d[5] as i32 == 1;
+    let pivot = if pivot_is_offset { offset } else { [d[6], d[7], d[8]] };
+    let mut s = [0, 1, 2].map(|k| d[2 + k] * (p[k] - pivot[k]) + pivot[k]);
+    if !pivot_is_offset {
+        for k in 0..3 {
+            s[k] += offset[k];
+        }
+    }
+    s
+}
+
+fn kifs3d_apply(d: &[f64], ctx: &mut Ctx, a: &Pt, v: &mut Pt, amount: f64) {
+    let mut p = [a.x, a.y, a.z];
+    let max_iter = d[0] as i32;
+    let mut iter_color = 1.0;
+    let pivot = match d[26] as i32 {
+        1 => [d[6], d[7], d[8]],
+        2 => [d[9], d[10], d[11]],
+        _ => [0.0; 3],
+    };
+    for i in 0..max_iter {
+        p = match d[27] as i32 {
+            0 => {
+                let f = kifs3d_fold(d, ctx, p);
+                kifs3d_scale(d, kifs3d_rotate(d, f, pivot))
+            }
+            1 => {
+                let r = kifs3d_rotate(d, p, pivot);
+                kifs3d_scale(d, kifs3d_fold(d, ctx, r))
+            }
+            _ => {
+                let sc = kifs3d_scale(d, p);
+                let f = kifs3d_fold(d, ctx, sc);
+                kifs3d_rotate(d, f, pivot)
+            }
+        };
+        if p[0] * p[0] + p[1] * p[1] + p[2] * p[2] > d[31] {
+            iter_color = i as f64 / max_iter as f64;
+            break;
+        }
+    }
+    let sym = d[28] as i32;
+    if sym > 0 {
+        let sg = [0; 3].map(|_| if ctx.random() < 0.5 { -1.0 } else { 1.0 });
+        for k in 0..3 {
+            if sym & (1 << k) != 0 {
+                p[k] *= sg[k];
+            }
+        }
+    }
+    let cs = d[30];
+    let fl = |t: f64| t - t.floor();
+    let color = match d[29] as i32 {
+        1 => fl((p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt() * cs),
+        2 => fl(((p[1].atan2(p[0]) + M_PI) / (2.0 * M_PI)) * cs),
+        3 => fl(p[0] * cs),
+        4 => fl(p[1] * cs),
+        5 => fl(p[2] * cs),
+        _ => iter_color,
+    };
+    v.x += p[0] * amount;
+    v.y += p[1] * amount;
+    v.z += p[2] * amount;
+    v.color = color;
+}
+
+/// `org.nfunk.jep.type.Complex` (JEP 2.4.1) as used by `KleinGroupFunc`.
+#[derive(Clone, Copy)]
+struct Jc(f64, f64);
+
+impl Jc {
+    fn mul(self, b: Jc) -> Jc {
+        Jc(self.0 * b.0 - self.1 * b.1, self.1 * b.0 + self.0 * b.1)
+    }
+    fn muls(self, s: f64) -> Jc {
+        Jc(self.0 * s, self.1 * s)
+    }
+    fn add(self, b: Jc) -> Jc {
+        Jc(self.0 + b.0, self.1 + b.1)
+    }
+    fn sub(self, b: Jc) -> Jc {
+        Jc(self.0 - b.0, self.1 - b.1)
+    }
+    fn div(self, b: Jc) -> Jc {
+        if b.0.abs() >= b.1.abs() {
+            let r = b.1 / b.0;
+            let den = b.0 + r * b.1;
+            Jc((self.0 + r * self.1) / den, (self.1 - r * self.0) / den)
+        } else {
+            let r = b.0 / b.1;
+            let den = b.1 + r * b.0;
+            Jc((self.0 * r + self.1) / den, (self.1 * r - self.0) / den)
+        }
+    }
+    fn abs(self) -> f64 {
+        let (ar, ai) = (self.0.abs(), self.1.abs());
+        if ar == 0.0 && ai == 0.0 {
+            0.0
+        } else if ar > ai {
+            let t = ai / ar;
+            ar * (1.0 + t * t).sqrt()
+        } else {
+            let t = ar / ai;
+            ai * (1.0 + t * t).sqrt()
+        }
+    }
+    fn power(self, e: f64) -> Jc {
+        let scalar = self.abs().powf(e);
+        let factor = if self.1 == 0.0 && self.0 < 0.0 {
+            2
+        } else if self.0 == 0.0 && self.1 > 0.0 {
+            1
+        } else if self.0 == 0.0 && self.1 < 0.0 {
+            -1
+        } else {
+            0
+        };
+        let fe = factor as f64 * e;
+        if factor != 0 && fe == (fe as i32) as f64 {
+            let mut x = (fe as i32) % 4;
+            if x < 0 {
+                x += 4;
+            }
+            const SIN: [f64; 4] = [0.0, 1.0, 0.0, -1.0];
+            const COS: [f64; 4] = [1.0, 0.0, -1.0, 0.0];
+            return Jc(scalar * COS[x as usize], scalar * SIN[x as usize]);
+        }
+        let t = e * self.1.atan2(self.0);
+        Jc(scalar * t.cos(), scalar * t.sin())
+    }
+    fn sqrt(self) -> Jc {
+        if self.0 == 0.0 && self.1 == 0.0 {
+            return Jc(0.0, 0.0);
+        }
+        let (ar, ai) = (self.0.abs(), self.1.abs());
+        let mut w = if ar >= ai {
+            let t = ai / ar;
+            ar.sqrt() * (0.5 * (1.0 + (1.0 + t * t).sqrt())).sqrt()
+        } else {
+            let t = ar / ai;
+            ai.sqrt() * (0.5 * (t + (1.0 + t * t).sqrt())).sqrt()
+        };
+        if self.0 >= 0.0 {
+            Jc(w, self.1 / (2.0 * w))
+        } else {
+            if self.1 < 0.0 {
+                w = -w;
+            }
+            Jc(self.1 / (2.0 * w), w)
+        }
+    }
+}
+
+/// `KleinGroupFunc.init`: the generators `a`, `b` for the recipe, as 2x2 complex matrices.
+fn klein_group_generators(a_re: f64, a_im: f64, b_re: f64, b_im: f64, recipe: i32) -> [[Jc; 4]; 2] {
+    let (zero, re1, re2, re4, im1, im2, im4) = (Jc(0.0, 0.0), Jc(1.0, 0.0), Jc(2.0, 0.0), Jc(4.0, 0.0), Jc(0.0, 1.0), Jc(0.0, 2.0), Jc(0.0, 4.0));
+    let trace_ab = |ta: Jc, tb: Jc| {
+        let b = ta.mul(tb).muls(-1.0);
+        let c = ta.power(2.0).add(tb.power(2.0));
+        let bsq = b.power(2.0);
+        let ac4 = c.muls(4.0);
+        b.muls(-1.0).sub(bsq.sub(ac4).sqrt()).div(re2)
+    };
+    let maskit_a = |mu: Jc| [mu.muls(-1.0).mul(im1), im1.muls(-1.0), im1.muls(-1.0), zero];
+    match recipe {
+        1 => [maskit_a(Jc(a_re, a_im)), [re1, re2, zero, re1]],
+        2 => {
+            let (ta, tb) = (Jc(a_re, a_im), Jc(b_re, b_im));
+            let tab = trace_ab(ta, tb);
+            [
+                [ta.sub(tb.div(tab)), ta.div(tab.power(2.0)), ta, tb.div(tab)],
+                [tb.sub(ta.div(tab)), tb.muls(-1.0).div(tab.power(2.0)), tb.muls(-1.0), ta.div(tab)],
+            ]
+        }
+        3 => [[re1, zero, Jc(a_re, a_im), re1], [re1, re2, zero, re1]],
+        4 => [[re1, zero, Jc(a_re, a_im), re1], [re1, Jc(b_re, b_im), zero, re1]],
+        5 => [maskit_a(Jc(a_re, a_im)), [re1, Jc(b_re, b_im), zero, re1]],
+        6 => [maskit_a(Jc(a_re, a_im)), [re1, Jc(2.0 * (M_PI / b_re).cos(), b_im), zero, re1]],
+        _ => {
+            let (ta, tb) = (Jc(a_re, a_im), Jc(b_re, b_im));
+            let tab = trace_ab(ta, tb);
+            let z0 = tab.sub(re2).mul(tb).div(tb.mul(tab).sub(ta.mul(re2)).add(tab.mul(im2)));
+            let a1 = ta.mul(tab).sub(tb.mul(re2)).add(im4).div(tab.mul(re2).add(re4).mul(z0));
+            let a2 = ta.mul(tab).sub(tb.mul(re2)).sub(im4).mul(z0).div(tab.mul(re2).sub(re4));
+            [[ta.div(re2), a1, a2, ta.div(re2)], [tb.sub(im2).div(re2), tb.div(re2), tb.div(re2), tb.add(im2).div(re2)]]
+        }
+    }
+}
+
 pub static DEFS: &[VarDef] = &[
     VarDef {
         name: "harmonograph_js",
@@ -3138,6 +3390,252 @@ let dy = a.y - D(2) * 0.5 * (2.0 * parity - 1.0);
 let spin = D(1) * (2.0 * parity - 1.0) / (dx * dx + dy * dy + 1e-4);
 v.x += AMOUNT * (a.x + spin * (-dy));
 v.y += AMOUNT * (a.y + spin * dx);
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "kifs3d",
+        params: &[
+            ParamDef::int("max_iter", 7.0, 1.0, 100.0),
+            ParamDef::new("bailout_radius", 1.1),
+            ParamDef::new("kifs_scale_x", 1.4),
+            ParamDef::new("kifs_scale_y", 1.4),
+            ParamDef::new("kifs_scale_z", -1.0),
+            ParamDef::int("scale_pivot", 0.0, 0.0, 1.0),
+            ParamDef::new("center_x", 0.0),
+            ParamDef::new("center_y", 0.0),
+            ParamDef::new("center_z", 0.0),
+            ParamDef::new("offset_x", -1.0),
+            ParamDef::new("offset_y", -1.0),
+            ParamDef::new("offset_z", 1.0),
+            ParamDef::int("mirror_fold", 0.0, 0.0, 1.0),
+            ParamDef::int("fold_type", 1.0, 0.0, 4.0),
+            ParamDef::new("fold_plane1_nx", 1.0),
+            ParamDef::new("fold_plane1_ny", 0.0),
+            ParamDef::new("fold_plane1_nz", 0.0),
+            ParamDef::new("fold_plane1_dist", 0.0),
+            ParamDef::new("fold_plane1_intensity", 1.0),
+            ParamDef::new("edge_x", 0.0),
+            ParamDef::new("edge_y", 0.0),
+            ParamDef::new("edge_z", 0.0),
+            ParamDef::new("rot_x", 5.0),
+            ParamDef::new("rot_y", 5.0),
+            ParamDef::new("rot_z", 5.0),
+            ParamDef::int("rot_order", 0.0, 0.0, 1.0),
+            ParamDef::int("rot_pivot", 0.0, 0.0, 2.0),
+            ParamDef::int("transform_order", 0.0, 0.0, 2.0),
+            ParamDef::int("post_symmetry", 7.0, 0.0, 7.0),
+            ParamDef::int("color_mode", 0.0, 0.0, 5.0),
+            ParamDef::new("color_scale", 1.0)
+        ],
+        kind: VarKind::Normal,
+        is_3d: true,
+        apply: |d, ctx, a, v, amount| kifs3d_apply(d, ctx, a, v, amount),
+        prepare: Some(|p, _| {
+            let mut d = p.to_vec();
+            d[0] = p[0].trunc();
+            for (i, hi) in [(5, 1), (12, 1), (13, 4), (25, 1), (26, 2), (27, 2), (28, 7), (29, 5)] {
+                d[i] = limit_value(ftoi(p[i]), 0, hi) as f64;
+            }
+            if d[18] < 0.0 {
+                d[18] = 0.0;
+            }
+            let mut bsq = p[1] * p[1];
+            if bsq <= 0.0 {
+                bsq = 1e-6;
+            }
+            d.extend([bsq, p[22].to_radians(), p[23].to_radians(), p[24].to_radians(), p[14] * p[14] + p[15] * p[15] + p[16] * p[16]]);
+            d
+        }),
+        wgsl: "fn kifs3d_fold(base: u32, p: vec3<f32>) -> vec3<f32> {
+  let n = vec3<f32>(prm[base + 14u], prm[base + 15u], prm[base + 16u]);
+  let dist = prm[base + 17u];
+  let len_sq = prm[base + 35u];
+  let edge = vec3<f32>(prm[base + 19u], prm[base + 20u], prm[base + 21u]);
+  let ft = i32(prm[base + 13u]);
+  var sg = vec3<f32>(1.0);
+  let mirror = prm[base + 12u] > 0.0;
+  if (mirror) {
+    sg = select(vec3<f32>(1.0), vec3<f32>(-1.0), vec3<bool>(rnd() < 0.5, rnd() < 0.5, rnd() < 0.5));
+  }
+  if (ft == 1) {
+    if (mirror) { return p * sg; }
+    return abs(p);
+  }
+  if (ft == 2) {
+    var flip = p.x + p.y < 0.0;
+    if (mirror) { flip = sg.x < 0.0; }
+    if (flip) { return vec3<f32>(-p.y, -p.x, p.z); }
+    return p;
+  }
+  if (ft == 3) {
+    let dot_n = dot(p, n) - dist;
+    var doit = dot_n < 0.0;
+    if (mirror) { doit = sg.x < 0.0; }
+    if (len_sq > 1e-9 && doit) {
+      return p - (1.0 + prm[base + 18u]) * dot_n / len_sq * n;
+    }
+    return p;
+  }
+  if (ft == 4) {
+    let s = select(vec3<f32>(1.0), sg, mirror);
+    return select(p, edge - s * abs(edge - p), edge != vec3<f32>(0.0));
+  }
+  return p;
+}
+fn kifs3d_rotate(base: u32, p: vec3<f32>, pivot: vec3<f32>) -> vec3<f32> {
+  let ax = prm[base + 32u];
+  let ay = prm[base + 33u];
+  let az = prm[base + 34u];
+  if (ax == 0.0 && ay == 0.0 && az == 0.0) { return p; }
+  var r = p - pivot;
+  if (i32(prm[base + 25u]) == 0) {
+    r = vec3<f32>(r.x * cos(az) - r.y * sin(az), r.x * sin(az) + r.y * cos(az), r.z);
+    r = vec3<f32>(r.x * cos(ay) + r.z * sin(ay), r.y, -r.x * sin(ay) + r.z * cos(ay));
+    r = vec3<f32>(r.x, r.y * cos(ax) - r.z * sin(ax), r.y * sin(ax) + r.z * cos(ax));
+  } else {
+    r = vec3<f32>(r.x, r.y * cos(ax) - r.z * sin(ax), r.y * sin(ax) + r.z * cos(ax));
+    r = vec3<f32>(r.x * cos(ay) + r.z * sin(ay), r.y, -r.x * sin(ay) + r.z * cos(ay));
+    r = vec3<f32>(r.x * cos(az) - r.y * sin(az), r.x * sin(az) + r.y * cos(az), r.z);
+  }
+  return r + pivot;
+}
+fn kifs3d_scale(base: u32, p: vec3<f32>) -> vec3<f32> {
+  let offset = vec3<f32>(prm[base + 9u], prm[base + 10u], prm[base + 11u]);
+  let s = vec3<f32>(prm[base + 2u], prm[base + 3u], prm[base + 4u]);
+  if (i32(prm[base + 5u]) == 1) { return s * (p - offset) + offset; }
+  let pivot = vec3<f32>(prm[base + 6u], prm[base + 7u], prm[base + 8u]);
+  return s * (p - pivot) + pivot + offset;
+}
+@body
+var p = vec3<f32>(a.x, a.y, a.z);
+let max_iter = i32(D(0));
+var iter_color = 1.0;
+var pivot = vec3<f32>(0.0);
+let pt = i32(D(26));
+if (pt == 1) { pivot = vec3<f32>(D(6), D(7), D(8)); } else if (pt == 2) { pivot = vec3<f32>(D(9), D(10), D(11)); }
+let order = i32(D(27));
+for (var i = 0; i < max_iter; i++) {
+  if (order == 0) {
+    p = kifs3d_scale(base, kifs3d_rotate(base, kifs3d_fold(base, p), pivot));
+  } else if (order == 1) {
+    p = kifs3d_scale(base, kifs3d_fold(base, kifs3d_rotate(base, p, pivot)));
+  } else {
+    p = kifs3d_rotate(base, kifs3d_fold(base, kifs3d_scale(base, p)), pivot);
+  }
+  if (dot(p, p) > D(31)) {
+    iter_color = f32(i) / f32(max_iter);
+    break;
+  }
+}
+let sym = i32(D(28));
+if (sym > 0) {
+  let sg = select(vec3<f32>(1.0), vec3<f32>(-1.0), vec3<bool>(rnd() < 0.5, rnd() < 0.5, rnd() < 0.5));
+  if ((sym & 1) != 0) { p.x *= sg.x; }
+  if ((sym & 2) != 0) { p.y *= sg.y; }
+  if ((sym & 4) != 0) { p.z *= sg.z; }
+}
+let cs = D(30);
+let cm = i32(D(29));
+var col = iter_color;
+if (cm == 1) { col = fract(length(p) * cs); }
+else if (cm == 2) { col = fract((atan2(p.y, p.x) + PI) / TWO_PI * cs); }
+else if (cm == 3) { col = fract(p.x * cs); }
+else if (cm == 4) { col = fract(p.y * cs); }
+else if (cm == 5) { col = fract(p.z * cs); }
+v.x += p.x * AMOUNT;
+v.y += p.y * AMOUNT;
+v.z += p.z * AMOUNT;
+v.color = col;",
+    },
+    VarDef {
+        name: "klein",
+        params: &[ParamDef::new("inner_radius", 0.5), ParamDef::new("twist", 0.3)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let ri = java_max(d[0].abs(), 0.01);
+            let r = (a.x * a.x + a.y * a.y).sqrt();
+            let theta = a.y.atan2(a.x);
+            let (nr, nt) = if r < ri { (r, theta + d[1] * r) } else { ((ri * ri) / java_max(r, 1e-6), -theta + d[1] * r) };
+            v.x += amount * nr * nt.cos();
+            v.y += amount * nr * nt.sin();
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "let ri = max(abs(D(0)), 0.01);
+let r = sqrt(a.x * a.x + a.y * a.y);
+let theta = atan2(a.y, a.x);
+var nr = r;
+var nt = theta + D(1) * r;
+if (r >= ri) {
+  nr = (ri * ri) / max(r, 1e-6);
+  nt = -theta + D(1) * r;
+}
+v.x += AMOUNT * nr * cos(nt);
+v.y += AMOUNT * nr * sin(nt);
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "klein_group",
+        params: &[
+            ParamDef::new("a_re", 2.0),
+            ParamDef::new("a_im", 0.0),
+            ParamDef::new("b_re", 2.0),
+            ParamDef::new("b_im", 0.0),
+            ParamDef::int("recipe", 0.0, 0.0, 6.0),
+            ParamDef::int("avoid_reversal", 0.0, 0.0, 1.0),
+        ],
+        kind: VarKind::Normal,
+        is_3d: false,
+        // d = [<params>, matrices a, a^-1, b, b^-1 (4 x 8 values, re/im of m0..m3)]
+        apply: |d, ctx, a, v, amount| {
+            // the inverse of matrix i is i ^ 1; with avoid_reversal the inverse of the previous
+            // matrix is left out (the previous matrix is kept per render thread on the CPU)
+            let k = if d[5] == 1.0 {
+                let prev = ctx.orbits.entry(d.as_ptr() as usize).or_insert([0.0, 0.0]);
+                let skip = (prev[0] as usize) ^ 1;
+                let mut k = ctx.random_int(3);
+                if k >= skip {
+                    k += 1;
+                }
+                k
+            } else {
+                ctx.random_int(4)
+            };
+            if d[5] == 1.0 {
+                ctx.orbits.insert(d.as_ptr() as usize, [k as f64, 0.0]);
+            }
+            let m = &d[6 + 8 * k..14 + 8 * k];
+            let w = Jc(a.x / amount, a.y / amount);
+            let out = w.mul(Jc(m[0], m[1])).add(Jc(m[2], m[3])).div(w.mul(Jc(m[4], m[5])).add(Jc(m[6], m[7])));
+            v.x += amount * out.0;
+            v.y += amount * out.1;
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: Some(|p, _| {
+            let mut d = p.to_vec();
+            d[4] = p[4].floor();
+            d[5] = if p[5] == 1.0 { 1.0 } else { 0.0 };
+            let [ma, mb] = klein_group_generators(p[0], p[1], p[2], p[3], d[4] as i32);
+            let inv = |m: [Jc; 4]| [m[3], m[1].muls(-1.0), m[2].muls(-1.0), m[0]];
+            for m in [ma, inv(ma), mb, inv(mb)] {
+                for c in m {
+                    d.extend([c.0, c.1]);
+                }
+            }
+            d
+        }),
+        // GPU: no state across calls, avoid_reversal is ignored (all four matrices are used)
+        wgsl: "fn klein_group_mul(a: vec2<f32>, b: vec2<f32>) -> vec2<f32> { return vec2<f32>(a.x * b.x - a.y * b.y, a.y * b.x + a.x * b.y); }
+@body
+let k = min(u32(rnd() * 4.0), 3u);
+let o = base + 6u + 8u * k;
+let w = vec2<f32>(a.x, a.y) / AMOUNT;
+let num = klein_group_mul(w, vec2<f32>(prm[o], prm[o + 1u])) + vec2<f32>(prm[o + 2u], prm[o + 3u]);
+let den = klein_group_mul(w, vec2<f32>(prm[o + 4u], prm[o + 5u])) + vec2<f32>(prm[o + 6u], prm[o + 7u]);
+let q = vec2<f32>(num.x * den.x + num.y * den.y, num.y * den.x - num.x * den.y) / dot(den, den);
+v.x += AMOUNT * q.x;
+v.y += AMOUNT * q.y;
 if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
     },
 ];
