@@ -113,6 +113,33 @@ fn hilbert_prepare(p: &[f64]) -> Vec<f64> {
     d
 }
 
+/// `HtreeFunc.draw`: three segments per H, d = [level, size, show_lines, line_thickness,
+/// show_points, point_thickness, line_threshold, point_threshold, line_thickness / 100,
+/// point_thickness / 100, segments, x1, y1, x2, y2, ...].
+fn htree_prepare(p: &[f64]) -> Vec<f64> {
+    let level = limit_value(ftoi(p[0]), 1, 10);
+    fn draw(segs: &mut Vec<f64>, n: i32, x: f64, y: f64, size: f64) {
+        if n == 0 {
+            return;
+        }
+        let (x0, x1, y0, y1) = (x - size / 2.0, x + size / 2.0, y - size / 2.0, y + size / 2.0);
+        segs.extend([x0, y0, x0, y1, x1, y0, x1, y1, x0, y, x1, y]);
+        draw(segs, n - 1, x0, y0, size / 2.0);
+        draw(segs, n - 1, x0, y1, size / 2.0);
+        draw(segs, n - 1, x1, y0, size / 2.0);
+        draw(segs, n - 1, x1, y1, size / 2.0);
+    }
+    let mut segs = Vec::new();
+    draw(&mut segs, level, 0.0, 0.0, p[1]);
+    let (show_lines, show_points) = (p[2].trunc(), p[4].trunc());
+    let sum = show_lines + show_points;
+    let lf = show_lines / sum;
+    let mut d = vec![level as f64, p[1], show_lines, p[3], show_points, p[5], lf, lf + show_points / sum, p[3] / 100.0, p[5] / 100.0];
+    d.push((segs.len() / 4) as f64);
+    d.extend_from_slice(&segs);
+    d
+}
+
 pub static DEFS: &[VarDef] = &[
     VarDef {
         name: "harmonograph_js",
@@ -813,5 +840,221 @@ for (var i = 0; i < n; i++) {
 }
 v.x += AMOUNT * x0;
 v.y += AMOUNT * y0;",
+    },
+    VarDef {
+        name: "hourglass3D",
+        params: &[
+            ParamDef::new("kx", 1.0),
+            ParamDef::new("ky", 1.0),
+            ParamDef::new("kz", 1.0),
+            // JWildfire: random in 3..6
+            ParamDef::new("maxheight", 4.5),
+            ParamDef::int("limit", 1.0, 0.0, 1.0),
+            ParamDef::int("zero", 0.0, 0.0, 1.0),
+        ],
+        kind: VarKind::Normal,
+        is_3d: true,
+        // d = [kx, ky, kz, maxheight, limit, zero, h, hb]
+        apply: |d, _, a, v, amount| {
+            let (vkx, vky, vkz, h) = (amount * d[0], amount * d[1], amount * d[2], d[6]);
+            let (sn, cn) = (a.x.sin(), a.x.cos());
+            let (sh, ch) = (a.y.sinh(), a.y.cosh());
+            if d[4] == 0.0 || ch <= h {
+                v.x += vkx * ch * sn;
+                v.y += vky * sh;
+                v.z += vkz * ch * cn;
+            } else if d[5] == 0.0 {
+                let sg = if sh > 0.0 { 1.0 } else if sh < 0.0 { -1.0 } else { 0.0 };
+                v.x += vkx * h * sn;
+                v.y += vky * sg * d[7];
+                v.z += vkz * h * cn;
+            }
+        },
+        prepare: Some(|p, _| {
+            let mut d = p.to_vec();
+            for i in 0..3 {
+                if d[i] < EPSILON {
+                    d[i] = EPSILON;
+                }
+            }
+            if d[3] < 0.1 {
+                d[3] = 0.1;
+            }
+            d[4] = if p[4] <= EPSILON { 0.0 } else { 1.0 };
+            d[5] = if p[5] <= EPSILON { 0.0 } else { 1.0 };
+            let h = (1.0 + (d[3] / d[1]) * (d[3] / d[1])).sqrt();
+            d.extend([h, (h * h - 1.0).sqrt()]);
+            d
+        }),
+        wgsl: "let vk = AMOUNT * vec3<f32>(D(0), D(1), D(2));
+let h = D(6);
+let sn = sin(a.x);
+let cn = cos(a.x);
+let sh = sinh(a.y);
+let ch = cosh(a.y);
+if (D(4) == 0.0 || ch <= h) {
+  v.x += vk.x * ch * sn;
+  v.y += vk.y * sh;
+  v.z += vk.z * ch * cn;
+} else if (D(5) == 0.0) {
+  v.x += vk.x * h * sn;
+  v.y += vk.y * sign(sh) * D(7);
+  v.z += vk.z * h * cn;
+}",
+    },
+    VarDef {
+        name: "htree_js",
+        params: &[
+            ParamDef::int("level", 2.0, 1.0, 10.0),
+            ParamDef::new("size", 2.0),
+            ParamDef::int("show_lines", 1.0, 0.0, 1.0),
+            ParamDef::new("line_thickness", 0.5),
+            ParamDef::int("show_points", 0.0, 0.0, 1.0),
+            ParamDef::new("point_thickness", 3.0),
+        ],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            // Java cycles through the segments; here a random segment is drawn.
+            let nseg = d[10] as usize;
+            let k = ((ctx.random() * nseg as f64) as usize).min(nseg - 1);
+            let o = 11 + 4 * k;
+            let (x1, y1, x2, y2) = (d[o], d[o + 1], d[o + 2], d[o + 3]);
+            let rnd = ctx.random();
+            let (mut xo, mut yo) = (0.0, 0.0);
+            if rnd < d[6] {
+                let (xdiff, ydiff) = (x2 - x1, y2 - y1);
+                let m = if xdiff == 0.0 { 10000.0 } else { ydiff / xdiff };
+                let dd = ctx.random() * (xdiff * xdiff + ydiff * ydiff).sqrt();
+                let mut xoffset = dd / (1.0 + m * m).sqrt();
+                if x2 < x1 {
+                    xoffset = -xoffset;
+                }
+                let mut yoffset = (m * xoffset).abs();
+                if y2 < y1 {
+                    yoffset = -yoffset;
+                }
+                if d[8] != 0.0 {
+                    xoffset += (ctx.random() - 0.5) * d[8];
+                    yoffset += (ctx.random() - 0.5) * d[8];
+                }
+                xo = x1 + xoffset;
+                yo = y1 + yoffset;
+            } else if rnd <= d[7] {
+                let (mut xoffset, mut yoffset) = (0.0, 0.0);
+                if d[9] != 0.0 {
+                    let roffset = ctx.random() * d[9];
+                    let rangle = ctx.random() * M_2PI;
+                    xoffset = roffset * rangle.cos();
+                    yoffset = roffset * rangle.sin();
+                }
+                xo = x1 + xoffset;
+                yo = y1 + yoffset;
+            }
+            v.x += amount * xo;
+            v.y += amount * yo;
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: Some(|p, _| htree_prepare(p)),
+        wgsl: "let nseg = u32(D(10));
+let k = min(u32(rnd() * f32(nseg)), nseg - 1u);
+let o = base + 11u + 4u * k;
+let x1 = prm[o];
+let y1 = prm[o + 1u];
+let x2 = prm[o + 2u];
+let y2 = prm[o + 3u];
+let r0 = rnd();
+var q = vec2<f32>(0.0);
+if (r0 < D(6)) {
+  let xdiff = x2 - x1;
+  let ydiff = y2 - y1;
+  var m = 10000.0;
+  if (xdiff != 0.0) { m = ydiff / xdiff; }
+  let dd = rnd() * sqrt(xdiff * xdiff + ydiff * ydiff);
+  var xoffset = dd / sqrt(1.0 + m * m);
+  if (x2 < x1) { xoffset = -xoffset; }
+  var yoffset = abs(m * xoffset);
+  if (y2 < y1) { yoffset = -yoffset; }
+  if (D(8) != 0.0) {
+    xoffset += (rnd() - 0.5) * D(8);
+    yoffset += (rnd() - 0.5) * D(8);
+  }
+  q = vec2<f32>(x1 + xoffset, y1 + yoffset);
+} else if (r0 <= D(7)) {
+  q = vec2<f32>(x1, y1);
+  if (D(9) != 0.0) {
+    let roffset = rnd() * D(9);
+    let rangle = rnd() * TWO_PI;
+    q += roffset * vec2<f32>(cos(rangle), sin(rangle));
+  }
+}
+v.x += AMOUNT * q.x;
+v.y += AMOUNT * q.y;
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "hyperbolicellipse",
+        params: &[ParamDef::new("a", 1.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, _, a, v, amount| {
+            let (x, y) = (a.x, a.y);
+            v.x = ((x.exp() - (-x).exp()) / 2.0) * (d[0] * y).cos() * amount;
+            v.y = ((x.exp() + (-x).exp()) / 2.0) * (d[0] * y).sin() * amount;
+        },
+        prepare: None,
+        wgsl: "v.x = ((exp(a.x) - exp(-a.x)) / 2.0) * cos(D(0) * a.y) * AMOUNT;
+v.y = ((exp(a.x) + exp(-a.x)) / 2.0) * sin(D(0) * a.y) * AMOUNT;",
+    },
+    VarDef {
+        name: "hypercrop",
+        params: &[ParamDef::int("n", 4.0, 1.0, 100.0), ParamDef::new("rad", 1.0), ParamDef::new("zero", 0.0)],
+        kind: VarKind::Normal,
+        is_3d: true,
+        apply: |d, _, a, v, amount| {
+            let n = d[0];
+            let coef = n * 0.5 / M_PI;
+            let (mut fx, mut fy, mut fz) = (a.x, a.y, a.z);
+            let a0 = M_PI / n;
+            let len = 1.0 / a0.cos();
+            let dd = d[1] * a0.sin() * len;
+            let angle = (a.y.atan2(a.x) * coef).floor() / coef + M_PI / n;
+            let (x0, y0) = (angle.cos() * len, angle.sin() * len);
+            if ((a.x - x0) * (a.x - x0) + (a.y - y0) * (a.y - y0)).sqrt() < dd {
+                if d[2] > 1.5 {
+                    (fx, fy, fz) = (x0, y0, 0.0);
+                } else if d[2] > 0.5 {
+                    (fx, fy, fz) = (0.0, 0.0, 0.0);
+                } else {
+                    let rangle = (a.y - y0).atan2(a.x - x0);
+                    (fx, fy, fz) = (x0 + rangle.cos() * dd, y0 + rangle.sin() * dd, 0.0);
+                }
+            }
+            v.x += fx * amount;
+            v.y += fy * amount;
+            v.z += fz * amount;
+        },
+        prepare: Some(|p, _| vec![ftoi(p[0]) as f64, p[1], p[2]]),
+        wgsl: "let n = D(0);
+let coef = n * 0.5 / PI;
+var f = vec3<f32>(a.x, a.y, a.z);
+let a0 = PI / n;
+let len = 1.0 / cos(a0);
+let dd = D(1) * sin(a0) * len;
+let angle = floor(atan2(a.y, a.x) * coef) / coef + PI / n;
+let c0 = vec2<f32>(cos(angle), sin(angle)) * len;
+if (length(vec2<f32>(a.x, a.y) - c0) < dd) {
+  if (D(2) > 1.5) {
+    f = vec3<f32>(c0, 0.0);
+  } else if (D(2) > 0.5) {
+    f = vec3<f32>(0.0);
+  } else {
+    let rangle = atan2(a.y - c0.y, a.x - c0.x);
+    f = vec3<f32>(c0 + dd * vec2<f32>(cos(rangle), sin(rangle)), 0.0);
+  }
+}
+v.x += f.x * AMOUNT;
+v.y += f.y * AMOUNT;
+v.z += f.z * AMOUNT;",
     },
 ];
