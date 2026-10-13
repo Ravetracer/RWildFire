@@ -723,6 +723,109 @@ fn scrambly_randflip(idxmin: i32, idxmax: i32, seed: i32, mx: &mut [i32]) {
     }
 }
 
+/// `SnowflakeWFFunc.getPoints`: the snowflake points `[x, y, intensity]` (cached by parameters,
+/// like Java). `p` = buffer_size, max_iter, bg_freeze_level, fg_freeze_speed, diffusion_speed,
+/// diffusion_asymmetry, rnd_bg_noise, threshold, seed, scale, jitter.
+fn snowflake_points(p: &[f64]) -> std::sync::Arc<Vec<[f64; 3]>> {
+    use std::sync::{Arc, Mutex, OnceLock};
+    type Cache = std::collections::HashMap<Vec<u64>, Arc<Vec<[f64; 3]>>>;
+    static CACHE: OnceLock<Mutex<Cache>> = OnceLock::new();
+    let key: Vec<u64> = p[..11].iter().map(|v| v.to_bits()).collect();
+    let cache = CACHE.get_or_init(|| Mutex::new(std::collections::HashMap::new()));
+    if let Some(r) = cache.lock().unwrap().get(&key) {
+        return r.clone();
+    }
+    let stretch = 1.5 / 1.7321;
+    let (w, max_iter, seed) = (p[0] as i32, p[1] as i32, p[8] as i32);
+    let (bg, fg, diff, asym, noise, threshold, scale) = (p[2], p[3], p[4], p[5], p[6], p[7], p[9]);
+    let jitter = java_max(java_min(1.0, p[10]), 0.0);
+    // Snowflake simulation on a hexagonal grid
+    let mut pts = Vec::new();
+    if w > 0 {
+        let h = w + w - 1;
+        let n = (w * h + (w - 1) * (h - 1)) as usize;
+        let offs = [-w - (w - 1), -(w - 1), w, w + (w - 1), w - 1, -w];
+        let nb = |i: usize, j: usize| -> Option<usize> {
+            let k = i as i64 + offs[j] as i64;
+            if k >= 0 && (k as usize) < n { Some(k as usize) } else { None }
+        };
+        let mut rnd = Marsaglia::new(seed as i64);
+        let mut flake: Vec<f64> = (0..n).map(|_| bg + (noise - 2.0 * noise * rnd.random())).collect();
+        flake[(n as f64 / 2.0).floor() as usize] = 1.0;
+        let (t_freeze, t_diff) = (fg / 1000.0, diff / 1000.0 + 1.0);
+        let cw = 0.5 * asym / t_diff;
+        let nw = (1.0 * t_diff - cw) / 6.0;
+        let mut tmp = vec![0.0; n];
+        let mut recv = vec![0.0; n];
+        let mut nonrecv = vec![0.0; n];
+        for _ in 0..max_iter {
+            tmp.copy_from_slice(&flake);
+            recv.fill(0.0);
+            for i in 0..n {
+                if flake[i] >= 1.0 {
+                    recv[i] = flake[i];
+                    for j in 0..6 {
+                        if let Some(k) = nb(i, j) {
+                            tmp[k] = 0.0;
+                            recv[k] = if flake[k] > 0.0 { flake[k] + t_freeze } else { flake[k] };
+                        }
+                    }
+                }
+            }
+            for i in 0..n {
+                nonrecv[i] = tmp[i] * cw;
+                for j in 0..6 {
+                    if let Some(k) = nb(i, j) {
+                        nonrecv[i] += tmp[k] * nw;
+                    }
+                }
+            }
+            for i in 0..n {
+                flake[i] = nonrecv[i] + recv[i];
+            }
+        }
+        // renderSnowflake (float canvas)
+        let cw_px = (2.0 * w as f64 * stretch).floor() as i32;
+        let mut canvas = vec![vec![0.0f32; cw_px.max(0) as usize]; h as usize];
+        let mut render = |value: f64, x: i32, y: i32| {
+            if value > threshold + EPSILON && y >= 0 && y < h && x >= 0 && x < cw_px {
+                canvas[y as usize][x as usize] = (value - threshold) as f32;
+            }
+        };
+        for i in 0..h {
+            for j in 0..w {
+                let base_idx = (w + w - 1) * i + j;
+                render(flake[base_idx as usize], ftoi((2 * j) as f64 * stretch), i);
+                let (i1, i2) = (base_idx - w + 1, base_idx + w);
+                if i1 >= 0 && (i1 as usize) < n && i2 >= 0 && (i2 as usize) < n {
+                    render((flake[i1 as usize] + flake[i2 as usize]) * 0.5, ftoi((2 * j + 1) as f64 * stretch), i);
+                }
+            }
+        }
+        let mut rnd = Marsaglia::new(seed as i64);
+        let rows = canvas.len() as f64;
+        for (i, row) in canvas.iter().enumerate() {
+            let cols = row.len() as f64;
+            for (j, &val) in row.iter().enumerate() {
+                let a_rnd = if jitter > EPSILON { rnd.random() } else { 0.0 };
+                if val as f64 > EPSILON {
+                    let mut x = (i as f64 - rows * 0.5) * scale / rows;
+                    let mut y = (j as f64 - cols * 0.5) * scale / cols * stretch;
+                    if jitter > EPSILON {
+                        let (s, c) = (a_rnd * 2.0 * M_PI).sin_cos();
+                        x += jitter * c;
+                        y += jitter * s;
+                    }
+                    pts.push([x, y, val as f64]);
+                }
+            }
+        }
+    }
+    let res = Arc::new(pts);
+    cache.lock().unwrap().insert(key, res.clone());
+    res
+}
+
 /// In-place `Complex` operation.
 type ComplexOp = fn(&mut Complex);
 
@@ -6636,6 +6739,538 @@ let zang = ((xang - xi) * sw + xi) * sa - PI - sa / 2.0 * sw;
 v.x += AMOUNT * rad * cos(zang);
 v.y += AMOUNT * rad * sin(zang);
 if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "siercarpet_js",
+        params: &[ParamDef::int("m", 3.0, 3.0, 12.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            // d = [m]
+            let m = d[0];
+            let l = 1 + (2.0 * m * ctx.random()) as i32;
+            let (al, bl) = if l % 2 == 1 {
+                let an = 2.0 * M_PI * ((l + 1) / 2) as f64 / m;
+                (an.cos(), an.sin())
+            } else {
+                let i = (l / 2) as f64;
+                let (a0, a1) = (2.0 * M_PI * i / m, 2.0 * M_PI * (i - 1.0) / m);
+                ((a0.cos() + a1.cos()) / 2.0, (a0.sin() + a1.sin()) / 2.0)
+            };
+            v.x += (a.x / 3.0 + (al - bl) / 2.0f64.sqrt()) * amount;
+            v.y += (a.y / 3.0 + (al + bl) / 2.0f64.sqrt()) * amount;
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: Some(|p, _| vec![((p[0] as i32).clamp(3, 12)) as f64]),
+        wgsl: "let m = D(0);
+let l = 1 + i32(2.0 * m * rnd());
+var ab = vec2<f32>(0.0);
+if (l % 2 == 1) {
+  let an = 2.0 * PI * f32((l + 1) / 2) / m;
+  ab = vec2<f32>(cos(an), sin(an));
+} else {
+  let i = f32(l / 2);
+  let a0 = 2.0 * PI * i / m;
+  let a1 = 2.0 * PI * (i - 1.0) / m;
+  ab = vec2<f32>(cos(a0) + cos(a1), sin(a0) + sin(a1)) / 2.0;
+}
+v.x += (a.x / 3.0 + (ab.x - ab.y) / sqrt(2.0)) * AMOUNT;
+v.y += (a.y / 3.0 + (ab.x + ab.y) / sqrt(2.0)) * AMOUNT;
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "sigmoid",
+        params: &[ParamDef::new("shiftx", 1.0), ParamDef::new("shifty", 1.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let adjust = |s: f64| {
+                if s < 1.0 && s > -1.0 {
+                    if s == 0.0 { (SMALL_EPSILON, 1.0) } else { (1.0 / s, if s < 0.0 { -1.0 } else { 1.0 }) }
+                } else {
+                    (s, 1.0)
+                }
+            };
+            let (sx, ax) = adjust(d[0]);
+            let (sy, ay) = adjust(d[1]);
+            let vv = amount.abs();
+            let c0 = ax / (1.0 + (sx * -5.0 * a.x).exp());
+            let c1 = ay / (1.0 + (sy * -5.0 * a.y).exp());
+            v.x += vv * (2.0 * (c0 - 0.5));
+            v.y += vv * (2.0 * (c1 - 0.5));
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "var sx = D(0);
+var sy = D(1);
+var ax = 1.0;
+var ay = 1.0;
+if (sx < 1.0 && sx > -1.0) {
+  if (sx == 0.0) { sx = EPS; } else { ax = sign(sx); sx = 1.0 / sx; }
+}
+if (sy < 1.0 && sy > -1.0) {
+  if (sy == 0.0) { sy = EPS; } else { ay = sign(sy); sy = 1.0 / sy; }
+}
+let vv = abs(AMOUNT);
+let c0 = ax / (1.0 + exp(sx * -5.0 * a.x));
+let c1 = ay / (1.0 + exp(sy * -5.0 * a.y));
+v.x += vv * (2.0 * (c0 - 0.5));
+v.y += vv * (2.0 * (c1 - 0.5));
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "simplex_warp",
+        params: &[ParamDef::new("freq", 2.0), ParamDef::new("amp", 0.4)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let (x, y) = (d[0] * a.x, d[0] * a.y);
+            let v1 = (x * 1.3 + y * 0.7 + (x * 0.9 - y * 1.1).sin() * 2.0).sin();
+            let v2 = (y * 1.1 + x * 0.8 + (y * 1.2 + x * 0.6).sin() * 2.0).sin();
+            v.x += amount * d[1] * v1;
+            v.y += amount * d[1] * v2;
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "let x = D(0) * a.x;
+let y = D(0) * a.y;
+v.x += AMOUNT * D(1) * sin(x * 1.3 + y * 0.7 + sin(x * 0.9 - y * 1.1) * 2.0);
+v.y += AMOUNT * D(1) * sin(y * 1.1 + x * 0.8 + sin(y * 1.2 + x * 0.6) * 2.0);
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "sin2_bs",
+        params: &[ParamDef::new("x1", 1.0), ParamDef::new("x2", 1.0), ParamDef::new("y1", 1.0), ParamDef::new("y2", 1.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            v.x += amount * (a.x * d[0]).sin() * (a.y * d[3]).cosh();
+            v.y += amount * (a.x * d[1]).cos() * (a.y * d[2]).sinh();
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "v.x += AMOUNT * sin(a.x * D(0)) * cosh(a.y * D(3));
+v.y += AMOUNT * cos(a.x * D(1)) * sinh(a.y * D(2));
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "sineblur",
+        params: &[ParamDef::new("power", 1.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let power = if d[0] < 0.0 { 0.0 } else { d[0] };
+            let ang = ctx.random() * M_2PI;
+            let r = amount
+                * if power == 1.0 {
+                    (ctx.random() * 2.0 - 1.0).acos() / M_PI
+                } else {
+                    ((ctx.random().ln() * power).exp() * 2.0 - 1.0).acos() / M_PI
+                };
+            v.x += r * ang.cos();
+            v.y += r * ang.sin();
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "let power = max(D(0), 0.0);
+let ang = rnd() * TWO_PI;
+var t = rnd();
+if (power != 1.0) { t = exp(log(t) * power); }
+let r = AMOUNT * acos(clamp(t * 2.0 - 1.0, -1.0, 1.0)) / PI;
+v.x += r * cos(ang);
+v.y += r * sin(ang);
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "sinh2_bs",
+        params: &[ParamDef::new("x1", 1.0), ParamDef::new("x2", 1.0), ParamDef::new("y1", 1.0), ParamDef::new("y2", 1.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            v.x += amount * (a.x * d[0]).sinh() * (a.y * d[3]).cos();
+            v.y += amount * (a.x * d[1]).cosh() * (a.y * d[2]).sin();
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "v.x += AMOUNT * sinh(a.x * D(0)) * cos(a.y * D(3));
+v.y += AMOUNT * cosh(a.x * D(1)) * sin(a.y * D(2));
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    simple(
+        "sinhq",
+        true,
+        |_, _, a, v, amount| {
+            let av = a.y.hypot(a.z);
+            let cc = amount * a.x.cosh() * av.sin() / av;
+            v.x += amount * a.x.sinh() * av.cos();
+            v.y += cc * a.y;
+            v.z += cc * a.z;
+        },
+        "let av = length(vec2<f32>(a.y, a.z));
+let cc = AMOUNT * cosh(a.x) * sin(av) / av;
+v.x += AMOUNT * sinh(a.x) * cos(av);
+v.y += cc * a.y;
+v.z += cc * a.z;",
+    ),
+    simple(
+        "sinq",
+        true,
+        |_, _, a, v, amount| {
+            let av = a.y.hypot(a.z);
+            let cc = amount * a.x.cos() * av.sinh() / av;
+            v.x += amount * a.x.sin() * av.cosh();
+            v.y += cc * a.y;
+            v.z += cc * a.z;
+        },
+        "let av = length(vec2<f32>(a.y, a.z));
+let cc = AMOUNT * cos(a.x) * sinh(av) / av;
+v.x += AMOUNT * sin(a.x) * cosh(av);
+v.y += cc * a.y;
+v.z += cc * a.z;",
+    ),
+    VarDef {
+        name: "sintrange",
+        params: &[ParamDef::new("w", 1.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let w = d[0];
+            let t = (sqr(a.x) + sqr(a.y)) * w;
+            v.x = amount * a.x.sin() * (a.x * a.x + w - t);
+            v.y = amount * a.y.sin() * (a.y * a.y + w - t);
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "let t = (a.x * a.x + a.y * a.y) * D(0);
+v.x = AMOUNT * sin(a.x) * (a.x * a.x + D(0) - t);
+v.y = AMOUNT * sin(a.y) * (a.y * a.y + D(0) - t);
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "sinusgrid",
+        params: &[ParamDef::new("ampx", 0.5), ParamDef::new("ampy", 0.6), ParamDef::new("freqx", 1.2), ParamDef::new("freqy", 1.0)],
+        kind: VarKind::Normal,
+        is_3d: true,
+        apply: |d, _, a, v, amount| {
+            // d = [ampx, ampy, freqx, freqy, fx, fy]
+            let sx = -(a.x * d[4]).cos();
+            let sy = -(a.y * d[5]).cos();
+            v.x += amount * (a.x + d[0] * (sx - a.x));
+            v.y += amount * (a.y + d[1] * (sy - a.y));
+            v.z += amount * a.z;
+        },
+        prepare: Some(|p, _| {
+            let nz = |f: f64| if f == 0.0 { EPSILON } else { f };
+            vec![p[0], p[1], p[2], p[3], nz(p[2] * M_2PI), nz(p[3] * M_2PI)]
+        }),
+        wgsl: "let sx = -cos(a.x * D(4));
+let sy = -cos(a.y * D(5));
+v.x += AMOUNT * (a.x + D(0) * (sx - a.x));
+v.y += AMOUNT * (a.y + D(1) * (sy - a.y));
+v.z += AMOUNT * a.z;",
+    },
+    simple(
+        "sinusoidal3d",
+        true,
+        |_, _, a, v, amount| {
+            v.x += amount * a.x.sin();
+            v.y += amount * a.y.sin();
+            v.z += amount * ((a.x * a.x).atan2(a.y * a.y) * a.z.cos());
+        },
+        "v.x += AMOUNT * sin(a.x);
+v.y += AMOUNT * sin(a.y);
+v.z += AMOUNT * (atan2(a.x * a.x, a.y * a.y) * cos(a.z));",
+    ),
+    VarDef {
+        name: "sinusoidal_proj",
+        params: &[ParamDef::new("scale", 1.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            v.x += amount * a.x * (a.y * d[0]).cos();
+            v.y += amount * a.y;
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "v.x += AMOUNT * a.x * cos(a.y * D(0));
+v.y += AMOUNT * a.y;
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "_slice_indicator_wf",
+        params: &[
+            ParamDef::new("thickness", 0.01),
+            ParamDef::new("position_1", 0.0),
+            ParamDef::int("dc_red_1", 255.0, 0.0, 255.0),
+            ParamDef::int("dc_green_1", 0.0, 0.0, 255.0),
+            ParamDef::int("dc_blue_1", 0.0, 0.0, 255.0),
+            ParamDef::new("position_2", 0.0),
+            ParamDef::int("dc_red_2", 255.0, 0.0, 255.0),
+            ParamDef::int("dc_green_2", 0.0, 0.0, 255.0),
+            ParamDef::int("dc_blue_2", 0.0, 0.0, 255.0),
+            ParamDef::int("random_fill", 0.0, 0.0, 1.0),
+        ],
+        kind: VarKind::Post,
+        is_3d: true,
+        apply: |d, ctx, _a, v, _amount| {
+            // d = [thickness, position_1, r1, g1, b1, position_2, r2, g2, b2, random_fill, min1, max1, min2, max2]
+            let z = v.z;
+            for (k, lo, hi) in [(2, d[10], d[11]), (6, d[12], d[13])] {
+                if z >= lo && z <= hi {
+                    v.rgb_color = true;
+                    v.red = d[k] * 4.0;
+                    v.green = d[k + 1] * 4.0;
+                    v.blue = d[k + 2] * 4.0;
+                    return;
+                }
+            }
+            for (k, lo) in [(2, d[10]), (6, d[12])] {
+                if d[9] as i32 == 1 && ctx.random() > 0.75 {
+                    v.z = lo;
+                    let (s, c) = (M_2PI * ctx.random()).sin_cos();
+                    (v.x, v.y) = (s * v.x + c * v.y, c * v.x - s * v.y);
+                    v.rgb_color = true;
+                    v.red = d[k];
+                    v.green = d[k + 1];
+                    v.blue = d[k + 2];
+                    return;
+                }
+            }
+        },
+        prepare: Some(|p, _| {
+            let mut d = p.to_vec();
+            for k in [2, 3, 4, 6, 7, 8] {
+                d[k] = ftoi(p[k]).max(0) as f64;
+            }
+            d[9] = limit_value(ftoi(p[9]), 0, 1) as f64;
+            let ath = p[0].abs();
+            d.extend([p[1] - 0.5 * ath, p[1] + 0.5 * ath, p[5] - 0.5 * ath, p[5] + 0.5 * ath]);
+            d
+        }),
+        wgsl: "let z = v.z;
+if (z >= D(10) && z <= D(11)) {
+  v.rgbc = 1.0;
+  v.r = D(2) * 4.0;
+  v.g = D(3) * 4.0;
+  v.b = D(4) * 4.0;
+} else if (z >= D(12) && z <= D(13)) {
+  v.rgbc = 1.0;
+  v.r = D(6) * 4.0;
+  v.g = D(7) * 4.0;
+  v.b = D(8) * 4.0;
+} else if (i32(D(9)) == 1) {
+  var k = -1;
+  if (rnd() > 0.75) { k = 0; } else if (rnd() > 0.75) { k = 1; }
+  if (k >= 0) {
+    let o = u32(k) * 4u;
+    v.z = select(D(12), D(10), k == 0);
+    let an = TWO_PI * rnd();
+    let s = sin(an);
+    let c = cos(an);
+    let nx = s * v.x + c * v.y;
+    v.y = c * v.x - s * v.y;
+    v.x = nx;
+    v.rgbc = 1.0;
+    v.r = prm[base + 2u + o];
+    v.g = prm[base + 3u + o];
+    v.b = prm[base + 4u + o];
+  }
+}",
+    },
+    VarDef {
+        name: "snowflake_wf",
+        params: &[
+            ParamDef::int("buffer_size", 128.0, 8.0, 512.0),
+            ParamDef::int("max_iter", 500.0, 1.0, 5000.0),
+            ParamDef::new("bg_freeze_level", 0.5),
+            ParamDef::new("fg_freeze_speed", 0.0005),
+            ParamDef::new("diffusion_speed", 0.01),
+            ParamDef::new("diffusion_asymmetry", 1.0),
+            ParamDef::new("rnd_bg_noise", 0.25),
+            ParamDef::new("threshold", 0.65),
+            ParamDef::int("seed", 12345.0, 0.0, 100000.0),
+            ParamDef::new("scale", 1.0),
+            ParamDef::range("jitter", 0.001, 0.0, 1.0),
+            ParamDef::int("dc_color", 1.0, 0.0, 1.0),
+            ParamDef::new("dc_color_scale", 2.0),
+            ParamDef::new("dc_color_offset", 0.1),
+        ],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            // d = [14 params, psize (points - 1), points as (x, y, intensity)...]
+            let psize = d[14];
+            let (px, py, pi) = if psize > 0.0 {
+                let o = 15 + 3 * ftoi(ctx.random() * psize) as usize;
+                (d[o], d[o + 1], d[o + 2])
+            } else {
+                (0.0, 0.0, 0.0)
+            };
+            v.x += amount * px;
+            v.y += amount * py;
+            ctx.pass_z(a, v, amount);
+            if d[11] > 0.0 {
+                v.color = pi * d[12] + d[13];
+            }
+        },
+        prepare: Some(|p, _| {
+            let mut d = p.to_vec();
+            for k in [0, 1, 8, 11] {
+                d[k] = ftoi(p[k]) as f64;
+            }
+            let pts = snowflake_points(&d);
+            d.push(pts.len() as f64 - 1.0);
+            d.extend(pts.iter().flatten());
+            d
+        }),
+        wgsl: "let psize = D(14);
+var p = vec3<f32>(0.0);
+if (psize > 0.0) {
+  let o = base + 15u + 3u * u32(ftoi(rnd() * psize));
+  p = vec3<f32>(prm[o], prm[o + 1u], prm[o + 2u]);
+}
+v.x += AMOUNT * p.x;
+v.y += AMOUNT * p.y;
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }
+if (D(11) > 0.0) { v.color = p.z * D(12) + D(13); }",
+    },
+    VarDef {
+        name: "solidangle3D",
+        params: &[ParamDef::range("p1", 0.25, 0.0, 0.5), ParamDef::range("p2", 0.5, 0.0, 0.5), ParamDef::range("p3", 0.5, 0.0, 0.5)],
+        kind: VarKind::Normal,
+        is_3d: true,
+        apply: |d, ctx, _a, v, amount| {
+            // d = [p1, p2, p3]
+            let c = vec2(d[0], d[1]);
+            for _ in 0..50 {
+                let (x, y, z) = (ctx.random() - 0.5, ctx.random() - 0.5, ctx.random() - 0.5);
+                let p = vec2((x * x + z * z).sqrt(), y);
+                let l = length(p) - d[2];
+                let m = length(p - c * clamp(dot(p, c), 0.0, d[2]));
+                if java_max(l, m * sign(c.y * p.x - c.x * p.y)) < 0.0 {
+                    v.do_hide = false;
+                    v.x += amount * x;
+                    v.y += amount * y;
+                    v.z += amount * z;
+                    return;
+                }
+            }
+            v.do_hide = true;
+        },
+        prepare: Some(|p, _| vec![limit_value(p[0], 0.0, 0.5), limit_value(p[1], 0.0, 0.5), limit_value(p[2], 0.0, 0.5)]),
+        wgsl: "let c = vec2<f32>(D(0), D(1));
+var found = false;
+for (var i = 0; i < 50; i++) {
+  let q = vec3<f32>(rnd() - 0.5, rnd() - 0.5, rnd() - 0.5);
+  let p = vec2<f32>(length(q.xz), q.y);
+  let l = length(p) - D(2);
+  let m = length(p - c * clamp(dot(p, c), 0.0, D(2)));
+  if (max(l, m * sign(c.y * p.x - c.x * p.y)) < 0.0) {
+    v.hide = 0.0;
+    v.x += AMOUNT * q.x;
+    v.y += AMOUNT * q.y;
+    v.z += AMOUNT * q.z;
+    found = true;
+    break;
+  }
+}
+if (!found) { v.hide = 1.0; }",
+    },
+    VarDef {
+        name: "sph3D",
+        params: &[ParamDef::new("x", 0.75), ParamDef::new("y", 1.0), ParamDef::new("z", 0.5)],
+        kind: VarKind::Normal,
+        is_3d: true,
+        apply: |d, _, a, v, amount| {
+            // Java scales z with the x parameter.
+            let (xx, yy, zz) = (d[0] * a.x, d[1] * a.y, d[0] * a.z);
+            let r = amount / (xx * xx + yy * yy + zz * zz + 10.000e-30);
+            v.x += a.x * r;
+            v.y += a.y * r;
+            v.z += a.z * r;
+        },
+        prepare: None,
+        wgsl: "let xx = D(0) * a.x;
+let yy = D(1) * a.y;
+let zz = D(0) * a.z;
+let r = AMOUNT / (xx * xx + yy * yy + zz * zz + 1e-29);
+v.x += a.x * r;
+v.y += a.y * r;
+v.z += a.z * r;",
+    },
+    VarDef {
+        name: "spherecrop",
+        params: &[
+            ParamDef::new("radius", 1.0),
+            ParamDef::new("x", 0.0),
+            ParamDef::new("y", 0.0),
+            ParamDef::new("z", 0.0),
+            ParamDef::range("scatter_area", 0.0, -1.0, 1.0),
+            ParamDef::int("zero", 1.0, 0.0, 1.0),
+        ],
+        kind: VarKind::Normal,
+        is_3d: true,
+        apply: |d, ctx, a, v, amount| {
+            // d = [radius, x, y, z, scatter_area, zero, cA]
+            let (x0, y0, z0, cr) = (d[1], d[2], d[3], d[0]);
+            // Java moves the affine point itself.
+            a.x -= x0;
+            a.y -= y0;
+            a.z -= z0;
+            let rad = (a.x * a.x + a.y * a.y + a.z * a.z).sqrt();
+            let ang = a.y.atan2(a.x);
+            let az = (a.z / rad).acos();
+            let rdc = cr + ctx.random() * 0.5 * d[6];
+            let esc = rad > cr;
+            let cr0 = d[5] as i32 == 1;
+            v.do_hide = false;
+            if cr0 && esc {
+                v.x = 0.0;
+                v.y = 0.0;
+                v.z = 0.0;
+                v.do_hide = true;
+            } else if !cr0 && esc {
+                v.x += amount * rdc * ang.cos() * az.sin() + x0;
+                v.y += amount * rdc * ang.sin() * az.sin() + y0;
+                v.z += amount * rdc * az.cos() + z0;
+            } else {
+                v.x += amount * a.x + x0;
+                v.y += amount * a.y + y0;
+                v.z += amount * a.z + z0;
+            }
+        },
+        prepare: Some(|p, _| {
+            let mut d = p.to_vec();
+            d[5] = ftoi(p[5]) as f64;
+            d.push(java_max(-1.0, java_min(p[4], 1.0)));
+            d
+        }),
+        wgsl: "let o = vec3<f32>(D(1), D(2), D(3));
+let cr = D(0);
+a.x -= o.x;
+a.y -= o.y;
+a.z -= o.z;
+let rad = sqrt(a.x * a.x + a.y * a.y + a.z * a.z);
+let ang = atan2(a.y, a.x);
+let az = acos(clamp(a.z / rad, -1.0, 1.0));
+let rdc = cr + rnd() * 0.5 * D(6);
+let esc = rad > cr;
+let cr0 = i32(D(5)) == 1;
+v.hide = 0.0;
+if (cr0 && esc) {
+  v.x = 0.0;
+  v.y = 0.0;
+  v.z = 0.0;
+  v.hide = 1.0;
+} else if (!cr0 && esc) {
+  v.x += AMOUNT * rdc * cos(ang) * sin(az) + o.x;
+  v.y += AMOUNT * rdc * sin(ang) * sin(az) + o.y;
+  v.z += AMOUNT * rdc * cos(az) + o.z;
+} else {
+  v.x += AMOUNT * a.x + o.x;
+  v.y += AMOUNT * a.y + o.y;
+  v.z += AMOUNT * a.z + o.z;
+}",
     },
     VarDef {
         name: "post_ztranslate_wf",
