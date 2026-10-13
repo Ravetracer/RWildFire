@@ -6024,6 +6024,51 @@ v.x += AMOUNT * nr * cos(theta);
 v.y += AMOUNT * nr * sin(theta);
 if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
     },
+    VarDef {
+        name: "msTruchet",
+        params: &[
+            ParamDef::int("seed", 0.0, 0.0, 100000.0),
+            ParamDef::int("complexity", 25.0, 1.0, 100.0),
+            ParamDef::new("scale_x", 1.0),
+            ParamDef::new("scale_y", 1.0),
+            ParamDef::new("scale_z", 0.0),
+            ParamDef::new("offset_x", 0.0),
+            ParamDef::new("offset_y", 0.0),
+            ParamDef::new("offset_z", 0.0),
+            ParamDef::int("tile_x", 0.0, 0.0, 1.0),
+            ParamDef::int("tile_y", 0.0, 0.0, 1.0),
+            ParamDef::int("reset_z", 1.0, 0.0, 1.0),
+        ],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| ms_truchet_apply(d, ctx, a, v, amount),
+        prepare: Some(|p, _| ms_truchet_prepare(p)),
+        wgsl: "fn msTruchet_wrap(i: i32, n: i32) -> i32 {
+  if (i < 0) { return i - (i / n - 1) * n; }
+  if (i >= n) { return i - (i / n) * n; }
+  return i;
+}
+@body
+v.x += AMOUNT * (rnd() - 0.5);
+v.y += AMOUNT * (rnd() - 0.5);
+let w = i32(D(11));
+let h = i32(D(12));
+var ix = ftoi((v.x - (D(5) + 0.5) + 1.0) / D(2) * f32(w - 2));
+var iy = ftoi((v.y - (D(6) + 0.5) + 1.0) / D(3) * f32(h - 2));
+if (i32(D(8)) == 1) { ix = msTruchet_wrap(ix, w); }
+if (i32(D(9)) == 1) { iy = msTruchet_wrap(iy, h); }
+var c = vec3<f32>(0.0);
+if (ix >= 0 && ix < w && iy >= 0 && iy < h) { c = res_pixel(base, 11u, ix, iy); }
+v.rgbc = 1.0;
+v.r = c.x;
+v.g = c.y;
+v.b = c.z;
+var dz = D(7);
+if (abs(D(4)) > 1.0e-8) { dz += D(4) * (0.299 * c.x + 0.588 * c.y + 0.113 * c.z) / 255.0; }
+if (i32(D(10)) != 0) { v.z = dz; } else { v.z += dz; }
+v.color = res_uv_color_idx(c);
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
 ];
 
 fn mandelbox2d_apply(d: &[f64], ctx: &mut Ctx, a: &Pt, v: &mut Pt, amount: f64) {
@@ -6500,4 +6545,191 @@ fn mobius_strip_apply(d: &[f64], a: &Pt, v: &mut Pt, amount: f64) {
     } else {
         v.z += amount * v.z;
     }
+}
+
+/// `MSTruchetFunc` (an `AbstractBufferedImageWFFunc`): d = [11 parameters, image block (width,
+/// height, pixel start), packed RGB pixels]. The tile image is drawn with tiny-skia instead of
+/// Java2D, so anti-aliased edge pixels can differ slightly.
+fn ms_truchet_prepare(p: &[f64]) -> Vec<f64> {
+    let seed = p[0] as i32;
+    let complexity = limit_value(p[1], 1.0, 100.0) as i32;
+    let pixels = mandala_cached(vec![seed as u64, complexity as u64, 3], || ms_truchet_image(seed, complexity));
+    let mut d = p.to_vec();
+    d[0] = seed as f64;
+    d[1] = complexity as f64;
+    let size = MS_TRUCHET_SIZE as f64;
+    d.extend([size, size, 14.0]);
+    d.extend_from_slice(&pixels);
+    d
+}
+
+/// Canvas size of `MSTruchetFunc.init`: `(int) (1024 * 5.0 / 3.0)`.
+const MS_TRUCHET_SIZE: u32 = 1706;
+
+/// Draws the Truchet quadtree of `MSTruchetFunc.init`; returns packed RGB pixels.
+fn ms_truchet_image(seed: i32, complexity: i32) -> Vec<f64> {
+    use resvg::tiny_skia::{Color, FillRule, Paint, PathBuilder, Pixmap, Rect, Transform};
+    struct Node {
+        b: [f64; 4],
+        tier: i32,
+        motif: usize,
+        children: Option<[usize; 4]>,
+    }
+    let mut rnd = crate::rng::JavaRandom::new(seed as i64);
+    let mut nodes: Vec<Node> = Vec::new();
+    let new_node = |nodes: &mut Vec<Node>, rnd: &mut crate::rng::JavaRandom, b: [f64; 4], tier: i32| {
+        let motif = (15.0 * rnd.next_double()) as usize;
+        nodes.push(Node { b, tier, motif, children: None });
+        nodes.len() - 1
+    };
+    let (canvas_w, canvas_x) = (512.0, (MS_TRUCHET_SIZE / 2) as f64);
+    new_node(&mut nodes, &mut rnd, [canvas_x, canvas_x, canvas_w, canvas_w], 0);
+    for _ in 0..=complexity {
+        let px = 2.0 * canvas_w * rnd.next_double();
+        let py = 2.0 * canvas_w * rnd.next_double();
+        // QuadTree.split: divides the leaf containing the point
+        let mut k = 0;
+        loop {
+            let [x, y, w, h] = nodes[k].b;
+            if !(px >= x - w && px < x + w && py >= y - h && py < y + h) {
+                break;
+            }
+            match nodes[k].children {
+                None => {
+                    let t = nodes[k].tier + 1;
+                    let (w2, h2) = (w / 2.0, h / 2.0);
+                    let c = [[x + w2, y - h2], [x - w2, y - h2], [x + w2, y + h2], [x - w2, y + h2]].map(|[cx, cy]| new_node(&mut nodes, &mut rnd, [cx, cy, w2, h2], t));
+                    nodes[k].children = Some(c);
+                    break;
+                }
+                Some(c) => match c.iter().find(|&&j| {
+                    let [x, y, w, h] = nodes[j].b;
+                    px >= x - w && px < x + w && py >= y - h && py < y + h
+                }) {
+                    Some(&j) => k = j,
+                    None => break,
+                },
+            }
+        }
+    }
+    // drawing order: root, then the leaves breadth first
+    let mut order = vec![0];
+    let mut queue = std::collections::VecDeque::from([0]);
+    while let Some(k) = queue.pop_front() {
+        match nodes[k].children {
+            Some(c) => queue.extend(c),
+            None => order.push(k),
+        }
+    }
+    let size = MS_TRUCHET_SIZE;
+    let mut pm = Pixmap::new(size, size).unwrap();
+    pm.fill(Color::BLACK);
+    let paint = |white: bool| {
+        let mut p = Paint::default();
+        let c = if white { 255 } else { 0 };
+        p.set_color_rgba8(c, c, c, 255);
+        p.anti_alias = true;
+        p
+    };
+    for k in order {
+        let n = &nodes[k];
+        let [x, y, w, h] = n.b;
+        // color[0] is white on even tiers, black on odd ones; color[1] the other one
+        let c0 = paint(n.tier % 2 == 0);
+        let c1 = paint(n.tier % 2 != 0);
+        let rect = |pm: &mut Pixmap, paint: &Paint, x: f64, y: f64, w: f64, h: f64| {
+            if let Some(r) = Rect::from_xywh((x - w) as f32, (y - h) as f32, (2.0 * w) as f32, (2.0 * h) as f32) {
+                pm.fill_rect(r, paint, Transform::identity(), None);
+            }
+        };
+        let circle = |pm: &mut Pixmap, paint: &Paint, x: f64, y: f64, r: f64| {
+            if let Some(path) = PathBuilder::from_circle(x as f32, y as f32, r as f32) {
+                pm.fill_path(&path, paint, FillRule::Winding, Transform::identity(), None);
+            }
+        };
+        // Arc2D.PIE in a square frame of side r centred at (x, y); angles in degrees,
+        // counter-clockwise on screen
+        let arc = |pm: &mut Pixmap, paint: &Paint, x: f64, y: f64, r: f64, a1: f64, a2: f64| {
+            let mut pb = PathBuilder::new();
+            pb.move_to(x as f32, y as f32);
+            for i in 0..=64 {
+                let t = (a1 + a2 * i as f64 / 64.0).to_radians();
+                pb.line_to((x + r / 2.0 * t.cos()) as f32, (y - r / 2.0 * t.sin()) as f32);
+            }
+            pb.close();
+            if let Some(path) = pb.finish() {
+                pm.fill_path(&path, paint, FillRule::Winding, Transform::identity(), None);
+            }
+        };
+        let (smallr, bigr, arcd) = (2.0 * w / 6.0, 2.0 * w / 3.0, 2.0 * 2.0 * 2.0 * w / 3.0);
+        rect(&mut pm, &c1, x, y, w, h);
+        match n.motif {
+            // "/", "\", "-", "|", "+.", "x.", "+", "fne", "fsw", "fnw", "fse", "tn", "ts", "te", "tw"
+            0 => {
+                arc(&mut pm, &c0, x - w, y - h, arcd, 270.0, 90.0);
+                arc(&mut pm, &c0, x + w, y + h, arcd, 90.0, 90.0);
+            }
+            1 => {
+                arc(&mut pm, &c0, x + w, y - h, arcd, 180.0, 90.0);
+                arc(&mut pm, &c0, x - w, y + h, arcd, 0.0, 90.0);
+            }
+            2 => rect(&mut pm, &c0, x, y, w, smallr),
+            3 => rect(&mut pm, &c0, x, y, smallr, h),
+            5 => rect(&mut pm, &c0, x, y, w, h),
+            6 => {
+                rect(&mut pm, &c0, x, y, w, smallr);
+                rect(&mut pm, &c0, x, y, smallr, h);
+            }
+            7 => arc(&mut pm, &c0, x + w, y - h, arcd, 180.0, 90.0),
+            8 => arc(&mut pm, &c0, x - w, y + h, arcd, 0.0, 90.0),
+            9 => arc(&mut pm, &c0, x - w, y - h, arcd, 270.0, 90.0),
+            10 => arc(&mut pm, &c0, x + w, y + h, arcd, 90.0, 90.0),
+            11 => rect(&mut pm, &c0, x, y - smallr, w, bigr),
+            12 => rect(&mut pm, &c0, x, y + smallr, w, bigr),
+            13 => rect(&mut pm, &c0, x + smallr, y, bigr, h),
+            14 => rect(&mut pm, &c0, x - smallr, y, bigr, h),
+            _ => {}
+        }
+        for (cx, cy) in [(x - w, y - h), (x + w, y - h), (x - w, y + h), (x + w, y + h)] {
+            circle(&mut pm, &c1, cx, cy, bigr);
+        }
+        for (cx, cy) in [(x, y - h), (x + w, y), (x, y + h), (x - w, y)] {
+            circle(&mut pm, &c0, cx, cy, smallr);
+        }
+    }
+    pm.pixels().iter().map(|c| ((c.red() as u32) << 16 | (c.green() as u32) << 8 | c.blue() as u32) as f64).collect()
+}
+
+fn ms_truchet_apply(d: &[f64], ctx: &mut Ctx, a: &Pt, v: &mut Pt, amount: f64) {
+    v.x += amount * (ctx.random() - 0.5);
+    v.y += amount * (ctx.random() - 0.5);
+    let (w, h) = (d[11] as i32, d[12] as i32);
+    let mut ix = ftoi((v.x - (d[5] + 0.5) + 1.0) / d[2] * (w - 2) as f64);
+    let mut iy = ftoi((v.y - (d[6] + 0.5) + 1.0) / d[3] * (h - 2) as f64);
+    let wrap = |i: i32, n: i32| if i < 0 { i - (i / n - 1) * n } else if i >= n { i - (i / n) * n } else { i };
+    if d[8] as i32 == 1 {
+        ix = wrap(ix, w);
+    }
+    if d[9] as i32 == 1 {
+        iy = wrap(iy, h);
+    }
+    let c = if ix >= 0 && ix < w && iy >= 0 && iy < h {
+        let px = d[d[13] as usize + (iy * w + ix) as usize] as u32;
+        [(px >> 16 & 255) as f64, (px >> 8 & 255) as f64, (px & 255) as f64]
+    } else {
+        [0.0; 3]
+    };
+    v.rgb_color = true;
+    (v.red, v.green, v.blue) = (c[0], c[1], c[2]);
+    let mut dz = d[7];
+    if d[4].abs() > EPSILON {
+        dz += d[4] * (0.299 * c[0] + 0.588 * c[1] + 0.113 * c[2]) / 255.0;
+    }
+    if d[10] as i32 != 0 {
+        v.z = dz;
+    } else {
+        v.z += dz;
+    }
+    v.color = ctx.uv_color_idx(ftoi(c[0]), ftoi(c[1]), ftoi(c[2]));
+    ctx.pass_z(a, v, amount);
 }
