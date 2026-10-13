@@ -790,6 +790,44 @@ fn glynn_prepare(p: &[f64], radius: f64, phi1: f64, pow: f64, contrast_idx: usiz
     d
 }
 
+/// `GosperIslandFunc.GosperIsland`: polyline of the turtle path, d = [level, line_thickness,
+/// line_thickness / 100, segments, x0, y0, x1, y1, ...].
+fn gosperisland_prepare(p: &[f64]) -> Vec<f64> {
+    // JWildfire allows level 10 (6 * 7^10 segments); capped to keep the point list manageable.
+    let level = limit_value(ftoi(p[0]), 1, 6);
+    const ANGLE: f64 = 19.106605350869094394;
+    struct Turtle {
+        x: f64,
+        y: f64,
+        angle: f64,
+        pts: Vec<f64>,
+    }
+    fn gosper(t: &mut Turtle, n: i32) {
+        if n == 0 {
+            t.x += t.angle.to_radians().cos();
+            t.y += t.angle.to_radians().sin();
+            t.pts.extend([t.x, t.y]);
+        } else {
+            t.angle -= ANGLE;
+            gosper(t, n - 1);
+            t.angle += 60.0;
+            gosper(t, n - 1);
+            t.angle -= 60.0;
+            gosper(t, n - 1);
+            t.angle += ANGLE;
+        }
+    }
+    let mut t = Turtle { x: 9.0 / 32.0, y: 1.0 / 8.0, angle: 0.0, pts: vec![9.0 / 32.0, 1.0 / 8.0] };
+    for _ in 0..6 {
+        gosper(&mut t, level);
+        t.angle += 60.0;
+    }
+    let nseg = t.pts.len() / 2 - 1;
+    let mut d = vec![level as f64, p[1], p[1] / 100.0, nseg as f64];
+    d.extend_from_slice(&t.pts);
+    d
+}
+
 pub static DEFS: &[VarDef] = &[
     VarDef {
         name: "barycentroid",
@@ -3829,6 +3867,103 @@ var nr = r;
 if (r > 0.001) { nr = tan(r * D(0)) / D(0); }
 v.x += AMOUNT * nr * cos(theta);
 v.y += AMOUNT * nr * sin(theta);
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "gosperisland_js",
+        params: &[ParamDef::int("level", 2.0, 1.0, 6.0), ParamDef::new("line_thickness", 0.5)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            // Java cycles through the segments; here a random segment is drawn.
+            let nseg = d[3] as usize;
+            let k = ((ctx.random() * nseg as f64) as usize).min(nseg - 1);
+            let (x1, y1, x2, y2) = (d[4 + 2 * k], d[5 + 2 * k], d[6 + 2 * k], d[7 + 2 * k]);
+            let (xdiff, ydiff) = (x2 - x1, y2 - y1);
+            let m = if xdiff == 0.0 { 10000.0 } else { ydiff / xdiff };
+            let line_length = (xdiff * xdiff + ydiff * ydiff).sqrt();
+            let dd = ctx.random() * line_length;
+            let mut xoffset = dd / (1.0 + m * m).sqrt();
+            if x2 < x1 {
+                xoffset = -xoffset;
+            }
+            let mut yoffset = (m * xoffset).abs();
+            if y2 < y1 {
+                yoffset = -yoffset;
+            }
+            if d[2] != 0.0 {
+                xoffset += (ctx.random() - 0.5) * d[2];
+                yoffset += (ctx.random() - 0.5) * d[2];
+            }
+            v.x += amount * (x1 + xoffset);
+            v.y += amount * (y1 + yoffset);
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: Some(|p, _| gosperisland_prepare(p)),
+        wgsl: "let nseg = u32(D(3));
+let k = min(u32(rnd() * f32(nseg)), nseg - 1u);
+let o = base + 4u + 2u * k;
+let x1 = prm[o];
+let y1 = prm[o + 1u];
+let x2 = prm[o + 2u];
+let y2 = prm[o + 3u];
+let ydiff = y2 - y1;
+let xdiff = x2 - x1;
+var m = 10000.0;
+if (xdiff != 0.0) { m = ydiff / xdiff; }
+let dd = rnd() * sqrt(xdiff * xdiff + ydiff * ydiff);
+var xoffset = dd / sqrt(1.0 + m * m);
+if (x2 < x1) { xoffset = -xoffset; }
+var yoffset = abs(m * xoffset);
+if (y2 < y1) { yoffset = -yoffset; }
+if (D(2) != 0.0) {
+  xoffset += (rnd() - 0.5) * D(2);
+  yoffset += (rnd() - 0.5) * D(2);
+}
+v.x += AMOUNT * (x1 + xoffset);
+v.y += AMOUNT * (y1 + yoffset);
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "gothic_arch",
+        params: &[ParamDef::new("height", 1.0), ParamDef::new("sharpness", 2.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let h = java_max(d[0].abs(), 0.1);
+            let sharp = java_max(d[1].abs(), 0.1);
+            let t = java_max(-2.0, java_min(2.0, a.y / h));
+            let profile = java_max(1.0 - t.abs().powf(sharp), 0.01);
+            v.x += amount * a.x * profile;
+            v.y += amount * a.y;
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "let h = max(abs(D(0)), 0.1);
+let sharp = max(abs(D(1)), 0.1);
+let t = clamp(a.y / h, -2.0, 2.0);
+let profile = max(1.0 - java_pow(abs(t), sharp), 0.01);
+v.x += AMOUNT * a.x * profile;
+v.y += AMOUNT * a.y;
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "gradient_warp",
+        params: &[ParamDef::new("freq", 2.0), ParamDef::new("amp", 0.5), ParamDef::new("seed", 0.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let px = d[0] * a.x + d[2];
+            let py = d[0] * a.y + d[2] * 1.3;
+            v.x += amount * (d[1] * px.cos() * py.sin());
+            v.y += amount * (d[1] * px.sin() * py.cos());
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "let px = D(0) * a.x + D(2);
+let py = D(0) * a.y + D(2) * 1.3;
+v.x += AMOUNT * (D(1) * cos(px) * sin(py));
+v.y += AMOUNT * (D(1) * sin(px) * cos(py));
 if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
     },
 ];
