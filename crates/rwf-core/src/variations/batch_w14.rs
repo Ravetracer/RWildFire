@@ -6660,6 +6660,61 @@ v.y += AMOUNT * D(1) * sin(a_rad) * fade;
 if (i32(D(4)) == 1) { v.color = r01; }
 if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
     },
+    VarDef {
+        name: "kaleidoscope",
+        params: &[ParamDef::new("pull", 0.0), ParamDef::new("rotate", 1.0), ParamDef::new("line_up", 1.0), ParamDef::new("x", 0.0), ParamDef::new("y", 0.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            // JWildfire passes 45 (radians) to sin/cos and ignores the amount for x and y
+            let (q, w, e, r, t) = (d[0], d[1], d[2], d[3], d[4]);
+            let (c45, s45) = (45.0f64.cos(), 45.0f64.sin());
+            v.x += ((w * a.x) * c45 - a.y * s45 + e) + r;
+            if a.y > 0.0 {
+                v.y += ((w * a.y) * c45 + a.x * s45 + q + e) + t;
+            } else {
+                v.y += (w * a.y) * c45 + a.x * s45 - q - e;
+            }
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "let c45 = cos(45.0);
+let s45 = sin(45.0);
+v.x += ((D(1) * a.x) * c45 - a.y * s45 + D(2)) + D(3);
+if (a.y > 0.0) {
+  v.y += ((D(1) * a.y) * c45 + a.x * s45 + D(0) + D(2)) + D(4);
+} else {
+  v.y += (D(1) * a.y) * c45 + a.x * s45 - D(0) - D(2);
+}
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "curliecue2",
+        params: &[ParamDef::int("seed", 1000.0, 0.0, 100000.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            // Java follows one curve per instance; here one per render thread.
+            let key = d.as_ptr() as usize;
+            let st = ctx.states.entry(key).or_insert_with(|| vec![0.0; 4]);
+            let (x0, y0, theta, phi) = (st[0], st[1], st[2], st[3]);
+            let x1 = x0 + 0.001 * phi.cos();
+            let y1 = y0 + 0.001 * phi.sin();
+            st[0] = x1;
+            st[1] = y1;
+            st[3] = (theta + phi) % (2.0 * PI);
+            st[2] = (theta + 2.0 * PI * d[1]) % (2.0 * PI);
+            v.x += amount * x1;
+            v.y += amount * y1;
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: Some(|p, _| curliecue2_prepare(p)),
+        // GPU: a random point of the first CURLIECUE2_GPU_STEPS curve points (precomputed).
+        wgsl: "let k = min(u32(rnd() * D(2)), u32(D(2)) - 1u);
+v.x += AMOUNT * prm[base + 3u + 2u * k];
+v.y += AMOUNT * prm[base + 4u + 2u * k];
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
 ];
 
 fn mandelbox2d_apply(d: &[f64], ctx: &mut Ctx, a: &Pt, v: &mut Pt, amount: f64) {
@@ -7451,4 +7506,28 @@ fn natural_foam_apply(d: &[f64], ctx: &mut Ctx, a: &Pt, v: &mut Pt, amount: f64)
     v.x += x * d[11] * amount;
     v.y += y * d[11] * amount;
     v.z += z * d[11] * amount;
+}
+
+/// Number of curve points `curliecue2` precomputes for the GPU.
+const CURLIECUE2_GPU_STEPS: usize = 1 << 19;
+
+/// `CurliecueFunc2`: d = [seed, s, point count, curve points (x, y)...].
+fn curliecue2_prepare(p: &[f64]) -> Vec<f64> {
+    let seed = p[0] as i32;
+    let s = crate::rng::JavaRandom::new(seed as i64).next_double();
+    let pts = mandala_cached(vec![seed as u64, 4], || {
+        let (mut x, mut y, mut theta, mut phi) = (0.0f64, 0.0f64, 0.0f64, 0.0f64);
+        let mut pts = Vec::with_capacity(2 * CURLIECUE2_GPU_STEPS);
+        for _ in 0..CURLIECUE2_GPU_STEPS {
+            x += 0.001 * phi.cos();
+            y += 0.001 * phi.sin();
+            phi = (theta + phi) % (2.0 * PI);
+            theta = (theta + 2.0 * PI * s) % (2.0 * PI);
+            pts.extend([x, y]);
+        }
+        pts
+    });
+    let mut d = vec![seed as f64, s, CURLIECUE2_GPU_STEPS as f64];
+    d.extend_from_slice(&pts);
+    d
 }
