@@ -1012,6 +1012,53 @@ fn gridout_case(x: f64, y: f64) -> usize {
     }
 }
 
+/// `HamidFunc` preset curves: line presets (0..9) give `[x1, y1, x2, y2]`, circle presets
+/// (10..19) `[x, y, radius, 0]`; d = [presetId, npoints, filled, a..p].
+fn hamid_curve(d: &[f64], fi: f64) -> [f64; 4] {
+    let hs = f64::sin;
+    let hc = f64::cos;
+    let hp = f64::powf;
+    let np = d[1];
+    let [pa, pb, pc, pd, pe, pf, pg, ph, pi, pj, pk, pl, pm, pn, po, pp] = [d[3], d[4], d[5], d[6], d[7], d[8], d[9], d[10], d[11], d[12], d[13], d[14], d[15], d[16], d[17], d[18]];
+    match d[0] as i32 {
+        0 => [-hs(4.0 * pa * M_PI * fi / np), -hc(2.0 * pb * M_PI * fi / np), -0.5 * pe * hs(8.0 * pc * M_PI * fi / np), -0.5 * pf * hc(4.0 * pd * M_PI * fi / np)],
+        1 => [-hs(2.0 * pa * M_PI * fi / np), -hc(2.0 * pb * M_PI * fi / np), -0.5 * pe * hs(8.0 * pc * M_PI * fi / np), -0.5 * pf * hc(12.0 * pd * M_PI * fi / np)],
+        2 => [-hs(8.0 * pa * M_PI * fi / np), -hc(2.0 * pb * M_PI * fi / np), -0.5 * pe * hs(6.0 * pc * M_PI * fi / np), -0.5 * pf * hc(2.0 * pd * M_PI * fi / np)],
+        3 => [-hs(10.0 * pa * M_PI * fi / np), -hc(2.0 * pb * M_PI * fi / np), -0.5 * pe * hs(12.0 * pc * M_PI * fi / np), -0.5 * pf * hc(2.0 * pd * M_PI * fi / np)],
+        4 => [hs(10.0 * pa * M_PI * (fi + 699.0) / np), hc(8.0 * pb * M_PI * (fi + 699.0) / np), hs(12.0 * pc * M_PI * (fi + 699.0) / np), hc(10.0 * pd * M_PI * (fi + 699.0) / np)],
+        5 => [-2.0 * pa * hc(4.0 * pb * M_PI * fi / 1000.0), 0.5 * pc * hp(hc(6.0 * pd * M_PI * fi / np), 3.0 * pi), -2.0 * pe * hs(6.0 * pf * M_PI * fi / np) / 15.0 * pj, (4.0 * pg * hs(2.0 * ph * M_PI * fi / np) / 15.0 * pk)],
+        6 => [3.0 * pa * hp(hs(2.0 * pb * M_PI * fi / np), 3.0 * ph), -hc(8.0 * pc * M_PI * fi / np), 1.5 * pd * hp(hs(2.0 * pe * M_PI * fi / np), 3.0 * pi), -0.5 * pf * hc(6.0 * pg * M_PI * fi / np)],
+        7 => [hc(6.0 * pa * M_PI * fi / np), -hc(8.0 * pb * M_PI * fi / np), 1.5 * pc * hp(hs(2.0 * M_PI * fi / np), 3.0 * pf), -0.5 * pd * hc(6.0 * pe * M_PI * fi / np)],
+        8 => [hp(hs(20.0 * pa * M_PI * fi / np), 3.0), hp(hc(18.0 * pb * M_PI * fi / np), 3.0 * pe), hp(hs(16.0 * pc * M_PI * fi / np), 3.0), hp(hc(14.0 * pd * M_PI * fi / np), 3.0 * pf)],
+        9 => {
+            let side = |mut n: i32| loop {
+                if n < 100 {
+                    break [n as f64 / 100.0, 0.0];
+                } else if n < 200 {
+                    break [1.0, (n as f64 - 100.0) / 100.0];
+                } else if n < 300 {
+                    break [(300 - n) as f64 / 100.0, 1.0];
+                } else if n < 400 {
+                    break [0.0, (400 - n) as f64 / 100.0];
+                }
+                n -= 400;
+            };
+            let (p1, p2) = (side(fi as i32), side(fi as i32 + 199));
+            [p1[0], p1[1], p2[0], p2[1]]
+        }
+        10 => [2.0 * pa * hs(2.0 * pb * M_PI * fi / np) / 3.0 + hs(36.0 * pc * M_PI * fi / np) * hc(30.0 * pd * M_PI * fi / np) / 3.0 * pk + hp(hs(14.0 * M_PI * fi / np), 3.0 * pl) / 3.0 * pm, 2.0 * pe * hc(2.0 * pf * M_PI * fi / np) / 3.0 * pn + hc(36.0 * pg * M_PI * fi / np) * hc(30.0 * ph * M_PI * fi / np) / 3.0 * po + hp(hc(14.0 * pi * M_PI * fi / np), 3.0) / 5.0 * pp, 1.0 / 150.0 + hp(hs(36.0 * pj * M_PI * fi / np), 4.0) / 9.0, 0.0],
+        11 => [hs(14.0 * pa * M_PI * fi / np), hc(32.0 * pb * M_PI * fi / np), hp(hs(20.0 * pc * M_PI * fi / np), 2.0) / 3.0 * pd, 0.0],
+        12 => [2.0 * pa * hs(6.0 * pb * M_PI * fi / np) / 3.0 + hs(36.0 * pc * M_PI * fi / np) * hc(30.0 * pd * M_PI * fi / np) / 4.0 + hp(hs(14.0 * pe * M_PI * fi / np), 3.0 * pk) / 4.0 * pl, 2.0 * pf * hc(6.0 * pg * M_PI * fi / np) / 3.0 + hc(28.0 * ph * M_PI * fi / np) * hc(30.0 * pi * M_PI * fi / np) / 3.0 + hp(hc(14.0 * M_PI * fi / np), 3.0 * pm) / 5.0 * pn, 1.0 / 150.0 + hp(hs(36.0 * pj * M_PI * fi / np), 4.0 * po) / 20.0 * pp, 0.0],
+        13 => [hs(10.0 * pa * M_PI * fi / np), hp(hc(28.0 * pb * M_PI * fi / np), 3.0 * pe), hp(hs(18.0 * pc * M_PI * fi / np), 2.0) / 3.0 * pd, 0.0],
+        14 => [2.0 * pa * hs(18.0 * pb * M_PI * fi / np) / 3.0 + hp(hs(40.0 * pc * M_PI * fi / np), 3.0) * hc(30.0 * pd * M_PI * fi / np) / 3.0 + hp(hs(34.0 * pe * M_PI * fi / np), 3.0 * pk) / 4.0 * pl, 2.0 * pf * hc(18.0 * pg * M_PI * fi / np) / 3.0 + hp(hc(28.0 * ph * M_PI * fi / np), 3.0) * hc(40.0 * M_PI * fi / np) / 3.0 + hp(hc(34.0 * pi * M_PI * fi / np), 3.0 * pm) / 3.0 * pn, 1.0 / 150.0 + hp(hs(56.0 * pj * M_PI * fi / np), 4.0 * po) / 8.0 * pp, 0.0],
+        15 => [2.0 * pa * hs(14.0 * pb * M_PI * fi / np) / 3.0 + hp(hs(10.0 * pc * M_PI * fi / np), 3.0) * hc(28.0 * pd * M_PI * fi / np) / 3.0 + hp(hs(46.0 * pe * M_PI * fi / np), 3.0 * pm) / 3.0 * pn, 2.0 * hc(14.0 * pf * M_PI * fi / np) / 3.0 + hp(hc(10.0 * pg * M_PI * fi / np), 3.0) * hc(28.0 * ph * M_PI * fi / np) / 3.0 + hp(hc(34.0 * pj * M_PI * fi / np), 3.0 * po) / 3.0, 1.0 / 150.0 + hp(hs(72.0 * pk * M_PI * fi / np), 6.0) / 9.0 + hp(hs(12.0 * pl * M_PI * fi / np), 4.0) / 20.0 * pp, 0.0],
+        16 => [hs(38.0 * pa * M_PI * fi / np) * hc(26.0 * pb * M_PI * fi / np) / 2.0 + hp(hs(18.0 * pc * M_PI * fi / np), 3.0 * pl) / 2.0 * pm, 2.0 * hc(18.0 * pd * M_PI * fi / np) / 3.0 + hc(38.0 * pe * M_PI * fi / np) * hc(36.0 * pf * M_PI * fi / np) / 3.0 + hp(hc(18.0 * pg * M_PI * fi / np), 3.0 * pn) / 4.0 * po, 1.0 / 150.0 + hp(hs(18.0 * ph * M_PI * fi / np), 10.0) * hp(hs(100.0 * pi * M_PI * fi / np), 6.0) / 100.0 + hp(hs(72.0 * pj * M_PI * fi / np), 8.0) * hp(hc(18.0 * pk * M_PI * fi / np), 6.0) / 20.0 * pp, 0.0],
+        17 => [2.0 * pa * hs(10.0 * pb * M_PI * fi / np) + hp(hs(6.0 * pc * M_PI * fi / np), 3.0) * hc(28.0 * pd * M_PI * fi / np) / 3.0 + hs(126.0 * pe * M_PI * fi / np) / 10.0 * pl, 2.0 * hc(6.0 * pf * M_PI * fi / np) / 3.0 + hp(hc(18.0 * pg * M_PI * fi / np), 3.0) * hc(36.0 * ph * M_PI * fi / np) / 3.0 + hc(126.0 * pi * M_PI * fi / np) / 10.0 * pm, 1.0 / 150.0 + hp(hs(48.0 * pj * M_PI * fi / np), 4.0) * (1.0 + hp(hs(12.0 * pk * M_PI * fi / np), 2.0 * pn)) / 18.0 * po, 0.0],
+        18 => [2.0 * pa * hs(18.0 * pb * M_PI * fi / np) / 5.0 + hp(hs(34.0 * pc * M_PI * fi / np), 3.0 * pj) / 3.0 * pk + hp(hs(50.0 * pd * M_PI * fi / np), 3.0 * pl) / 3.0 * pm, 2.0 * hc(18.0 * pe * M_PI * fi / np) / 3.0 + hp(hc(34.0 * pf * M_PI * fi / np), 3.0) / 3.0 + hp(hc(50.0 * pg * M_PI * fi / np), 3.0 * pn) / 10.0 * po, 1.0 / 150.0 + hp(hs(58.0 * pi * M_PI * fi / np), 4.0) / 10.0 * pp, 0.0],
+        _ => [hc(10.0 * pa * M_PI * fi / np) * (1.0 * pc - hp(hs(16.0 * pb * M_PI * fi / np), 2.0 * ph) / 2.0 * pi), hs(10.0 * pd * M_PI * fi / np) * (1.0 * pf - hp(hc(34.0 * pe * M_PI * fi / np), 2.0 * pj) / 2.0 * pk), 1.0 / 200.0 + hp(hs(52.0 * pg * M_PI * fi / np), 4.0 * pl) / 10.0 * pm, 0.0],
+    }
+}
+
 pub static DEFS: &[VarDef] = &[
     VarDef {
         name: "barycentroid",
@@ -4631,6 +4678,218 @@ for (var i = 0; i < n; i++) {
 }
 v.x = x0 * AMOUNT;
 v.y = y0 * AMOUNT;
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "hadamard_js",
+        params: &[],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |_, ctx, a, v, amount| {
+            let (x, y) = if ctx.random() < 0.333 {
+                (a.x / 2.0, a.y / 2.0)
+            } else if ctx.random() < 0.666 {
+                (a.y / 2.0, -a.x / 2.0 - 0.5)
+            } else {
+                (-a.y / 2.0 - 0.5, a.x / 2.0)
+            };
+            v.x += x * amount;
+            v.y += y * amount;
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "var q = vec2<f32>(a.y / 2.0, -a.x / 2.0 - 0.5);
+if (rnd() < 0.333) {
+  q = vec2<f32>(a.x / 2.0, a.y / 2.0);
+} else if (rnd() >= 0.666) {
+  q = vec2<f32>(-a.y / 2.0 - 0.5, a.x / 2.0);
+}
+v.x += q.x * AMOUNT;
+v.y += q.y * AMOUNT;
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "halo",
+        params: &[ParamDef::new("radius", 0.5), ParamDef::new("width", 0.2), ParamDef::new("strength", 0.5)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let rad = java_max(d[0].abs(), 0.01);
+            let w = java_max(d[1].abs(), 0.01);
+            let r = (a.x * a.x + a.y * a.y).sqrt();
+            let ring = r - rad;
+            let env = (-(ring * ring) / (w * w)).exp();
+            let scale = 1.0 + d[2] * env / (r + 1e-6);
+            v.x += amount * a.x * scale;
+            v.y += amount * a.y * scale;
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "let rad = max(abs(D(0)), 0.01);
+let w = max(abs(D(1)), 0.01);
+let r = sqrt(a.x * a.x + a.y * a.y);
+let ring = r - rad;
+let scale = 1.0 + D(2) * exp(-(ring * ring) / (w * w)) / (r + 1e-6);
+v.x += AMOUNT * a.x * scale;
+v.y += AMOUNT * a.y * scale;
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "hamid_js",
+        params: &[
+            ParamDef::int("presetId", 0.0, 0.0, 19.0),
+            ParamDef::int("number_lines/circles", 2000.0, 1.0, 100000.0),
+            ParamDef::int("filled circles", 1.0, 0.0, 1.0),
+            ParamDef::new("a", 1.0),
+            ParamDef::new("b", 1.0),
+            ParamDef::new("c", 1.0),
+            ParamDef::new("d", 1.0),
+            ParamDef::new("e", 1.0),
+            ParamDef::new("f", 1.0),
+            ParamDef::new("g", 1.0),
+            ParamDef::new("h", 1.0),
+            ParamDef::new("i", 1.0),
+            ParamDef::new("j", 1.0),
+            ParamDef::new("k", 1.0),
+            ParamDef::new("l", 1.0),
+            ParamDef::new("m", 1.0),
+            ParamDef::new("n", 1.0),
+            ParamDef::new("o", 1.0),
+            ParamDef::new("p", 1.0)
+        ],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let fi = ((ctx.random() * d[1] + 1.0) as i32) as f64;
+            let c = hamid_curve(d, fi);
+            let (xout, yout) = if (d[0] as i32) < 10 {
+                let [x1, y1, x2, y2] = c;
+                let (xdiff, ydiff) = (x2 - x1, y2 - y1);
+                let m = if xdiff == 0.0 { 10000.0 } else { ydiff / xdiff };
+                let line_length = (xdiff * xdiff + ydiff * ydiff).sqrt();
+                let dd = ctx.random() * line_length;
+                let mut xoffset = dd / (1.0 + m * m).sqrt();
+                if x2 < x1 {
+                    xoffset = -xoffset;
+                }
+                let mut yoffset = (m * xoffset).abs();
+                if y2 < y1 {
+                    yoffset = -yoffset;
+                }
+                (x1 + xoffset, y1 + yoffset)
+            } else {
+                let mut radius = c[2];
+                if d[2] as i32 == 1 && ctx.random() > 0.05 {
+                    radius *= ctx.random();
+                }
+                let ang = ctx.random() * 2.0 * M_PI;
+                (c[0] + radius * ang.cos(), c[1] + radius * ang.sin())
+            };
+            v.x += amount * xout;
+            v.y += amount * yout;
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: Some(|p, _| {
+            let mut d = p.to_vec();
+            d[0] = limit_value(ftoi(p[0]), 0, 19) as f64;
+            d[1] = p[1].trunc();
+            d[2] = p[2].trunc();
+            d
+        }),
+        wgsl: "fn hamid_js_square(n_in: i32) -> vec2<f32> {
+  var n = n_in % 400;
+  if (n < 100) { return vec2<f32>(f32(n) / 100.0, 0.0); }
+  if (n < 200) { return vec2<f32>(1.0, (f32(n) - 100.0) / 100.0); }
+  if (n < 300) { return vec2<f32>(f32(300 - n) / 100.0, 1.0); }
+  return vec2<f32>(0.0, f32(400 - n) / 100.0);
+}
+fn hamid_js_curve(base: u32, fi: f32) -> vec4<f32> {
+  let np = prm[base + 1u];
+  let pa = prm[base + 3u];
+  let pb = prm[base + 4u];
+  let pc = prm[base + 5u];
+  let pd = prm[base + 6u];
+  let pe = prm[base + 7u];
+  let pf = prm[base + 8u];
+  let pg = prm[base + 9u];
+  let ph = prm[base + 10u];
+  let pi = prm[base + 11u];
+  let pj = prm[base + 12u];
+  let pk = prm[base + 13u];
+  let pl = prm[base + 14u];
+  let pm = prm[base + 15u];
+  let pn = prm[base + 16u];
+  let po = prm[base + 17u];
+  let pp = prm[base + 18u];
+  switch (i32(prm[base])) {
+    case 0: { return vec4<f32>(-sin(4.0 * pa * PI * fi / np), -cos(2.0 * pb * PI * fi / np), -0.5 * pe * sin(8.0 * pc * PI * fi / np), -0.5 * pf * cos(4.0 * pd * PI * fi / np)); }
+    case 1: { return vec4<f32>(-sin(2.0 * pa * PI * fi / np), -cos(2.0 * pb * PI * fi / np), -0.5 * pe * sin(8.0 * pc * PI * fi / np), -0.5 * pf * cos(12.0 * pd * PI * fi / np)); }
+    case 2: { return vec4<f32>(-sin(8.0 * pa * PI * fi / np), -cos(2.0 * pb * PI * fi / np), -0.5 * pe * sin(6.0 * pc * PI * fi / np), -0.5 * pf * cos(2.0 * pd * PI * fi / np)); }
+    case 3: { return vec4<f32>(-sin(10.0 * pa * PI * fi / np), -cos(2.0 * pb * PI * fi / np), -0.5 * pe * sin(12.0 * pc * PI * fi / np), -0.5 * pf * cos(2.0 * pd * PI * fi / np)); }
+    case 4: { return vec4<f32>(sin(10.0 * pa * PI * (fi + 699.0) / np), cos(8.0 * pb * PI * (fi + 699.0) / np), sin(12.0 * pc * PI * (fi + 699.0) / np), cos(10.0 * pd * PI * (fi + 699.0) / np)); }
+    case 5: { return vec4<f32>(-2.0 * pa * cos(4.0 * pb * PI * fi / 1000.0), 0.5 * pc * java_pow(cos(6.0 * pd * PI * fi / np), 3.0 * pi), -2.0 * pe * sin(6.0 * pf * PI * fi / np) / 15.0 * pj, (4.0 * pg * sin(2.0 * ph * PI * fi / np) / 15.0 * pk)); }
+    case 6: { return vec4<f32>(3.0 * pa * java_pow(sin(2.0 * pb * PI * fi / np), 3.0 * ph), -cos(8.0 * pc * PI * fi / np), 1.5 * pd * java_pow(sin(2.0 * pe * PI * fi / np), 3.0 * pi), -0.5 * pf * cos(6.0 * pg * PI * fi / np)); }
+    case 7: { return vec4<f32>(cos(6.0 * pa * PI * fi / np), -cos(8.0 * pb * PI * fi / np), 1.5 * pc * java_pow(sin(2.0 * PI * fi / np), 3.0 * pf), -0.5 * pd * cos(6.0 * pe * PI * fi / np)); }
+    case 8: { return vec4<f32>(java_pow(sin(20.0 * pa * PI * fi / np), 3.0), java_pow(cos(18.0 * pb * PI * fi / np), 3.0 * pe), java_pow(sin(16.0 * pc * PI * fi / np), 3.0), java_pow(cos(14.0 * pd * PI * fi / np), 3.0 * pf)); }
+    case 9: { return vec4<f32>(hamid_js_square(i32(fi)), hamid_js_square(i32(fi) + 199)); }
+    case 10: { return vec4<f32>(2.0 * pa * sin(2.0 * pb * PI * fi / np) / 3.0 + sin(36.0 * pc * PI * fi / np) * cos(30.0 * pd * PI * fi / np) / 3.0 * pk + java_pow(sin(14.0 * PI * fi / np), 3.0 * pl) / 3.0 * pm, 2.0 * pe * cos(2.0 * pf * PI * fi / np) / 3.0 * pn + cos(36.0 * pg * PI * fi / np) * cos(30.0 * ph * PI * fi / np) / 3.0 * po + java_pow(cos(14.0 * pi * PI * fi / np), 3.0) / 5.0 * pp, 1.0 / 150.0 + java_pow(sin(36.0 * pj * PI * fi / np), 4.0) / 9.0, 0.0); }
+    case 11: { return vec4<f32>(sin(14.0 * pa * PI * fi / np), cos(32.0 * pb * PI * fi / np), java_pow(sin(20.0 * pc * PI * fi / np), 2.0) / 3.0 * pd, 0.0); }
+    case 12: { return vec4<f32>(2.0 * pa * sin(6.0 * pb * PI * fi / np) / 3.0 + sin(36.0 * pc * PI * fi / np) * cos(30.0 * pd * PI * fi / np) / 4.0 + java_pow(sin(14.0 * pe * PI * fi / np), 3.0 * pk) / 4.0 * pl, 2.0 * pf * cos(6.0 * pg * PI * fi / np) / 3.0 + cos(28.0 * ph * PI * fi / np) * cos(30.0 * pi * PI * fi / np) / 3.0 + java_pow(cos(14.0 * PI * fi / np), 3.0 * pm) / 5.0 * pn, 1.0 / 150.0 + java_pow(sin(36.0 * pj * PI * fi / np), 4.0 * po) / 20.0 * pp, 0.0); }
+    case 13: { return vec4<f32>(sin(10.0 * pa * PI * fi / np), java_pow(cos(28.0 * pb * PI * fi / np), 3.0 * pe), java_pow(sin(18.0 * pc * PI * fi / np), 2.0) / 3.0 * pd, 0.0); }
+    case 14: { return vec4<f32>(2.0 * pa * sin(18.0 * pb * PI * fi / np) / 3.0 + java_pow(sin(40.0 * pc * PI * fi / np), 3.0) * cos(30.0 * pd * PI * fi / np) / 3.0 + java_pow(sin(34.0 * pe * PI * fi / np), 3.0 * pk) / 4.0 * pl, 2.0 * pf * cos(18.0 * pg * PI * fi / np) / 3.0 + java_pow(cos(28.0 * ph * PI * fi / np), 3.0) * cos(40.0 * PI * fi / np) / 3.0 + java_pow(cos(34.0 * pi * PI * fi / np), 3.0 * pm) / 3.0 * pn, 1.0 / 150.0 + java_pow(sin(56.0 * pj * PI * fi / np), 4.0 * po) / 8.0 * pp, 0.0); }
+    case 15: { return vec4<f32>(2.0 * pa * sin(14.0 * pb * PI * fi / np) / 3.0 + java_pow(sin(10.0 * pc * PI * fi / np), 3.0) * cos(28.0 * pd * PI * fi / np) / 3.0 + java_pow(sin(46.0 * pe * PI * fi / np), 3.0 * pm) / 3.0 * pn, 2.0 * cos(14.0 * pf * PI * fi / np) / 3.0 + java_pow(cos(10.0 * pg * PI * fi / np), 3.0) * cos(28.0 * ph * PI * fi / np) / 3.0 + java_pow(cos(34.0 * pj * PI * fi / np), 3.0 * po) / 3.0, 1.0 / 150.0 + java_pow(sin(72.0 * pk * PI * fi / np), 6.0) / 9.0 + java_pow(sin(12.0 * pl * PI * fi / np), 4.0) / 20.0 * pp, 0.0); }
+    case 16: { return vec4<f32>(sin(38.0 * pa * PI * fi / np) * cos(26.0 * pb * PI * fi / np) / 2.0 + java_pow(sin(18.0 * pc * PI * fi / np), 3.0 * pl) / 2.0 * pm, 2.0 * cos(18.0 * pd * PI * fi / np) / 3.0 + cos(38.0 * pe * PI * fi / np) * cos(36.0 * pf * PI * fi / np) / 3.0 + java_pow(cos(18.0 * pg * PI * fi / np), 3.0 * pn) / 4.0 * po, 1.0 / 150.0 + java_pow(sin(18.0 * ph * PI * fi / np), 10.0) * java_pow(sin(100.0 * pi * PI * fi / np), 6.0) / 100.0 + java_pow(sin(72.0 * pj * PI * fi / np), 8.0) * java_pow(cos(18.0 * pk * PI * fi / np), 6.0) / 20.0 * pp, 0.0); }
+    case 17: { return vec4<f32>(2.0 * pa * sin(10.0 * pb * PI * fi / np) + java_pow(sin(6.0 * pc * PI * fi / np), 3.0) * cos(28.0 * pd * PI * fi / np) / 3.0 + sin(126.0 * pe * PI * fi / np) / 10.0 * pl, 2.0 * cos(6.0 * pf * PI * fi / np) / 3.0 + java_pow(cos(18.0 * pg * PI * fi / np), 3.0) * cos(36.0 * ph * PI * fi / np) / 3.0 + cos(126.0 * pi * PI * fi / np) / 10.0 * pm, 1.0 / 150.0 + java_pow(sin(48.0 * pj * PI * fi / np), 4.0) * (1.0 + java_pow(sin(12.0 * pk * PI * fi / np), 2.0 * pn)) / 18.0 * po, 0.0); }
+    case 18: { return vec4<f32>(2.0 * pa * sin(18.0 * pb * PI * fi / np) / 5.0 + java_pow(sin(34.0 * pc * PI * fi / np), 3.0 * pj) / 3.0 * pk + java_pow(sin(50.0 * pd * PI * fi / np), 3.0 * pl) / 3.0 * pm, 2.0 * cos(18.0 * pe * PI * fi / np) / 3.0 + java_pow(cos(34.0 * pf * PI * fi / np), 3.0) / 3.0 + java_pow(cos(50.0 * pg * PI * fi / np), 3.0 * pn) / 10.0 * po, 1.0 / 150.0 + java_pow(sin(58.0 * pi * PI * fi / np), 4.0) / 10.0 * pp, 0.0); }
+    default: { return vec4<f32>(cos(10.0 * pa * PI * fi / np) * (1.0 * pc - java_pow(sin(16.0 * pb * PI * fi / np), 2.0 * ph) / 2.0 * pi), sin(10.0 * pd * PI * fi / np) * (1.0 * pf - java_pow(cos(34.0 * pe * PI * fi / np), 2.0 * pj) / 2.0 * pk), 1.0 / 200.0 + java_pow(sin(52.0 * pg * PI * fi / np), 4.0 * pl) / 10.0 * pm, 0.0); }
+  }
+}
+@body
+let fi = f32(i32(rnd() * D(1) + 1.0));
+let c = hamid_js_curve(base, fi);
+var q = vec2<f32>(0.0);
+if (i32(D(0)) < 10) {
+  let xdiff = c.z - c.x;
+  let ydiff = c.w - c.y;
+  var m = 10000.0;
+  if (xdiff != 0.0) { m = ydiff / xdiff; }
+  let dd = rnd() * sqrt(xdiff * xdiff + ydiff * ydiff);
+  var xoffset = dd / sqrt(1.0 + m * m);
+  if (c.z < c.x) { xoffset = -xoffset; }
+  var yoffset = abs(m * xoffset);
+  if (c.w < c.y) { yoffset = -yoffset; }
+  q = c.xy + vec2<f32>(xoffset, yoffset);
+} else {
+  var radius = c.z;
+  if (i32(D(2)) == 1 && rnd() > 0.05) { radius *= rnd(); }
+  let ang = rnd() * TWO_PI;
+  q = c.xy + radius * vec2<f32>(cos(ang), sin(ang));
+}
+v.x += AMOUNT * q.x;
+v.y += AMOUNT * q.y;
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "hammer",
+        params: &[ParamDef::new("scale", 1.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let lat = a.y * d[0];
+            let lon = a.x * d[0];
+            let cl = lat.cos();
+            let dd = (1.0 + cl * (lon * 0.5).cos()).sqrt() + 0.001;
+            v.x += amount * 2.82842712474619 * cl * (lon * 0.5).sin() / dd;
+            v.y += amount * 1.414213562373095 * lat.sin() / dd;
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "let lat = a.y * D(0);
+let lon = a.x * D(0);
+let cl = cos(lat);
+let dd = sqrt(1.0 + cl * cos(lon * 0.5)) + 0.001;
+v.x += AMOUNT * 2.82842712474619 * cl * sin(lon * 0.5) / dd;
+v.y += AMOUNT * 1.414213562373095 * sin(lat) / dd;
 if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
     },
 ];
