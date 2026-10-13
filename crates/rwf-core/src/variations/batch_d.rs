@@ -1117,8 +1117,8 @@ v.z += r * cos(angle2);",
         kind: VarKind::Normal,
         is_3d: false,
         apply: |d, ctx, a, v, amount| {
-            // d = [p, q, pa, r]; random(Integer.MAX_VALUE) * pa is equivalent to random(p) * pa
-            let rpa = ctx.random_int(d[0] as usize) as f64 * d[2];
+            // d = [p, q, pa, r]; the GPU draws random(p) * pa (same angles)
+            let rpa = ctx.random_int(i32::MAX as usize) as f64 * d[2];
             let (sina, cosa) = rpa.sin_cos();
             let re = d[3] * cosa;
             let im = d[3] * sina;
@@ -1159,7 +1159,7 @@ v.z += r * cos(angle2);",
             let x = ta * tc + tb * td;
             let y = tb * tc - ta * td;
             let vr = amount / (tc * tc + td * td);
-            let rpa = d[2] * ctx.random_int(d[0] as usize) as f64;
+            let rpa = d[2] * ctx.random_int(i32::MAX as usize) as f64;
             let (sina, cosa) = rpa.sin_cos();
             v.x += vr * (x * cosa + y * sina);
             v.y += vr * (y * cosa - x * sina);

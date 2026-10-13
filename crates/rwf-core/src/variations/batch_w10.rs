@@ -19,15 +19,13 @@
 
 //! Variations ported from the JWildfire sources (batch w10).
 //!
-//! Notes on stateless emulation:
-//! * `exblur` / `farblur`: the Java ring buffer of four cached randoms is replaced by four fresh
-//!   random numbers per call (as in the JWildfire GPU code).
+//! Notes on stateful variations:
 //! * `fract_*_wf` (buddhabrot mode): Java follows one orbit across calls. Here every call picks
 //!   an orbit (accepted with a probability proportional to its number of output points, so long
 //!   orbits keep their weight) and outputs one uniformly chosen point of it.
-//! * `gingerbread_man`: Java follows one endless orbit starting at (-0.1, 0). Here every call
-//!   iterates a slightly perturbed start point 128..639 times, which samples the same chaotic
-//!   region of the gingerbread-man map.
+//! * `gingerbread_man`: Java follows one endless orbit starting at (-0.1, 0); the CPU does the
+//!   same per render thread. On the GPU every call iterates a slightly perturbed start point
+//!   128..639 times, which samples the same chaotic region of the gingerbread-man map.
 
 use super::complex::Complex;
 use super::{Ctx, ParamDef, Pt, VarDef, VarKind, simple};
@@ -812,8 +810,6 @@ fn glitchy2_apply(d: &[f64], ctx: &mut Ctx, a: &mut Pt, v: &mut Pt, amount: f64)
     ctx.pass_z(a, v, amount);
 }
 
-/// Perturbation of the gingerbread_man start point (see the module notes).
-const GINGERBREAD_MAN_EPS: f64 = 1.0e-4;
 
 // ---------------------------------------------------------------------------------------------
 // Definitions
@@ -2253,24 +2249,24 @@ if (valid) {
 v.y += AMOUNT * a.x;
 if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
     ),
-    simple(
-        "gingerbread_man",
-        false,
-        |_, ctx, a, v, amount| {
-            // Stateless replacement of the per-instance orbit (see the module notes).
-            let mut x = -0.1 + GINGERBREAD_MAN_EPS * (ctx.random() - 0.5);
-            let mut y = GINGERBREAD_MAN_EPS * (ctx.random() - 0.5);
-            let n = 128 + ctx.random_int(512);
-            for _ in 0..n {
-                let xn = 1.0 - y + x.abs();
-                y = x;
-                x = xn;
-            }
-            v.x = x * amount;
-            v.y = y * amount;
+    VarDef {
+        name: "gingerbread_man",
+        params: &[],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            // One orbit per render thread (see the module notes).
+            let st = ctx.orbits.entry(d.as_ptr() as usize).or_insert([-0.1, 0.0]);
+            let (x0, y0) = (st[0], st[1]);
+            let xn = 1.0 - y0 + x0.abs();
+            *st = [xn, x0];
+            v.x = xn * amount;
+            v.y = x0 * amount;
             ctx.pass_z(a, v, amount);
         },
-        "var x = -0.1 + 1.0e-4 * (rnd() - 0.5);
+        // one value, so that every instance has its own state key
+        prepare: Some(|_, _| vec![0.0]),
+        wgsl: "var x = -0.1 + 1.0e-4 * (rnd() - 0.5);
 var y = 1.0e-4 * (rnd() - 0.5);
 let n = 128 + min(i32(rnd() * 512.0), 511);
 for (var i = 0; i < n; i++) {
@@ -2281,7 +2277,7 @@ for (var i = 0; i < n; i++) {
 v.x = x * AMOUNT;
 v.y = y * AMOUNT;
 if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
-    ),
+    },
     VarDef {
         name: "glitchy1",
         params: &[

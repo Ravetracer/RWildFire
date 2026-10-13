@@ -940,9 +940,6 @@ if (D(", $o0, ") != 0.0) {
 // dc_dmodulus
 // ---------------------------------------------------------------------------------------------
 
-/// Steps of the colour recurrence simulated per sample (see `dc_dmodulus`).
-const DMODULUS_HISTORY: usize = 16;
-
 fn dmodulus_wrap(t: f64, e: f64, r: f64) -> f64 {
     if t > e {
         -e + fmod(t + e, r)
@@ -967,17 +964,10 @@ fn dmodulus_apply(d: &[f64], ctx: &mut Ctx, a: &mut Pt, v: &mut Pt, amount: f64)
     let ynew = dmodulus_wrap(a.y, y, yr);
     // true: the "coscos" branch (colour coefficients c11/c12)
     let branch_a = |p: f64| if angle <= 45.0 { p < p2 } else { !(p < p1) };
-    // Java keeps the colour recurrence `newColor = oldColor * c + c'` in an instance field that
-    // is shared by all samples. Stateless: run the recurrence from its initial value 0.5 over
-    // a few fresh random branch choices, which yields the same stationary distribution.
-    let mut old = 0.5;
-    for _ in 0..DMODULUS_HISTORY {
-        old = if branch_a(ctx.random()) {
-            old * c11 + c12
-        } else {
-            old * c21 + c22
-        };
-    }
+    // Java keeps the colour recurrence `newColor = oldColor * c + c'` in an instance field
+    // (starting at 0.5); here per render thread.
+    let key = d.as_ptr() as usize;
+    let old = ctx.orbits.get(&key).map_or(0.5, |st| st[0]);
     let (mut xt, mut yt, new_color) = if branch_a(ctx.random()) {
         (
             xnew * coscos + ynew * sincos + x,
@@ -1002,6 +992,7 @@ fn dmodulus_apply(d: &[f64], ctx: &mut Ctx, a: &mut Pt, v: &mut Pt, amount: f64)
     }
     ctx.pass_z(a, v, amount);
     v.color = fmod(new_color, 1.0);
+    ctx.orbits.insert(key, [new_color, 0.0]);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -2008,6 +1999,7 @@ let p1 = ss / (cc + ss);
 let le45 = D(2) <= 45.0;
 let xnew = dc_dmodulus_wrap(a.x, x, D(10));
 let ynew = dc_dmodulus_wrap(a.y, y, D(11));
+// GPU: the colour recurrence is simulated over 16 random branch choices from 0.5
 var old = 0.5;
 for (var i = 0; i < 16; i++) {
   let pp = rnd();
