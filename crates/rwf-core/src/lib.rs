@@ -29,6 +29,7 @@ pub mod gradient_io;
 pub mod io;
 pub mod math;
 pub mod mesh;
+pub mod mixer;
 pub mod model;
 pub mod random;
 pub mod render;

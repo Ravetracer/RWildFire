@@ -53,7 +53,7 @@ struct ToneU {
     ad_low_density: f32, low_off: u32, soft_off: u32, detail_off: u32,
     low_size: u32, soft_size: u32, detail_size: u32, low_half: i32,
     soft_half: i32, detail_half: i32, low_radius: f32, soft_radius: f32,
-    detail_radius: f32, prim_radius: f32, _q1: u32, _q2: u32,
+    detail_radius: f32, prim_radius: f32, mix_mode: u32, _q2: u32,
 }
 
 // A filter matrix in `filt` plus its adaptive indicator color.
@@ -63,6 +63,36 @@ struct Filt { off: u32, size: u32, half: i32, sharpen: u32, radius: f32, ind: ve
 @group(0) @binding(1) var<storage, read> acc: array<f32>;
 @group(0) @binding(2) var<storage, read> filt: array<f32>;
 @group(0) @binding(3) var out_tex: texture_storage_2d<rgba8unorm, write>;
+// Channel mixer curves (9 x MIX_LUT samples over 0..25600), see rwf_core::mixer.
+@group(0) @binding(4) var<storage, read> mix_lut: array<f32>;
+
+const MIX_LUT: u32 = 4096u;
+
+fn mix_curve(k: u32, x: f32) -> f32 {
+    let t = clamp(x / 25600.0, 0.0, 1.0) * f32(MIX_LUT - 1u);
+    let i = min(u32(t), MIX_LUT - 2u);
+    let f = t - f32(i);
+    let b = k * MIX_LUT + i;
+    return mix(mix_lut[b], mix_lut[b + 1u], f);
+}
+
+// Channel mixer (ColorFunc) applied to a cell: colors scaled to 0..25600 per sample.
+fn mix_cell(c: vec4<f32>) -> vec4<f32> {
+    if (T.mix_mode == 0u || c.x <= 0.0) { return c; }
+    let raw = c.yzw * 100.0 / c.x;
+    var m = vec3<f32>(0.0);
+    if (T.mix_mode == 1u) {
+        let br = 0.299 * raw.x + 0.588 * raw.y + 0.113 * raw.z;
+        m = raw * (mix_curve(0u, br) / br);
+    } else if (T.mix_mode == 2u) {
+        m = vec3<f32>(mix_curve(0u, raw.x), mix_curve(4u, raw.y), mix_curve(8u, raw.z));
+    } else {
+        m = vec3<f32>(mix_curve(0u, raw.x) + mix_curve(1u, raw.y) + mix_curve(2u, raw.z),
+                      mix_curve(3u, raw.x) + mix_curve(4u, raw.y) + mix_curve(5u, raw.z),
+                      mix_curve(6u, raw.x) + mix_curve(7u, raw.y) + mix_curve(8u, raw.z));
+    }
+    return vec4<f32>(c.x, m * c.x / 100.0);
+}
 
 fn log_scale(count_raw: f32) -> f32 {
     let count = count_raw * T.mb_scl;
@@ -74,14 +104,14 @@ fn cell(rx: i32, ry: i32) -> vec4<f32> {
     let y = ry + i32(T.border);
     if (x < 0 || y < 0 || x >= i32(T.raster_w) || y >= i32(T.raster_h)) { return vec4<f32>(0.0); }
     let i = (u32(y) * T.raster_w + u32(x)) * 4u;
-    return vec4<f32>(acc[i], acc[i + 1u], acc[i + 2u], acc[i + 3u]);
+    return mix_cell(vec4<f32>(acc[i], acc[i + 1u], acc[i + 2u], acc[i + 3u]));
 }
 
 // Raster cell without the border offset (the adaptive filter samples it this way in JWildfire).
 fn raw_cell(x: i32, y: i32) -> vec4<f32> {
     if (x < 0 || y < 0 || x >= i32(T.raster_w) || y >= i32(T.raster_h)) { return vec4<f32>(0.0); }
     let i = (u32(y) * T.raster_w + u32(x)) * 4u;
-    return vec4<f32>(acc[i], acc[i + 1u], acc[i + 2u], acc[i + 3u]);
+    return mix_cell(vec4<f32>(acc[i], acc[i + 1u], acc[i + 2u], acc[i + 3u]));
 }
 
 fn lum3(c: vec3<f32>) -> f32 { return 0.299 * c.x + 0.588 * c.y + 0.113 * c.z; }

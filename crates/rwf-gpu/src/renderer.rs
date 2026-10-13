@@ -148,7 +148,8 @@ struct ToneUniforms {
     soft_radius: f32,
     detail_radius: f32,
     prim_radius: f32,
-    _q1: u32,
+    /// Channel mixer: 0 off, 1 brightness, 2 RGB, 3 full.
+    mix_mode: u32,
     _q2: u32,
 }
 
@@ -223,6 +224,7 @@ pub struct GpuRenderer {
     iter_uniforms: wgpu::Buffer,
     resolve_uniforms: wgpu::Buffer,
     tone_uniforms: wgpu::Buffer,
+    mixer_lut: wgpu::Buffer,
     prm: Option<wgpu::Buffer>,
     nxt: Option<wgpu::Buffer>,
     cmap: Option<wgpu::Buffer>,
@@ -305,6 +307,7 @@ impl GpuRenderer {
             iter_uniforms: uniform_buffer(device, "iter-uniforms", std::mem::size_of::<IterUniforms>() as u64),
             resolve_uniforms: uniform_buffer(device, "resolve-uniforms", std::mem::size_of::<ResolveUniforms>() as u64),
             tone_uniforms: uniform_buffer(device, "tone-uniforms", std::mem::size_of::<ToneUniforms>() as u64),
+            mixer_lut: storage_buffer(device, "mixer-lut", (9 * rwf_core::mixer::LUT_SIZE * 4) as u64),
             states: storage_buffer(device, "states", thread_count as u64 * STATE_SIZE),
             de_uniforms: uniform_buffer(device, "de-uniforms", std::mem::size_of::<DeUniforms>() as u64),
             resolve_pipeline,
@@ -613,7 +616,7 @@ impl GpuRenderer {
             soft_radius,
             detail_radius,
             prim_radius: primary.radius as f32,
-            _q1: 0,
+            mix_mode: 0,
             _q2: 0,
         };
         self.tone_base = Some(tone);
@@ -773,6 +776,11 @@ impl GpuRenderer {
         tone.mod_sat = tp.mod_saturation as f32;
         tone.with_alpha = self.with_alpha as u32;
         tone.mb_scl = 1.0 / self.packets.max(1) as f32;
+        tone.mix_mode = 0;
+        if let Some(func) = flame.mixer.color_func() {
+            tone.mix_mode = func.mode_index();
+            self.ctx.queue.write_buffer(&self.mixer_lut, 0, bytemuck::cast_slice(&func.lut()));
+        }
         self.ctx.queue.write_buffer(&self.tone_uniforms, 0, bytemuck::bytes_of(&tone));
 
         let device = &self.ctx.device;
@@ -818,9 +826,10 @@ impl GpuRenderer {
                 wgpu::BindGroupEntry { binding: 1, resource: source.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 2, resource: filter.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&bufs.output_view) },
+                wgpu::BindGroupEntry { binding: 4, resource: self.mixer_lut.as_entire_binding() },
             ],
         });
-        
+
         {
             let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("tonemap"), timestamp_writes: None });
             pass.set_pipeline(&self.tonemap_pipeline);

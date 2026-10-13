@@ -247,6 +247,7 @@ fn parse_flame(el: &Element) -> Flame {
         }
     }
     flame.solid = crate::solid::SolidSettings::take_from_attrs(&mut flame.extra_attrs);
+    flame.mixer = crate::mixer::ChannelMixer::take_from_attrs(&mut flame.extra_attrs);
 
     let layer_elements: Vec<&Element> = el.children_named("layer").collect();
     if layer_elements.is_empty() {
@@ -542,6 +543,7 @@ pub fn write_flame(flame: &Flame) -> String {
     attr(&mut s, "post_blur_fade", fmt_f(flame.post_blur_fade));
     attr(&mut s, "post_blur_falloff", fmt_f(flame.post_blur_falloff));
     flame.solid.write_attrs(|k, v| attr(&mut s, k, v));
+    flame.mixer.write_attrs(|k, v| attr(&mut s, k, v));
     attr(&mut s, "ai_post_denoiser", flame.ai_post_denoiser.as_str());
     attr(&mut s, "post_optix_denoiser_blend", fmt_f(flame.post_denoiser_blend));
     attr(&mut s, "ai_post_denoiser_only_for_cpu", if flame.post_denoiser_only_for_cpu { "1" } else { "0" });

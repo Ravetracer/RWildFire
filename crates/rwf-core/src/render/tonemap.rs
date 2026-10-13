@@ -351,6 +351,13 @@ impl ToneMapper {
 
     /// Tonemaps the whole raster into an RGBA8 buffer of `w * h * 4` bytes.
     pub fn render<R: Raster>(&self, flame: &Flame, raster: &R, w: u32, h: u32) -> Vec<u8> {
+        match flame.mixer.color_func() {
+            Some(func) => self.render_raster(flame, &mix_raster(raster, &func), w, h),
+            None => self.render_raster(flame, raster, w, h),
+        }
+    }
+
+    fn render_raster<R: Raster>(&self, flame: &Flame, raster: &R, w: u32, h: u32) -> Vec<u8> {
         let mut out = vec![0u8; (w * h * 4) as usize];
         out.par_chunks_mut((w * 4) as usize).enumerate().for_each(|(y, row)| {
             for x in 0..w {
@@ -362,6 +369,27 @@ impl ToneMapper {
         });
         out
     }
+}
+
+/// The raster with the colors of every cell remapped by the channel mixer (`LogDensityFilter`
+/// with a `ColorFunc`).
+pub fn mix_raster<R: Raster>(raster: &R, func: &crate::mixer::ColorFunc) -> super::cpu::FloatRaster {
+    let (w, h) = (raster.width(), raster.height());
+    let mut data = vec![0.0f32; (w * h * 4) as usize];
+    data.par_chunks_mut((w * 4) as usize).enumerate().for_each(|(y, row)| {
+        for x in 0..w {
+            let c = raster.cell(x, y as u32);
+            let o = (x * 4) as usize;
+            row[o] = c[0] as f32;
+            if c[0] > 0.0 {
+                let m = func.map_cell(c[0], [c[1], c[2], c[3]]);
+                row[o + 1] = m[0] as f32;
+                row[o + 2] = m[1] as f32;
+                row[o + 3] = m[2] as f32;
+            }
+        }
+    });
+    super::cpu::FloatRaster { width: w, height: h, data }
 }
 
 fn read_cell<R: Raster>(raster: &R, rx: i64, ry: i64) -> [f64; 4] {
