@@ -55,8 +55,8 @@ static BRUSH_PNGS: [&[u8]; 245] = brushes!(
 
 /// `MarsagliaRandomGenerator`.
 pub struct Marsaglia {
-    u: i32,
-    v: i32,
+    pub(crate) u: i32,
+    pub(crate) v: i32,
 }
 
 impl Marsaglia {

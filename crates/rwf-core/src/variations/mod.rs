@@ -178,11 +178,13 @@ pub struct Ctx {
     /// Orbit points of variations that follow one orbit across calls in JWildfire, by prepared
     /// data address (CPU only).
     pub(crate) orbits: HashMap<usize, [f64; 2]>,
+    /// Larger per-thread states of stateful variations, by prepared data address (CPU only).
+    pub(crate) states: HashMap<usize, Vec<f64>>,
 }
 
 impl Ctx {
     pub fn new(seed: u64, preserve_z: bool) -> Self {
-        Self { rng: Rng::new(seed), preserve_z, palette: vec![[0, 0, 0]; 256], uv_idx_cache: HashMap::new(), subflames: HashMap::new(), orbits: HashMap::new() }
+        Self { rng: Rng::new(seed), preserve_z, palette: vec![[0, 0, 0]; 256], uv_idx_cache: HashMap::new(), subflames: HashMap::new(), orbits: HashMap::new(), states: HashMap::new() }
     }
     pub fn set_palette(&mut self, palette: &[[u8; 3]]) {
         self.palette.clear();

@@ -4925,4 +4925,408 @@ v.x += AMOUNT * (x / w - 0.5);
 v.y += AMOUNT * (y / w - 0.5);
 if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
     },
+    VarDef {
+        name: "mandelbox2D",
+        params: &[
+            ParamDef::int("mandelboxMode", 0.0, 0.0, 2.0),
+            ParamDef::int("iterations", 10.0, 0.0, 100.0),
+            ParamDef::new("scale", -1.5),
+            ParamDef::new("foldLimit", 1.0),
+            ParamDef::new("minRadius", 0.5),
+            ParamDef::new("fixedRadius", 1.0),
+            ParamDef::new("rotation", 0.0),
+            ParamDef::int("juliaMode", 0.0, 0.0, 1.0),
+            ParamDef::new("juliaX", 0.4),
+            ParamDef::new("juliaY", 0.6),
+            ParamDef::int("coloringMode", 0.0, 0.0, 2.0),
+            ParamDef::new("colorSpeed", 0.5),
+        ],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| mandelbox2d_apply(d, ctx, a, v, amount),
+        prepare: Some(|p, _| {
+            let mut d = p.to_vec();
+            d[0] = ftoi(p[0]).clamp(0, 2) as f64;
+            d[1] = (p[1] as i32).max(0) as f64;
+            d[6] = p[6].to_radians();
+            d[7] = ftoi(p[7]).clamp(0, 1) as f64;
+            d[10] = ftoi(p[10]).clamp(0, 2) as f64;
+            d.push(p[6]);
+            d
+        }),
+        wgsl: "var x = a.x;
+var y = a.y;
+var c = vec2<f32>(x, y);
+if (i32(D(7)) == 1) { c = vec2<f32>(D(8), D(9)); }
+let mode = i32(D(0));
+let min_r2 = D(4) * D(4);
+let fixed_r2 = D(5) * D(5);
+let cos_r = cos(D(6));
+let sin_r = sin(D(6));
+let rotate = D(12) != 0.0;
+let fl = D(3);
+var blended = a.color;
+for (var i = 0; i < i32(D(1)); i++) {
+  if (i32(D(10)) == 2) {
+    let target_color = glsl_atan2(y, x) / (2.0 * PI) + 0.5;
+    blended += (target_color - blended) * D(11);
+  }
+  if (mode == 0) {
+    if (x > fl) { x = 2.0 * fl - x; } else if (x < -fl) { x = -2.0 * fl - x; }
+    if (y > fl) { y = 2.0 * fl - y; } else if (y < -fl) { y = -2.0 * fl - y; }
+    if (x * x + y * y < min_r2) { let f = fixed_r2 / min_r2; x *= f; y *= f; }
+    x *= D(2); y *= D(2);
+    if (rotate) { let xn = x * cos_r - y * sin_r; y = x * sin_r + y * cos_r; x = xn; }
+    x += c.x; y += c.y;
+  } else if (mode == 1) {
+    x *= D(2); y *= D(2);
+    x += c.x; y += c.y;
+    if (rotate) { let xn = x * cos_r - y * sin_r; y = x * sin_r + y * cos_r; x = xn; }
+    if (x > fl) { x = 2.0 * fl - x; } else if (x < -fl) { x = -2.0 * fl - x; }
+    if (y > fl) { y = 2.0 * fl - y; } else if (y < -fl) { y = -2.0 * fl - y; }
+    let r2 = x * x + y * y;
+    if (r2 < min_r2) { let f = fixed_r2 / r2; x *= f; y *= f; }
+  } else {
+    if (x > fl) { x = 2.0 * fl - x; } else if (x < -fl) { x = -2.0 * fl - x; }
+    if (y > fl) { y = 2.0 * fl - y; } else if (y < -fl) { y = -2.0 * fl - y; }
+    x += c.x; y += c.y;
+    x *= D(2); y *= D(2);
+    if (rotate) { let xn = x * cos_r - y * sin_r; y = x * sin_r + y * cos_r; x = xn; }
+    let r2 = x * x + y * y;
+    if (r2 < min_r2) { let f = fixed_r2 / r2; x *= f; y *= f; }
+  }
+}
+v.x += x * AMOUNT;
+v.y += y * AMOUNT;
+if (i32(D(10)) == 1) {
+  v.color = glsl_atan2(y, x) / (2.0 * PI) + 0.5;
+} else if (i32(D(10)) == 2) {
+  v.color = blended;
+}
+if (PRESERVE_Z) { v.z += a.z * AMOUNT; }",
+    },
+    VarDef {
+        name: "mandelbrot",
+        params: &[
+            ParamDef::int("iter", 100.0, 1.0, 1000.0),
+            ParamDef::new("xmin", -1.6),
+            ParamDef::new("xmax", 1.6),
+            ParamDef::new("ymin", -1.2),
+            ParamDef::new("ymax", 1.2),
+            ParamDef::int("invert", 0.0, 0.0, 1.0),
+            ParamDef::new("skin", 0.012),
+            ParamDef::new("cx", 0.0),
+            ParamDef::new("cy", 0.0),
+            ParamDef::int("max_points", -1.0, -1.0, 100000.0),
+            ParamDef::int("seed", 1234.0, 0.0, 100000.0),
+            ParamDef::new("rnd_z_range", 0.0),
+        ],
+        kind: VarKind::Normal,
+        is_3d: true,
+        apply: |d, ctx, _, v, amount| mandelbrot_apply(d, ctx, v, amount),
+        prepare: Some(|p, _| {
+            let mut d = p.to_vec();
+            d[0] = ftoi(p[0]) as f64;
+            d[5] = ftoi(p[5]) as f64;
+            let mp = ftoi(p[9]);
+            d[9] = if mp > 0 && mp < 100 { 100.0 } else { mp as f64 };
+            d[10] = ftoi(p[10]) as f64;
+            d
+        }),
+        // GPU: the start point is kept per shader invocation and drawn with the shared random
+        // generator; `seed` and the `max_points` start point cache are not used.
+        wgsl: "var<private> mandelbrot_st: vec3<f32>;
+@body
+let iter = i32(D(0));
+let skin = D(6);
+var x0 = mandelbrot_st.x;
+var y0 = mandelbrot_st.y;
+var x1 = x0;
+var y1 = y0;
+var x = x0;
+var y = y0;
+let inverted = rnd() < D(5);
+var cur = select(iter, 0, inverted);
+var k = 0;
+loop {
+  let more = k < 10;
+  k++;
+  let cont = (inverted && cur < iter) || (!inverted && (cur >= iter || (skin < 1.0 && f32(cur) < 0.1 * f32(iter) * (1.0 - skin))));
+  if (!(more && cont)) { break; }
+  if (x0 == 0.0 && y0 == 0.0) {
+    x0 = (D(2) - D(1)) * rnd() + D(1);
+    y0 = (D(4) - D(3)) * rnd() + D(3);
+    mandelbrot_st.z = rnd() * D(11);
+  } else {
+    x0 = (skin + 0.001) * (rnd() - 0.5) + x0;
+    y0 = (skin + 0.001) * (rnd() - 0.5) + y0;
+  }
+  x1 = x0;
+  y1 = y0;
+  x = x0;
+  y = y0;
+  cur = 0;
+  while (x * x + y * y < 4.0 && cur < iter) {
+    let xt = x * x - y * y + x0;
+    y = 2.0 * x * y + y0;
+    x = xt;
+    cur++;
+  }
+  if (cur >= iter || skin == 1.0 || f32(cur) < 0.1 * (f32(iter) * (1.0 - skin))) {
+    x0 = 0.0;
+    y0 = 0.0;
+  }
+}
+if (k >= 10) {
+  x1 = 50000.0 - rnd() * 100000.0;
+  y1 = x1;
+}
+mandelbrot_st = vec3<f32>(x0, y0, mandelbrot_st.z);
+v.x += AMOUNT * (x1 + D(7) * x);
+v.y += AMOUNT * (y1 + D(8) * y);
+v.z += mandelbrot_st.z;",
+    },
+    VarDef {
+        name: "maple_leaf",
+        params: &[ParamDef::new("filled", 0.5)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let t = a.atan_xy() - std::f64::consts::FRAC_PI_2;
+            let r = if d[0] > 0.0 && d[0] > ctx.random() { amount * ctx.random() } else { amount };
+            let (c1, c3, c6, c18, c24, c30) = ((t).cos(), (3.0 * t).cos(), (6.0 * t).cos(), (18.0 * t).cos(), (24.0 * t).cos(), (30.0 * t).cos());
+            let s6 = (6.0 * t).sin();
+            // JWildfire's `1/4*pow(cos(30t), 2)` term of lx is an integer division and vanishes.
+            let lx = (1.0 + c6.powf(2.0) + 1.0 / 5.0 * (c6 * c24).powf(10.0) + (1.0 / 9.0 * c30.powf(12.0)) * (1.0 - s6.powf(10.0)))
+                * (2.0 * t).sin()
+                * (1.0 - c1.powf(4.0))
+                * (1.0 - c1.powf(10.0) * c3.powf(2.0));
+            let ly = 21.0 / 20.0
+                * (2.0 * t).cos()
+                * (1.0 - c1.powf(4.0) + 1.0 / 2.0 * (c1 * c3).powf(10.0))
+                * (1.0
+                    + c6.powf(2.0)
+                    + 1.0 / 5.0 * (c6 * c18).powf(10.0)
+                    + (1.0 / 4.0 * c30.powf(4.0) + 1.0 / 10.0 * c30.powf(12.0)) * (1.0 - c1.powf(10.0) * c3.powf(2.0)) * (1.0 - s6.powf(10.0)));
+            v.x += r * lx;
+            v.y += r * ly;
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "fn maple_leaf_p2(a: f32) -> f32 { return a * a; }
+fn maple_leaf_p4(a: f32) -> f32 { let b = a * a; return b * b; }
+fn maple_leaf_p10(a: f32) -> f32 { let b = a * a * a; return b * b * b * a; }
+fn maple_leaf_p12(a: f32) -> f32 { let b = a * a * a * a; return b * b * b; }
+@body
+let t = glsl_atan2(a.x, a.y) - 0.5 * PI;
+var r = AMOUNT;
+if (D(0) > 0.0 && D(0) > rnd()) { r = AMOUNT * rnd(); }
+let c1 = cos(t);
+let c3 = cos(3.0 * t);
+let c6 = cos(6.0 * t);
+let c30 = cos(30.0 * t);
+let s6 = sin(6.0 * t);
+let lx = (1.0 + maple_leaf_p2(c6) + 0.2 * maple_leaf_p10(c6 * cos(24.0 * t)) + (1.0 / 9.0 * maple_leaf_p12(c30)) * (1.0 - maple_leaf_p10(s6)))
+  * sin(2.0 * t) * (1.0 - maple_leaf_p4(c1)) * (1.0 - maple_leaf_p10(c1) * maple_leaf_p2(c3));
+let ly = 1.05 * cos(2.0 * t) * (1.0 - maple_leaf_p4(c1) + 0.5 * maple_leaf_p10(c1 * c3))
+  * (1.0 + maple_leaf_p2(c6) + 0.2 * maple_leaf_p10(c6 * cos(18.0 * t))
+    + (0.25 * maple_leaf_p4(c30) + 0.1 * maple_leaf_p12(c30)) * (1.0 - maple_leaf_p10(c1) * maple_leaf_p2(c3)) * (1.0 - maple_leaf_p10(s6)));
+v.x += r * lx;
+v.y += r * ly;
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "marble",
+        params: &[ParamDef::new("freq", 2.0), ParamDef::new("amp", 0.3)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let (freq, amp) = (d[0], d[1]);
+            let t = freq * a.x + amp * ((freq * a.y).sin() + 0.5 * (2.0 * freq * a.y).sin());
+            v.x += amount * (a.x + amp * t.sin());
+            v.y += amount * (a.y + amp * 0.3 * (freq * a.y).cos());
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "let t = D(0) * a.x + D(1) * (sin(D(0) * a.y) + 0.5 * sin(2.0 * D(0) * a.y));
+v.x += AMOUNT * (a.x + D(1) * sin(t));
+v.y += AMOUNT * (a.y + D(1) * 0.3 * cos(D(0) * a.y));
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "mask",
+        params: &[ParamDef::new("xshift", 0.0), ParamDef::new("yshift", 0.0), ParamDef::new("ushift", 1.0), ParamDef::new("xscale", 1.0), ParamDef::new("yscale", 1.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let sumsq = a.sumsq();
+            if sumsq == 0.0 {
+                v.do_hide = true;
+            } else {
+                v.do_hide = false;
+                let xf = d[3] * a.x + d[0];
+                let yf = d[4] * a.y + d[1];
+                let s2 = sqr(xf.sin());
+                v.x += (amount / sumsq) * xf.sin() * (yf.cosh() + d[2]) * s2;
+                v.y += (amount / sumsq) * xf.cos() * (yf.cosh() + d[2]) * s2;
+            }
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "let sumsq = a.x * a.x + a.y * a.y;
+if (sumsq == 0.0) {
+  v.hide = 1.0;
+} else {
+  v.hide = 0.0;
+  let xf = D(3) * a.x + D(0);
+  let yf = D(4) * a.y + D(1);
+  let s2 = sin(xf) * sin(xf);
+  v.x += (AMOUNT / sumsq) * sin(xf) * (cosh(yf) + D(2)) * s2;
+  v.y += (AMOUNT / sumsq) * cos(xf) * (cosh(yf) + D(2)) * s2;
+}
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
 ];
+
+fn mandelbox2d_apply(d: &[f64], ctx: &mut Ctx, a: &Pt, v: &mut Pt, amount: f64) {
+    let (mut x, mut y) = (a.x, a.y);
+    let (cx, cy) = if d[7] as i32 == 1 { (d[8], d[9]) } else { (x, y) };
+    let (mode, scale, fl) = (d[0] as i32, d[2], d[3]);
+    let (min_r2, fixed_r2) = (d[4] * d[4], d[5] * d[5]);
+    let (sin_r, cos_r) = d[6].sin_cos();
+    let rotate = d[12] != 0.0;
+    let coloring = d[10] as i32;
+    let fold = |x: f64| if x > fl { 2.0 * fl - x } else if x < -fl { -2.0 * fl - x } else { x };
+    let mut blended = a.color;
+    for _ in 0..d[1] as i32 {
+        if coloring == 2 {
+            let target = y.atan2(x) / (2.0 * std::f64::consts::PI) + 0.5;
+            blended += (target - blended) * d[11];
+        }
+        match mode {
+            0 => {
+                (x, y) = (fold(x), fold(y));
+                if x * x + y * y < min_r2 {
+                    let f = fixed_r2 / min_r2;
+                    x *= f;
+                    y *= f;
+                }
+                x *= scale;
+                y *= scale;
+                if rotate {
+                    (x, y) = (x * cos_r - y * sin_r, x * sin_r + y * cos_r);
+                }
+                x += cx;
+                y += cy;
+            }
+            1 => {
+                x *= scale;
+                y *= scale;
+                x += cx;
+                y += cy;
+                if rotate {
+                    (x, y) = (x * cos_r - y * sin_r, x * sin_r + y * cos_r);
+                }
+                (x, y) = (fold(x), fold(y));
+                let r2 = x * x + y * y;
+                if r2 < min_r2 {
+                    let f = fixed_r2 / r2;
+                    x *= f;
+                    y *= f;
+                }
+            }
+            _ => {
+                (x, y) = (fold(x), fold(y));
+                x += cx;
+                y += cy;
+                x *= scale;
+                y *= scale;
+                if rotate {
+                    (x, y) = (x * cos_r - y * sin_r, x * sin_r + y * cos_r);
+                }
+                let r2 = x * x + y * y;
+                if r2 < min_r2 {
+                    let f = fixed_r2 / r2;
+                    x *= f;
+                    y *= f;
+                }
+            }
+        }
+    }
+    v.x += x * amount;
+    v.y += y * amount;
+    if coloring == 1 {
+        v.color = y.atan2(x) / (2.0 * std::f64::consts::PI) + 0.5;
+    } else if coloring == 2 {
+        v.color = blended;
+    }
+    if ctx.preserve_z {
+        v.z += a.z * amount;
+    }
+}
+
+/// `MandelbrotFunc`: JWildfire keeps the start point, its seeded random generator and the
+/// `max_points` start point cache per instance; here they are kept per render thread.
+fn mandelbrot_apply(d: &[f64], ctx: &mut Ctx, v: &mut Pt, amount: f64) {
+    use crate::brush::Marsaglia;
+    let key = d.as_ptr() as usize;
+    // [x0, y0, z0, random u, random v, cache index, cached start points (x, y, z)...]
+    let mut st = ctx.states.remove(&key).unwrap_or_else(|| {
+        let r = Marsaglia::new(d[10] as i64);
+        vec![0.0, 0.0, 0.0, r.u as f64, r.v as f64, 0.0]
+    });
+    let mut rg = Marsaglia { u: st[3] as i32, v: st[4] as i32 };
+    let (iter, skin, max_points) = (d[0] as i32, d[6], d[9] as i64);
+    let (mut x0, mut y0, mut z0) = (st[0], st[1], st[2]);
+    let (mut x1, mut y1, mut x, mut y) = (x0, y0, x0, y0);
+    let inverted = rg.random() < d[5];
+    let mut cur = if inverted { 0 } else { iter };
+    let mut k = 0;
+    loop {
+        let more = k < 10;
+        k += 1;
+        let cont = (inverted && cur < iter) || (!inverted && (cur >= iter || (skin < 1.0 && (cur as f64) < 0.1 * iter as f64 * (1.0 - skin))));
+        if !(more && cont) {
+            break;
+        }
+        if x0 == 0.0 && y0 == 0.0 {
+            let cached = (st.len() - 6) / 3;
+            if max_points > 0 && cached as i64 >= max_points {
+                let i = st[5] as usize;
+                (x0, y0, z0) = (st[6 + 3 * i], st[7 + 3 * i], st[8 + 3 * i]);
+                st[5] = if i as i64 + 1 >= max_points { 0.0 } else { (i + 1) as f64 };
+            } else {
+                x0 = (d[2] - d[1]) * rg.random() + d[1];
+                y0 = (d[4] - d[3]) * rg.random() + d[3];
+                z0 = rg.random() * d[11];
+                if max_points > 0 {
+                    st.extend([x0, y0, z0]);
+                }
+            }
+        } else {
+            x0 += (skin + 0.001) * (rg.random() - 0.5);
+            y0 += (skin + 0.001) * (rg.random() - 0.5);
+        }
+        (x1, y1, x, y) = (x0, y0, x0, y0);
+        cur = 0;
+        while x * x + y * y < 4.0 && cur < iter {
+            let xt = x * x - y * y + x0;
+            y = 2.0 * x * y + y0;
+            x = xt;
+            cur += 1;
+        }
+        if cur >= iter || skin == 1.0 || (cur as f64) < 0.1 * (iter as f64 * (1.0 - skin)) {
+            x0 = 0.0;
+            y0 = 0.0;
+        }
+    }
+    if k >= 10 {
+        x1 = 50000.0 - ctx.random() * 100000.0;
+        y1 = x1;
+    }
+    v.x += amount * (x1 + d[7] * x);
+    v.y += amount * (y1 + d[8] * y);
+    v.z += z0;
+    (st[0], st[1], st[2], st[3], st[4]) = (x0, y0, z0, rg.u as f64, rg.v as f64);
+    ctx.states.insert(key, st);
+}
