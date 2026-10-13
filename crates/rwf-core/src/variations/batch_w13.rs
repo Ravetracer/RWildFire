@@ -1174,8 +1174,814 @@ v.x += AMOUNT * nx;
 v.y += AMOUNT * ny;
 if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
     },
+    VarDef {
+        name: "synth",
+        params: &[
+            ParamDef::new("a", 1.0),
+            ParamDef::int("mode", 3.0, 0.0, 1007.0),
+            ParamDef::new("power", -2.0),
+            ParamDef::new("mix", 1.0),
+            ParamDef::int("smooth", 0.0, 0.0, 1.0),
+            ParamDef::new("b", 0.0),
+            ParamDef::int("b_type", 0.0, 0.0, 8.0),
+            ParamDef::new("b_skew", 0.0),
+            ParamDef::new("b_frq", 1.0),
+            ParamDef::new("b_phs", 0.0),
+            ParamDef::int("b_layer", 0.0, 0.0, 3.0),
+            ParamDef::new("c", 0.0),
+            ParamDef::int("c_type", 0.0, 0.0, 8.0),
+            ParamDef::new("c_skew", 0.0),
+            ParamDef::new("c_frq", 1.0),
+            ParamDef::new("c_phs", 0.0),
+            ParamDef::int("c_layer", 0.0, 0.0, 3.0),
+            ParamDef::new("d", 0.0),
+            ParamDef::int("d_type", 0.0, 0.0, 8.0),
+            ParamDef::new("d_skew", 0.0),
+            ParamDef::new("d_frq", 1.0),
+            ParamDef::new("d_phs", 0.0),
+            ParamDef::int("d_layer", 0.0, 0.0, 3.0),
+            ParamDef::new("e", 0.0),
+            ParamDef::int("e_type", 0.0, 0.0, 8.0),
+            ParamDef::new("e_skew", 0.0),
+            ParamDef::new("e_frq", 1.0),
+            ParamDef::new("e_phs", 0.0),
+            ParamDef::int("e_layer", 0.0, 0.0, 3.0),
+            ParamDef::new("f", 0.0),
+            ParamDef::int("f_type", 0.0, 0.0, 8.0),
+            ParamDef::new("f_skew", 0.0),
+            ParamDef::new("f_frq", 1.0),
+            ParamDef::new("f_phs", 0.0),
+            ParamDef::int("f_layer", 0.0, 0.0, 3.0),
+        ],
+        kind: VarKind::Normal,
+        is_3d: false,
+        // d = [a, mode, power, mix, smooth, 5 x (amp, type, skew, frq, phs, layer)]
+        apply: synth_apply,
+        prepare: Some(|p, _| {
+            let mut d = p.to_vec();
+            for i in [1, 4, 6, 10, 12, 16, 18, 22, 24, 28, 30, 34] {
+                d[i] = ftoi(p[i]) as f64;
+            }
+            d
+        }),
+        wgsl: SYNTH_WGSL,
+    },
+    VarDef {
+        name: "szubieta",
+        params: &[
+            ParamDef::int("width", 128.0, 32.0, 256.0),
+            ParamDef::int("height", 128.0, 32.0, 256.0),
+            ParamDef::int("type", 0.0, 0.0, 1.0),
+            ParamDef::range("scale", 0.5, 0.0, 1.0),
+        ],
+        kind: VarKind::Normal,
+        is_3d: false,
+        // d = [width, height, type, scale]
+        apply: |d, ctx, a, v, amount| {
+            // The width x height grid of 20-gons is evaluated on demand.
+            let (w, h) = (d[0] as i32, d[1] as i32);
+            let idx = (ctx.random() * (w * h) as f64) as i32;
+            let (i, j) = (idx / h, idx % h);
+            let x = if d[2] as i32 == 0 { (i * i - 2 * (i | j) + j * j) % 255 } else { (i & (j - 2 * (i ^ j) + j) & i) % 256 };
+            let color = x.abs() as f64 / 255.0;
+            let (px, py) = (i as f64 - w as f64 / 2.0, j as f64 - h as f64 / 2.0);
+            let (ox, oy) = super::draw::ngon_point(ctx, 20, 0.0);
+            v.x += amount * 0.1 * (ox * d[3] + px);
+            v.y += amount * 0.1 * (oy * d[3] + py);
+            v.color = color;
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: Some(|p, _| {
+            vec![
+                limit_value(p[0], 32.0, 256.0) as i32 as f64,
+                limit_value(p[1], 32.0, 256.0) as i32 as f64,
+                limit_value(p[2], 0.0, 1.0) as i32 as f64,
+                limit_value(p[3], 0.0, 1.0),
+            ]
+        }),
+        wgsl: "let w = i32(D(0));
+let h = i32(D(1));
+let idx = min(i32(rnd() * f32(w * h)), w * h - 1);
+let i = idx / h;
+let j = idx % h;
+var x = (i & (j - 2 * (i ^ j) + j) & i) % 256;
+if (i32(D(2)) == 0) { x = (i * i - 2 * (i | j) + j * j) % 255; }
+let px = f32(i) - f32(w) / 2.0;
+let py = f32(j) - f32(h) / 2.0;
+let o = res_ngon_point(20, 0.0);
+v.x += AMOUNT * 0.1 * (o.x * D(3) + px);
+v.y += AMOUNT * 0.1 * (o.y * D(3) + py);
+v.color = f32(abs(x)) / 255.0;
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "tan2_bs",
+        params: &[ParamDef::new("x1", 2.0), ParamDef::new("x2", 2.0), ParamDef::new("y1", 2.0), ParamDef::new("y2", 2.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let tansin = (d[0] * a.x).sin();
+            let tancos = (d[1] * a.x).cos();
+            let tansinh = (d[2] * a.y).sinh();
+            let tancosh = (d[3] * a.y).cosh();
+            let den = tancos + tancosh;
+            if den == 0.0 {
+                return;
+            }
+            let tanden = 1.0 / den;
+            v.x += amount * tanden * tansin;
+            v.y += amount * tanden * tansinh;
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "let den = cos(D(1) * a.x) + cosh(D(3) * a.y);
+if (den != 0.0) {
+  let tanden = 1.0 / den;
+  v.x += AMOUNT * tanden * sin(D(0) * a.x);
+  v.y += AMOUNT * tanden * sinh(D(2) * a.y);
+  if (PRESERVE_Z) { v.z += AMOUNT * a.z; }
+}",
+    },
+    simple(
+        "tancos",
+        false,
+        |_, ctx, a, v, amount| {
+            let d1 = SMALL_EPSILON + sqr(a.x) + sqr(a.y);
+            let d2 = amount / d1;
+            v.x += d2 * (d1.tanh() * (2.0 * a.x));
+            v.y += d2 * (d1.cos() * (2.0 * a.y));
+            ctx.pass_z(a, v, amount);
+        },
+        "let d1 = EPS + sqr(a.x) + sqr(a.y);
+let d2 = AMOUNT / d1;
+v.x += d2 * (tanh(d1) * (2.0 * a.x));
+v.y += d2 * (cos(d1) * (2.0 * a.y));
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    ),
+    VarDef {
+        name: "tanh2_bs",
+        params: &[ParamDef::new("x1", 2.0), ParamDef::new("x2", 2.0), ParamDef::new("y1", 2.0), ParamDef::new("y2", 2.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let tanhsin = (d[2] * a.y).sin();
+            let tanhcos = (d[3] * a.y).cos();
+            let tanhsinh = (d[0] * a.x).sinh();
+            let tanhcosh = (d[1] * a.x).cosh();
+            let den = tanhcos + tanhcosh;
+            if den == 0.0 {
+                return;
+            }
+            let tanhden = 1.0 / den;
+            v.x += amount * tanhden * tanhsinh;
+            v.y += amount * tanhden * tanhsin;
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "let den = cos(D(3) * a.y) + cosh(D(1) * a.x);
+if (den != 0.0) {
+  let tanhden = 1.0 / den;
+  v.x += AMOUNT * tanhden * sinh(D(0) * a.x);
+  v.y += AMOUNT * tanhden * sin(D(2) * a.y);
+  if (PRESERVE_Z) { v.z += AMOUNT * a.z; }
+}",
+    },
+    simple(
+        "tanhq",
+        true,
+        |_, _ctx, a, v, amount| {
+            let abs_v = a.y.hypot(a.z);
+            let sysz = sqr(a.y) + sqr(a.z);
+            let ni = amount / (sqr(a.x) + sysz);
+            let (s, c) = abs_v.sin_cos();
+            let (sh, ch) = (a.x.sinh(), a.x.cosh());
+            let cc = ch * s / abs_v;
+            let b = sh * s / abs_v;
+            let stcv = sh * c;
+            let nstcv = -stcv;
+            let ctcv = ch * c;
+            v.x += (stcv * ctcv + cc * b * sysz) * ni;
+            v.y += (nstcv * b * a.y + cc * a.y * ctcv) * ni;
+            v.z += (nstcv * b * a.z + cc * a.z * ctcv) * ni;
+        },
+        "let abs_v = sqrt(a.y * a.y + a.z * a.z);
+let sysz = sqr(a.y) + sqr(a.z);
+let ni = AMOUNT / (sqr(a.x) + sysz);
+let s = sin(abs_v);
+let c = cos(abs_v);
+let sh = sinh(a.x);
+let ch = cosh(a.x);
+let cc = ch * s / abs_v;
+let b = sh * s / abs_v;
+let stcv = sh * c;
+let ctcv = ch * c;
+v.x += (stcv * ctcv + cc * b * sysz) * ni;
+v.y += (-stcv * b * a.y + cc * a.y * ctcv) * ni;
+v.z += (-stcv * b * a.z + cc * a.z * ctcv) * ni;",
+    ),
+    simple(
+        "tanq",
+        true,
+        |_, _ctx, a, v, amount| {
+            let abs_v = a.y.hypot(a.z);
+            let s = a.x.sin();
+            let sysz = sqr(a.y) + sqr(a.z);
+            let ni = amount / (sqr(a.x) + sysz);
+            let c = a.x.cos();
+            let (sh, ch) = (abs_v.sinh(), abs_v.cosh());
+            let cc = c * sh / abs_v;
+            let b = -s * sh / abs_v;
+            let stcv = s * ch;
+            let nstcv = -stcv;
+            let ctcv = c * ch;
+            v.x += (stcv * ctcv + cc * b * sysz) * ni;
+            v.y += (nstcv * b * a.y + cc * a.y * ctcv) * ni;
+            v.z += (nstcv * b * a.z + cc * a.z * ctcv) * ni;
+        },
+        "let abs_v = sqrt(a.y * a.y + a.z * a.z);
+let s = sin(a.x);
+let sysz = sqr(a.y) + sqr(a.z);
+let ni = AMOUNT / (sqr(a.x) + sysz);
+let c = cos(a.x);
+let sh = sinh(abs_v);
+let ch = cosh(abs_v);
+let cc = c * sh / abs_v;
+let b = -s * sh / abs_v;
+let stcv = s * ch;
+let ctcv = c * ch;
+v.x += (stcv * ctcv + cc * b * sysz) * ni;
+v.y += (-stcv * b * a.y + cc * a.y * ctcv) * ni;
+v.z += (-stcv * b * a.z + cc * a.z * ctcv) * ni;",
+    ),
     // @@NEXT@@
 ];
+
+const SYNTH_EPS: f64 = SMALL_EPSILON;
+
+/// `SynthFunc.synth_value`
+fn synth_value(d: &[f64], theta: f64) -> f64 {
+    let (a, mix) = (d[0], d[3]);
+    let mut tf = a;
+    let mut x = 0.0;
+    for k in 0..5 {
+        let l = &d[5 + 6 * k..11 + 6 * k];
+        let amp = l[0];
+        if amp == 0.0 {
+            continue;
+        }
+        let frq = l[3];
+        let mut z = l[4] + theta * frq;
+        let mut y = z / (2.0 * M_PI);
+        y -= y.floor();
+        if l[2] != 0.0 {
+            z = 0.5 + 0.5 * l[2];
+            if y > z {
+                y = 0.5 + 0.5 * (y - z) / (1.0 - z + SYNTH_EPS);
+            } else {
+                y = 0.5 - 0.5 * (z - y) / (z + SYNTH_EPS);
+            }
+        }
+        match l[1] as i32 {
+            0 => x = (y * 2.0 * M_PI).sin(),
+            1 => x = (y * 2.0 * M_PI).cos(),
+            2 => x = if y > 0.5 { 1.0 } else { -1.0 },
+            3 => x = 1.0 - 2.0 * y,
+            4 => x = if y > 0.5 { 3.0 - 4.0 * y } else { 2.0 * y - 1.0 },
+            5 => x = 8.0 * (y - 0.5) * (y - 0.5) - 1.0,
+            6 => x = 2.0 * y.sqrt() - 1.0,
+            7 => {
+                y -= 0.5;
+                y *= 2.0 * M_PI / frq;
+                x = 1.0 / (y.cos() + SYNTH_EPS) - 1.0;
+            }
+            8 => {
+                y -= 0.5;
+                y *= 2.0 * M_PI / frq;
+                z = y.cos();
+                x = z / (1.0 + SYNTH_EPS - z);
+            }
+            _ => {}
+        }
+        match l[5] as i32 {
+            0 => tf += amp * x,
+            1 => tf *= 1.0 + amp * x,
+            2 => {
+                z = a + amp * x;
+                tf = if tf > z { tf } else { z };
+            }
+            3 => {
+                z = a + amp * x;
+                tf = if tf < z { tf } else { z };
+            }
+            _ => {}
+        }
+    }
+    tf * mix + (1.0 - mix)
+}
+
+/// `SynthFunc.bezier_quad_map`
+fn synth_bezier_quad_map(mut x: f64, mut m: f64) -> f64 {
+    let mut a = 1.0;
+    if m < 0.0 {
+        m = -m;
+        a = -1.0;
+    }
+    if x < 0.0 {
+        x = -x;
+        a = -a;
+    }
+    let im = if m > 1.0e-10 { 1.0 / m } else { 1e10 };
+    let l = if (2.0 - m) > 2.0 * m { 2.0 - m } else { 2.0 * m };
+    if x > l || m == 1.0 {
+        return a * x;
+    }
+    if m < 1.0 && x <= 1.0 {
+        let mut t = x;
+        if (m - 0.5) * (m - 0.5) > 1e-10 {
+            t = (-m + (m * m + (1.0 - 2.0 * m) * x).sqrt()) / (1.0 - 2.0 * m);
+        }
+        return a * (x + (m - 1.0) * t * t);
+    }
+    if 1.0 < m && x <= 1.0 {
+        let mut t = x;
+        if (m - 2.0) * (m - 2.0) > 1e-10 {
+            t = (-im + (im * im + (1.0 - 2.0 * im) * x).sqrt()) / (1.0 - 2.0 * im);
+        }
+        return a * (x + (m - 1.0) * t * t);
+    }
+    if m < 1.0 {
+        let t = ((x - 1.0) / (l - 1.0)).sqrt();
+        return a * (x + (m - 1.0) * t * t + 2.0 * (1.0 - m) * t + (m - 1.0));
+    }
+    let t = (1.0 - m) + ((m - 1.0) * (m - 1.0) + (x - 1.0)).sqrt();
+    a * (x + (m - 1.0) * t * t - 2.0 * (m - 1.0) * t + (m - 1.0))
+}
+
+fn synth_interpolate(x: f64, m: f64, lerp_type: i32) -> f64 {
+    if lerp_type == 1 { synth_bezier_quad_map(x, m) } else { x * m }
+}
+
+/// `SynthFunc.synthsincos` -> (s, c)
+fn synth_sincos(d: &[f64], theta: f64, sine_type: i32) -> (f64, f64) {
+    let (s, c) = theta.sin_cos();
+    match sine_type {
+        0 => (s * synth_value(d, theta), c * synth_value(d, theta + M_PI / 2.0)),
+        1 => ((1.0 - d[3]) * s + (synth_value(d, theta) - 1.0), (1.0 - d[3]) * c + (synth_value(d, theta + M_PI / 2.0) - 1.0)),
+        _ => (s, c),
+    }
+}
+
+fn synth_apply(d: &[f64], ctx: &mut Ctx, a: &mut Pt, v: &mut Pt, amount: f64) {
+    let (power, mix, smooth) = (d[2], d[3], d[4] as i32);
+    let eps = SYNTH_EPS;
+    let (mut vx, mut vy) = (a.x, a.y);
+    match d[1] as i32 {
+        5 => {
+            let mut radius = (vx * vx + vy * vy).sqrt();
+            let theta = vx.atan2(vy);
+            radius = synth_interpolate(radius, synth_value(d, theta), smooth);
+            v.x += amount * radius * theta.sin();
+            v.y += amount * radius * theta.cos();
+        }
+        7 => {
+            let tf = synth_value(d, vx);
+            v.x += amount * vx;
+            v.y += amount * synth_interpolate(vy, tf, smooth);
+        }
+        6 => {
+            let tf = synth_value(d, vy);
+            v.x += amount * synth_interpolate(vx, tf, smooth);
+            v.y += amount * vy;
+        }
+        8 => {
+            let tf = synth_value(d, vy);
+            v.x += amount * synth_interpolate(vx, tf, smooth);
+            let tf = synth_value(d, vx);
+            v.y += amount * synth_interpolate(vy, tf, smooth);
+        }
+        0 => {
+            let mut radius = (vx * vx + vy * vy + eps).powf((power + 1.0) / 2.0);
+            let theta = vx.atan2(vy);
+            radius = synth_interpolate(radius, synth_value(d, theta), smooth);
+            v.x += amount * radius * theta.sin();
+            v.y += amount * radius * theta.cos();
+        }
+        1 => {
+            let mut radius = (vx * vx + vy * vy).sqrt() / ((vx * vx + vy * vy) / 4.0 + 1.0);
+            let theta = vx.atan2(vy);
+            radius = synth_interpolate(radius, synth_value(d, theta), smooth);
+            v.x += amount * radius * theta.sin();
+            v.y += amount * radius * theta.cos();
+        }
+        2 => {
+            let mut radius = (ctx.random() + ctx.random() + 0.002 * ctx.random()) / 2.002;
+            let theta = 2.0 * M_PI * ctx.random() - M_PI;
+            vx = radius * theta.sin();
+            vy = radius * theta.cos();
+            radius = (radius * radius + eps).powf(power / 2.0);
+            radius = amount * synth_interpolate(radius, synth_value(d, theta), smooth);
+            v.x += vx * radius;
+            v.y += vy * radius;
+        }
+        3 => {
+            let mut radius = 0.5 * (ctx.random() + ctx.random());
+            let theta = 2.0 * M_PI * ctx.random() - M_PI;
+            radius = (radius * radius + eps).powf(-power / 2.0);
+            radius = synth_interpolate(radius, synth_value(d, theta), smooth);
+            v.x += amount * radius * theta.sin();
+            v.y += amount * radius * theta.cos();
+        }
+        12 => {
+            let mut radius = 1.0 + 0.1 * (ctx.random() + ctx.random() - 1.0) * power;
+            let theta = 2.0 * M_PI * ctx.random() - M_PI;
+            radius = synth_interpolate(radius, synth_value(d, theta), smooth);
+            v.x += amount * radius * theta.sin();
+            v.y += amount * radius * theta.cos();
+        }
+        13 => {
+            let theta = 2.0 * M_PI * ctx.random() - M_PI;
+            let mut radius = (ctx.random() + eps).powf(power);
+            radius = synth_value(d, theta) + 0.1 * radius;
+            v.x += amount * radius * theta.sin();
+            v.y += amount * radius * theta.cos();
+        }
+        14 => {
+            let radius = (vx * vx + vy * vy + eps).powf(power / 2.0);
+            let theta = vx.atan2(vy) - 1.0 + synth_value(d, radius);
+            v.x += amount * radius * theta.sin();
+            v.y += amount * radius * theta.cos();
+        }
+        15 => {
+            let radius = (vx * vx + vy * vy + eps).powf(power / 2.0);
+            let theta = vx.atan2(vy);
+            let (s, c) = theta.sin_cos();
+            let mu = synth_value(d, radius) - 1.0;
+            vx += mu * c;
+            vy -= mu * s;
+            v.x += amount * vx;
+            v.y += amount * vy;
+        }
+        16 => {
+            let radius = (vx * vx + vy * vy + eps).powf(power / 2.0);
+            let theta = vx.atan2(vy) - 1.0 + synth_value(d, radius);
+            let radius = (vx * vx + vy * vy).sqrt();
+            v.x += amount * radius * theta.sin();
+            v.y += amount * radius * theta.cos();
+        }
+        4 => {
+            vy = 1.0 + 0.1 * (ctx.random() + ctx.random() - 1.0) * power;
+            let theta = 2.0 * ((ctx.random() - 0.5) * 2.0).asin();
+            vy = synth_interpolate(vy, synth_value(d, theta), smooth);
+            v.x += amount * (theta / M_PI);
+            v.y += amount * (vy - 1.0);
+        }
+        9 => {
+            v.x += amount * (vx + synth_value(d, vy) - 1.0);
+            v.y += amount * vy;
+        }
+        10 => {
+            v.x += amount * vx;
+            v.y += amount * (vy + synth_value(d, vx) - 1.0);
+        }
+        11 => {
+            v.x += amount * (vx + synth_value(d, vy) - 1.0);
+            v.y += amount * (vy + synth_value(d, vx) - 1.0);
+        }
+        1001 => {
+            v.x += amount * (synth_value(d, vx) - 1.0 + (1.0 - mix) * vx.sin());
+            v.y += amount * (synth_value(d, vy) - 1.0 + (1.0 - mix) * vy.sin());
+        }
+        1002 => {
+            let radius = (vx * vx + vy * vy + eps).powf(power / 2.0);
+            let (s, c) = synth_sincos(d, radius, smooth);
+            v.x += amount * (s * vx - c * vy);
+            v.y += amount * (c * vx + s * vy);
+        }
+        1003 => {
+            let radius = (vx * vx + vy * vy + eps).powf(power / 2.0);
+            let (s, c) = synth_sincos(d, vx.atan2(vy), smooth);
+            v.x += amount * s / radius;
+            v.y += amount * c * radius;
+        }
+        1004 => {
+            let radius = (vx * vx + vy * vy + eps).powf(power / 4.0);
+            let mut theta = vx.atan2(vy) / 2.0;
+            if ctx.random() < 0.5 {
+                theta += M_PI;
+            }
+            let (s, c) = synth_sincos(d, theta, smooth);
+            v.x += amount * radius * c;
+            v.y += amount * radius * s;
+        }
+        1005 => {
+            let theta = vx.atan2(vy) / M_PI;
+            let radius = M_PI * (vx * vx + vy * vy + eps).powf(power / 2.0);
+            let (s, c) = synth_sincos(d, radius, smooth);
+            v.x = amount * s * theta;
+            v.y = amount * c * theta;
+        }
+        1006 => {
+            let mut radius = (vx * vx + vy * vy).sqrt();
+            let theta = vx.atan2(vy);
+            let mu = power * power + eps;
+            radius += -2.0 * mu * (((radius + mu) / (2.0 * mu)) as i32) as f64 + radius * (1.0 - mu);
+            let (s, c) = synth_sincos(d, theta, smooth);
+            v.x += amount * s * radius;
+            v.y += amount * c * radius;
+        }
+        1007 => {
+            let radius = (vx * vx + vy * vy + eps).powf(power / 2.0);
+            let (s, _) = synth_sincos(d, vx, smooth);
+            v.x += amount * radius * s;
+            v.y += amount * radius * vy;
+        }
+        17 => {
+            let mu = synth_value(d, vx) - 1.0;
+            vy = 2.0 * mu - vy;
+            v.x += amount * vx;
+            v.y += amount * vy;
+        }
+        18 => {
+            let mu = synth_value(d, vx) - 1.0;
+            let radius = synth_value(d, vy) - 1.0;
+            vy = 2.0 * mu - vy;
+            vx = 2.0 * radius - vx;
+            v.x += amount * vx;
+            v.y += amount * vy;
+        }
+        19 => {
+            let mut radius = (vx * vx + vy * vy).sqrt();
+            let theta = vx.atan2(vy);
+            radius = synth_interpolate(radius, synth_value(d, theta), smooth);
+            radius = radius.powf(power);
+            v.x += amount * radius * theta.sin();
+            v.y += amount * radius * theta.cos();
+        }
+        _ => {}
+    }
+    ctx.pass_z(a, v, amount);
+}
+
+const SYNTH_WGSL: &str = "fn synth_value(base: u32, theta: f32) -> f32 {
+  let a = prm[base];
+  let mixv = prm[base + 3u];
+  var tf = a;
+  var x = 0.0;
+  for (var k = 0u; k < 5u; k++) {
+    let o = base + 5u + 6u * k;
+    let amp = prm[o];
+    if (amp == 0.0) { continue; }
+    let skew = prm[o + 2u];
+    let frq = prm[o + 3u];
+    var z = prm[o + 4u] + theta * frq;
+    var y = z / (2.0 * PI);
+    y -= floor(y);
+    if (skew != 0.0) {
+      z = 0.5 + 0.5 * skew;
+      if (y > z) { y = 0.5 + 0.5 * (y - z) / (1.0 - z + EPS); } else { y = 0.5 - 0.5 * (z - y) / (z + EPS); }
+    }
+    switch (i32(prm[o + 1u])) {
+      case 0: { x = sin(y * 2.0 * PI); }
+      case 1: { x = cos(y * 2.0 * PI); }
+      case 2: { x = select(-1.0, 1.0, y > 0.5); }
+      case 3: { x = 1.0 - 2.0 * y; }
+      case 4: { x = select(2.0 * y - 1.0, 3.0 - 4.0 * y, y > 0.5); }
+      case 5: { x = 8.0 * (y - 0.5) * (y - 0.5) - 1.0; }
+      case 6: { x = 2.0 * sqrt(y) - 1.0; }
+      case 7: { y = (y - 0.5) * (2.0 * PI / frq); x = 1.0 / (cos(y) + EPS) - 1.0; }
+      case 8: { y = (y - 0.5) * (2.0 * PI / frq); z = cos(y); x = z / (1.0 + EPS - z); }
+      default: {}
+    }
+    switch (i32(prm[o + 5u])) {
+      case 0: { tf += amp * x; }
+      case 1: { tf *= 1.0 + amp * x; }
+      case 2: { z = a + amp * x; tf = select(z, tf, tf > z); }
+      case 3: { z = a + amp * x; tf = select(z, tf, tf < z); }
+      default: {}
+    }
+  }
+  return tf * mixv + (1.0 - mixv);
+}
+fn synth_bezier_quad_map(x_in: f32, m_in: f32) -> f32 {
+  var x = x_in;
+  var m = m_in;
+  var a = 1.0;
+  if (m < 0.0) { m = -m; a = -1.0; }
+  if (x < 0.0) { x = -x; a = -a; }
+  var im = 1e10;
+  if (m > 1.0e-10) { im = 1.0 / m; }
+  let l = select(2.0 * m, 2.0 - m, (2.0 - m) > 2.0 * m);
+  if (x > l || m == 1.0) { return a * x; }
+  if (m < 1.0 && x <= 1.0) {
+    var t = x;
+    if ((m - 0.5) * (m - 0.5) > 1e-10) { t = (-m + sqrt(m * m + (1.0 - 2.0 * m) * x)) / (1.0 - 2.0 * m); }
+    return a * (x + (m - 1.0) * t * t);
+  }
+  if (1.0 < m && x <= 1.0) {
+    var t = x;
+    if ((m - 2.0) * (m - 2.0) > 1e-10) { t = (-im + sqrt(im * im + (1.0 - 2.0 * im) * x)) / (1.0 - 2.0 * im); }
+    return a * (x + (m - 1.0) * t * t);
+  }
+  if (m < 1.0) {
+    let t = sqrt((x - 1.0) / (l - 1.0));
+    return a * (x + (m - 1.0) * t * t + 2.0 * (1.0 - m) * t + (m - 1.0));
+  }
+  let t = (1.0 - m) + sqrt((m - 1.0) * (m - 1.0) + (x - 1.0));
+  return a * (x + (m - 1.0) * t * t - 2.0 * (m - 1.0) * t + (m - 1.0));
+}
+fn synth_interpolate(x: f32, m: f32, lerp_type: i32) -> f32 {
+  if (lerp_type == 1) { return synth_bezier_quad_map(x, m); }
+  return x * m;
+}
+fn synth_sincos(base: u32, theta: f32, sine_type: i32) -> vec2<f32> {
+  let s = sin(theta);
+  let c = cos(theta);
+  if (sine_type == 0) { return vec2<f32>(s * synth_value(base, theta), c * synth_value(base, theta + PI / 2.0)); }
+  if (sine_type == 1) {
+    let mixv = prm[base + 3u];
+    return vec2<f32>((1.0 - mixv) * s + (synth_value(base, theta) - 1.0), (1.0 - mixv) * c + (synth_value(base, theta + PI / 2.0) - 1.0));
+  }
+  return vec2<f32>(s, c);
+}
+@body
+let power = D(2);
+let mixv = D(3);
+let smooth_t = i32(D(4));
+var vx = a.x;
+var vy = a.y;
+switch (i32(D(1))) {
+  case 5: {
+    let theta = atan2(vx, vy);
+    let radius = synth_interpolate(sqrt(vx * vx + vy * vy), synth_value(base, theta), smooth_t);
+    v.x += AMOUNT * radius * sin(theta);
+    v.y += AMOUNT * radius * cos(theta);
+  }
+  case 7: {
+    let tf = synth_value(base, vx);
+    v.x += AMOUNT * vx;
+    v.y += AMOUNT * synth_interpolate(vy, tf, smooth_t);
+  }
+  case 6: {
+    let tf = synth_value(base, vy);
+    v.x += AMOUNT * synth_interpolate(vx, tf, smooth_t);
+    v.y += AMOUNT * vy;
+  }
+  case 8: {
+    v.x += AMOUNT * synth_interpolate(vx, synth_value(base, vy), smooth_t);
+    v.y += AMOUNT * synth_interpolate(vy, synth_value(base, vx), smooth_t);
+  }
+  case 0: {
+    let theta = atan2(vx, vy);
+    let radius = synth_interpolate(pow(vx * vx + vy * vy + EPS, (power + 1.0) / 2.0), synth_value(base, theta), smooth_t);
+    v.x += AMOUNT * radius * sin(theta);
+    v.y += AMOUNT * radius * cos(theta);
+  }
+  case 1: {
+    let theta = atan2(vx, vy);
+    let r0 = sqrt(vx * vx + vy * vy) / ((vx * vx + vy * vy) / 4.0 + 1.0);
+    let radius = synth_interpolate(r0, synth_value(base, theta), smooth_t);
+    v.x += AMOUNT * radius * sin(theta);
+    v.y += AMOUNT * radius * cos(theta);
+  }
+  case 2: {
+    var radius = (rnd() + rnd() + 0.002 * rnd()) / 2.002;
+    let theta = 2.0 * PI * rnd() - PI;
+    vx = radius * sin(theta);
+    vy = radius * cos(theta);
+    radius = pow(radius * radius + EPS, power / 2.0);
+    radius = AMOUNT * synth_interpolate(radius, synth_value(base, theta), smooth_t);
+    v.x += vx * radius;
+    v.y += vy * radius;
+  }
+  case 3: {
+    var radius = 0.5 * (rnd() + rnd());
+    let theta = 2.0 * PI * rnd() - PI;
+    radius = pow(radius * radius + EPS, -power / 2.0);
+    radius = synth_interpolate(radius, synth_value(base, theta), smooth_t);
+    v.x += AMOUNT * radius * sin(theta);
+    v.y += AMOUNT * radius * cos(theta);
+  }
+  case 12: {
+    var radius = 1.0 + 0.1 * (rnd() + rnd() - 1.0) * power;
+    let theta = 2.0 * PI * rnd() - PI;
+    radius = synth_interpolate(radius, synth_value(base, theta), smooth_t);
+    v.x += AMOUNT * radius * sin(theta);
+    v.y += AMOUNT * radius * cos(theta);
+  }
+  case 13: {
+    let theta = 2.0 * PI * rnd() - PI;
+    let radius = synth_value(base, theta) + 0.1 * pow(rnd() + EPS, power);
+    v.x += AMOUNT * radius * sin(theta);
+    v.y += AMOUNT * radius * cos(theta);
+  }
+  case 14: {
+    let radius = pow(vx * vx + vy * vy + EPS, power / 2.0);
+    let theta = atan2(vx, vy) - 1.0 + synth_value(base, radius);
+    v.x += AMOUNT * radius * sin(theta);
+    v.y += AMOUNT * radius * cos(theta);
+  }
+  case 15: {
+    let radius = pow(vx * vx + vy * vy + EPS, power / 2.0);
+    let theta = atan2(vx, vy);
+    let mu = synth_value(base, radius) - 1.0;
+    vx += mu * cos(theta);
+    vy -= mu * sin(theta);
+    v.x += AMOUNT * vx;
+    v.y += AMOUNT * vy;
+  }
+  case 16: {
+    let r0 = pow(vx * vx + vy * vy + EPS, power / 2.0);
+    let theta = atan2(vx, vy) - 1.0 + synth_value(base, r0);
+    let radius = sqrt(vx * vx + vy * vy);
+    v.x += AMOUNT * radius * sin(theta);
+    v.y += AMOUNT * radius * cos(theta);
+  }
+  case 4: {
+    vy = 1.0 + 0.1 * (rnd() + rnd() - 1.0) * power;
+    let theta = 2.0 * asin((rnd() - 0.5) * 2.0);
+    vy = synth_interpolate(vy, synth_value(base, theta), smooth_t);
+    v.x += AMOUNT * (theta / PI);
+    v.y += AMOUNT * (vy - 1.0);
+  }
+  case 9: {
+    v.x += AMOUNT * (vx + synth_value(base, vy) - 1.0);
+    v.y += AMOUNT * vy;
+  }
+  case 10: {
+    v.x += AMOUNT * vx;
+    v.y += AMOUNT * (vy + synth_value(base, vx) - 1.0);
+  }
+  case 11: {
+    v.x += AMOUNT * (vx + synth_value(base, vy) - 1.0);
+    v.y += AMOUNT * (vy + synth_value(base, vx) - 1.0);
+  }
+  case 1001: {
+    v.x += AMOUNT * (synth_value(base, vx) - 1.0 + (1.0 - mixv) * sin(vx));
+    v.y += AMOUNT * (synth_value(base, vy) - 1.0 + (1.0 - mixv) * sin(vy));
+  }
+  case 1002: {
+    let radius = pow(vx * vx + vy * vy + EPS, power / 2.0);
+    let sc = synth_sincos(base, radius, smooth_t);
+    v.x += AMOUNT * (sc.x * vx - sc.y * vy);
+    v.y += AMOUNT * (sc.y * vx + sc.x * vy);
+  }
+  case 1003: {
+    let radius = pow(vx * vx + vy * vy + EPS, power / 2.0);
+    let sc = synth_sincos(base, atan2(vx, vy), smooth_t);
+    v.x += AMOUNT * sc.x / radius;
+    v.y += AMOUNT * sc.y * radius;
+  }
+  case 1004: {
+    let radius = pow(vx * vx + vy * vy + EPS, power / 4.0);
+    var theta = atan2(vx, vy) / 2.0;
+    if (rnd() < 0.5) { theta += PI; }
+    let sc = synth_sincos(base, theta, smooth_t);
+    v.x += AMOUNT * radius * sc.y;
+    v.y += AMOUNT * radius * sc.x;
+  }
+  case 1005: {
+    let theta = atan2(vx, vy) / PI;
+    let radius = PI * pow(vx * vx + vy * vy + EPS, power / 2.0);
+    let sc = synth_sincos(base, radius, smooth_t);
+    v.x = AMOUNT * sc.x * theta;
+    v.y = AMOUNT * sc.y * theta;
+  }
+  case 1006: {
+    var radius = sqrt(vx * vx + vy * vy);
+    let theta = atan2(vx, vy);
+    let mu = power * power + EPS;
+    radius += -2.0 * mu * trunc((radius + mu) / (2.0 * mu)) + radius * (1.0 - mu);
+    let sc = synth_sincos(base, theta, smooth_t);
+    v.x += AMOUNT * sc.x * radius;
+    v.y += AMOUNT * sc.y * radius;
+  }
+  case 1007: {
+    let radius = pow(vx * vx + vy * vy + EPS, power / 2.0);
+    let sc = synth_sincos(base, vx, smooth_t);
+    v.x += AMOUNT * radius * sc.x;
+    v.y += AMOUNT * radius * vy;
+  }
+  case 17: {
+    let mu = synth_value(base, vx) - 1.0;
+    v.x += AMOUNT * vx;
+    v.y += AMOUNT * (2.0 * mu - vy);
+  }
+  case 18: {
+    let mu = synth_value(base, vx) - 1.0;
+    let radius = synth_value(base, vy) - 1.0;
+    v.x += AMOUNT * (2.0 * radius - vx);
+    v.y += AMOUNT * (2.0 * mu - vy);
+  }
+  case 19: {
+    let theta = atan2(vx, vy);
+    var radius = synth_interpolate(sqrt(vx * vx + vy * vy), synth_value(base, theta), smooth_t);
+    radius = java_pow(radius, power);
+    v.x += AMOUNT * radius * sin(theta);
+    v.y += AMOUNT * radius * cos(theta);
+  }
+  default: {}
+}
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }";
 
 /// Initial state of `new java.util.Random(seed)`.
 fn java_random_seed(seed: i64) -> u64 {
