@@ -30,7 +30,7 @@ use super::complex::Complex;
 use super::glsl::{mat2, vec2};
 #[allow(unused_imports)]
 use crate::model::Affine;
-use std::f64::consts::PI;
+use std::f64::consts::{FRAC_1_SQRT_2, PI};
 
 /// `Hexaplay3DFunc` / `Hexnix3DFunc` segment cycling: JWildfire draws a mode (60 degree steps for
 /// `rswtch <= 1`) per instance and redraws it after 6 calls in 60 degree mode or 3 calls in 120
@@ -6325,6 +6325,173 @@ v.z += AMOUNT * (sin(D(4) * a.y) - cos(D(5) * a.z)) * cos(D(6) * a.x) + sin(D(7)
         wgsl: "v.x += AMOUNT * (sin(D(0) * a.y + D(4)) - cos(D(1) * a.x + D(4)));
 v.y += AMOUNT * (sin(D(2) * a.x + D(5)) - cos(D(3) * a.y + D(5)));
 if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "penrose_fold",
+        params: &[ParamDef::new("scale", 2.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let phi = 1.618033988749895;
+            let (x, y) = (a.x * d[0], a.y * d[0]);
+            let (u, w) = (x + phi * y, y - x / phi);
+            let (fu, fw) = (u - java_round(u), w - java_round(w));
+            v.x += amount * ((fu - fw / phi) / d[0]);
+            v.y += amount * ((fw + fu / phi) / d[0]);
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "let phi = 1.618033988749895;
+let x = a.x * D(0);
+let y = a.y * D(0);
+let u = x + phi * y;
+let w = y - x / phi;
+let fu = u - java_round(u);
+let fw = w - java_round(w);
+v.x += AMOUNT * ((fu - fw / phi) / D(0));
+v.y += AMOUNT * ((fw + fu / phi) / D(0));
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    simple(
+        "petal",
+        false,
+        |_, ctx, a, v, amount| {
+            let c = a.x.cos();
+            let bx = c * a.y.cos();
+            let by = a.x.sin() * a.y.cos();
+            v.x += amount * c * (bx * bx * bx);
+            v.y += amount * c * (by * by * by);
+            ctx.pass_z(a, v, amount);
+        },
+        "let c = cos(a.x);
+let bx = c * cos(a.y);
+let by = sin(a.x) * cos(a.y);
+v.x += AMOUNT * c * (bx * bx * bx);
+v.y += AMOUNT * c * (by * by * by);
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    ),
+    VarDef {
+        name: "petal3D",
+        params: &[
+            ParamDef::int("mode", 1.0, 0.0, 4.0),
+            ParamDef::new("x1", 0.0),
+            ParamDef::new("x2", 0.0),
+            ParamDef::new("x3", 0.0),
+            ParamDef::new("x4", 0.0),
+            ParamDef::new("x5", 0.0),
+            ParamDef::new("x6", 0.0),
+            ParamDef::new("y1", 0.0),
+            ParamDef::new("y2", 0.0),
+            ParamDef::new("y3", 0.0),
+            ParamDef::new("y4", 0.0),
+            ParamDef::new("y5", 0.0),
+            ParamDef::new("y6", 0.0),
+            ParamDef::new("z1", 0.0),
+            ParamDef::new("z2", 0.0),
+            ParamDef::new("z3", 0.0),
+            ParamDef::new("z4", 0.0),
+            ParamDef::new("z5", 0.0),
+            ParamDef::new("z6", 0.0),
+            ParamDef::new("warp", 1.0),
+        ],
+        kind: VarKind::Normal,
+        is_3d: true,
+        apply: |d, _, a, v, amount| {
+            // product of sin(p + o1) cos(q + o2) sin(p + o3) cos(q + o4) sin(p + o5) cos(q + o6)
+            let tri = |p: f64, q: f64, k: usize, first_cos: bool| {
+                let f = |t: f64| if first_cos { t.cos() } else { t.sin() };
+                (f(p + d[k]) * (q + d[k + 1]).cos()) * (f(p + d[k + 2]) * (q + d[k + 3]).cos()) * (f(p + d[k + 4]) * (q + d[k + 5]).cos())
+            };
+            let ax = (a.x * d[19]).cos();
+            v.x += amount * ax * tri(a.x, a.y, 1, true);
+            v.y += amount * ax * tri(a.x, a.y, 7, false);
+            v.z += match d[0] as i32 {
+                0 => amount * a.z,
+                1 => amount * ax * tri(a.z, a.x, 13, false),
+                2 => amount * ax * tri(a.z, a.y, 13, false),
+                3 => amount * ax * tri(a.y, a.z, 13, false),
+                _ => amount * ax * tri(a.x, a.z, 13, false),
+            };
+        },
+        prepare: Some(|p, _| {
+            let mut d = p.to_vec();
+            d[0] = (limit_value(p[0], 0.0, 4.0) as i32) as f64;
+            d
+        }),
+        wgsl: "fn petal3D_tri(p: f32, q: f32, k: u32, first_cos: bool) -> f32 {
+  var f = vec3<f32>(sin(p + prm[k]), sin(p + prm[k + 2u]), sin(p + prm[k + 4u]));
+  if (first_cos) { f = vec3<f32>(cos(p + prm[k]), cos(p + prm[k + 2u]), cos(p + prm[k + 4u])); }
+  return (f.x * cos(q + prm[k + 1u])) * (f.y * cos(q + prm[k + 3u])) * (f.z * cos(q + prm[k + 5u]));
+}
+@body
+let ax = cos(a.x * D(19));
+v.x += AMOUNT * ax * petal3D_tri(a.x, a.y, base + 1u, true);
+v.y += AMOUNT * ax * petal3D_tri(a.x, a.y, base + 7u, false);
+switch (i32(D(0))) {
+  case 0: { v.z += AMOUNT * a.z; }
+  case 1: { v.z += AMOUNT * ax * petal3D_tri(a.z, a.x, base + 13u, false); }
+  case 2: { v.z += AMOUNT * ax * petal3D_tri(a.z, a.y, base + 13u, false); }
+  case 3: { v.z += AMOUNT * ax * petal3D_tri(a.y, a.z, base + 13u, false); }
+  default: { v.z += AMOUNT * ax * petal3D_tri(a.x, a.z, base + 13u, false); }
+}",
+    },
+    VarDef {
+        name: "petal3D_apo",
+        params: &[ParamDef::new("width", 1.0), ParamDef::new("Zshape", 0.25), ParamDef::new("scale1", 0.25), ParamDef::new("scale2", 0.25), ParamDef::new("style", 0.0)],
+        kind: VarKind::Normal,
+        is_3d: true,
+        apply: |d, ctx, a, v, amount| {
+            // JWildfire draws an unused sign
+            ctx.random();
+            let (width, zshape, s1, s2, style) = (d[0], d[1], d[2], d[3], d[4]);
+            let c = a.x.cos();
+            let bx = c * a.y.cos();
+            let by = a.x.sin() * a.y.cos();
+            v.x += amount * c * (bx * bx * bx);
+            let py = amount * c * (by * by * by) * width;
+            v.y += py;
+            let base = -(a.x * s1 * PI).sin() * 0.5;
+            let squeeze = if s1.abs() > 1.0 { s1.abs() - 1.0 } else { 0.0 };
+            let (shaper, shaper2) = if s1.abs() > 1.0 {
+                (base + a.x * squeeze * 0.5 + (a.y * s2 * PI).abs().sin(), base + a.x * squeeze * 0.5 + py * s2 * 0.5)
+            } else {
+                (base + (a.y * s2 * PI).abs().sin(), base + py * s2 * 0.5)
+            };
+            let smth = 0.5 - sqr(style);
+            let pz = if style.abs() > FRAC_1_SQRT_2 {
+                shaper2 * if style >= 0.0 { 1.0 } else { -1.0 }
+            } else if style < 0.0 {
+                smth * 2.0 * shaper - (1.0 - smth * 2.0) * shaper2
+            } else if style > 0.0 {
+                smth * 2.0 * shaper + (1.0 - smth * 2.0) * shaper2
+            } else {
+                shaper
+            };
+            v.z += amount * pz * zshape;
+        },
+        prepare: None,
+        wgsl: "_ = rnd();
+let style = D(4);
+let c = cos(a.x);
+let bx = c * cos(a.y);
+let by = sin(a.x) * cos(a.y);
+v.x += AMOUNT * c * (bx * bx * bx);
+let py = AMOUNT * c * (by * by * by) * D(0);
+v.y += py;
+var sh = -sin(a.x * D(2) * PI) * 0.5;
+if (abs(D(2)) > 1.0) { sh += a.x * (abs(D(2)) - 1.0) * 0.5; }
+let shaper = sh + sin(abs(a.y * D(3) * PI));
+let shaper2 = sh + py * D(3) * 0.5;
+let smth = 0.5 - style * style;
+var pz = shaper;
+if (abs(style) > 0.7071067811865476) {
+  pz = shaper2 * select(-1.0, 1.0, style >= 0.0);
+} else if (style < 0.0) {
+  pz = smth * 2.0 * shaper - (1.0 - smth * 2.0) * shaper2;
+} else if (style > 0.0) {
+  pz = smth * 2.0 * shaper + (1.0 - smth * 2.0) * shaper2;
+}
+v.z += AMOUNT * pz * D(1);",
     },
 ];
 
