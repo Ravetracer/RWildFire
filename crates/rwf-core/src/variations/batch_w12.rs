@@ -5026,6 +5026,238 @@ v.y += AMOUNT * val * sin(theta);
 if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
     },
     VarDef {
+        name: "ringer",
+        params: &[
+            ParamDef::int("hide_inner", 0.0, 0.0, 1.0),
+            ParamDef::new("innerradius", 0.5),
+            ParamDef::new("outerradius", 1.0),
+            ParamDef::range("thickness", 0.0, 0.0, 1.0),
+            ParamDef::range("contrast", 0.0, 0.0, 1.0),
+            ParamDef::new("pow", 1.0),
+            ParamDef::range("scatter_area", 0.0, -1.0, 1.0),
+            ParamDef::int("hide_outer", 1.0, 0.0, 1.0),
+        ],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            // d = [hide_inner, innerradius, outerradius, thickness, contrast, pow, scatter_area, hide_outer,
+            //      radius1, radius2, gamma, abs_pow, cA]
+            let r = (a.x * a.x + a.y * a.y).sqrt();
+            let alpha = d[1] / r;
+            if r < d[8] {
+                if d[0] as i32 == 0 {
+                    let (sp, cp) = (2.0 * M_PI * ctx.random()).sin_cos();
+                    let rr = if ctx.random() < d[10] { d[8] } else { d[9] };
+                    v.x += amount * (rr * cp);
+                    v.y += amount * (rr * sp);
+                } else {
+                    // The last point is kept across calls (per render thread here).
+                    [v.x, v.y] = *state_slot(ctx, d, 0, [0.0; 2]);
+                }
+            } else if ctx.random() > d[4] * alpha.powf(d[11]) {
+                v.x += amount * a.x;
+                v.y += amount * a.y;
+            } else {
+                v.x += amount * alpha * alpha * a.x;
+                v.y += amount * alpha * alpha * a.y;
+            }
+            *state_slot(ctx, d, 0, [0.0; 2]) = [v.x, v.y];
+            let cr = d[2];
+            let rad = (v.x * v.x + v.y * v.y).sqrt();
+            let ang = v.y.atan2(v.x);
+            let rdc = cr + ctx.random() * 0.5 * d[12];
+            let esc = rad > cr;
+            let cr0 = d[7] as i32 == 1;
+            v.do_hide = false;
+            if cr0 && esc {
+                v.x = 0.0;
+                v.y = 0.0;
+                v.do_hide = true;
+            } else if !cr0 && esc {
+                v.x = amount * rdc * ang.cos();
+                v.y = amount * rdc * ang.sin();
+            } else {
+                v.x *= amount;
+                v.y *= amount;
+            }
+        },
+        prepare: Some(|p, _| {
+            let mut d = p.to_vec();
+            d[0] = limit_value(p[0], 0.0, 1.0) as i32 as f64;
+            d[3] = limit_value(p[3], 0.0, 1.0);
+            d[4] = limit_value(p[4], 0.0, 1.0);
+            d[7] = limit_value(p[7], 0.0, 1.0) as i32 as f64;
+            let r1 = d[1] + d[3];
+            let r2 = sqr(d[1]) / r1;
+            d.extend([r1, r2, r1 / (r1 + r2), p[5].abs(), java_max(-1.0, java_min(p[6], 1.0))]);
+            d
+        }),
+        // GPU: no memory of the last point; hidden inner points restart at the origin.
+        wgsl: "let r = sqrt(a.x * a.x + a.y * a.y);
+let alpha = D(1) / r;
+if (r < D(8)) {
+  if (i32(D(0)) == 0) {
+    let phi = 2.0 * PI * rnd();
+    var rr = D(9);
+    if (rnd() < D(10)) { rr = D(8); }
+    v.x += AMOUNT * (rr * cos(phi));
+    v.y += AMOUNT * (rr * sin(phi));
+  } else {
+    v.x = 0.0;
+    v.y = 0.0;
+  }
+} else if (rnd() > D(4) * pow(alpha, D(11))) {
+  v.x += AMOUNT * a.x;
+  v.y += AMOUNT * a.y;
+} else {
+  v.x += AMOUNT * alpha * alpha * a.x;
+  v.y += AMOUNT * alpha * alpha * a.y;
+}
+let cr = D(2);
+let rad = sqrt(v.x * v.x + v.y * v.y);
+let ang = atan2(v.y, v.x);
+let rdc = cr + rnd() * 0.5 * D(12);
+let esc = rad > cr;
+let cr0 = i32(D(7)) == 1;
+v.hide = 0.0;
+if (cr0 && esc) {
+  v.x = 0.0;
+  v.y = 0.0;
+  v.hide = 1.0;
+} else if (!cr0 && esc) {
+  v.x = AMOUNT * rdc * cos(ang);
+  v.y = AMOUNT * rdc * sin(ang);
+} else {
+  v.x *= AMOUNT;
+  v.y *= AMOUNT;
+}",
+    },
+    VarDef {
+        name: "rings3",
+        params: &[ParamDef::new("val", 0.01), ParamDef::new("n", 0.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            // d = [val, n, dx, c]
+            let l = a.rad();
+            let (dx, c) = (d[2], d[3]);
+            if dx == 0.0 || l == 0.0 {
+                return;
+            }
+            let k = (((l / dx + 1.0) as i32) / 2) as f64;
+            let r = amount * (2.0 - dx * (k * 2.0 / l + 1.0) - d[1] * (k * c - 1.0) / l);
+            v.x += r * a.x;
+            v.y += r * a.y;
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: Some(|p, _| {
+            let dx = p[0] * p[0] + EPSILON;
+            vec![p[0], p[1], dx, 2.0 * (dx - dx * dx)]
+        }),
+        wgsl: "let l = sqrt(a.x * a.x + a.y * a.y);
+let dx = D(2);
+if (dx != 0.0 && l != 0.0) {
+  let k = f32(i32(l / dx + 1.0) / 2);
+  let r = AMOUNT * (2.0 - dx * (k * 2.0 / l + 1.0) - D(1) * (k * D(3) - 1.0) / l);
+  v.x += r * a.x;
+  v.y += r * a.y;
+  if (PRESERVE_Z) { v.z += AMOUNT * a.z; }
+}",
+    },
+    VarDef {
+        name: "ripple",
+        params: &[
+            ParamDef::new("frequency", 2.0),
+            ParamDef::new("velocity", 1.0),
+            ParamDef::new("amplitude", 0.5),
+            ParamDef::new("centerx", 0.0),
+            ParamDef::new("centery", 0.0),
+            ParamDef::new("phase", 0.0),
+            ParamDef::new("scale", 1.0),
+            ParamDef::int("fixed_dist_calc", 0.0, 0.0, 1.0),
+        ],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            // d = [frequency, velocity, amplitude, centerx, centery, phase, scale, fixed_dist_calc,
+            //      f, s, p, is, pxa, pixa, vxp]
+            let (f, s, p, is, pxa, pixa, vxp) = (d[8], d[9], d[10], d[11], d[12], d[13], d[14]);
+            let (x, y) = ((a.x * s) - d[3], (a.y * s) + d[4]);
+            let mut dd = if d[7] != 0.0 { (x * x + y * y).sqrt() } else { (x * x * y * y).sqrt() };
+            if dd < SMALL_EPSILON {
+                dd = SMALL_EPSILON;
+            }
+            let (nx, ny) = (x / dd, y / dd);
+            let wave = (f * dd - vxp).cos();
+            let (d1, d2) = (wave * pxa + dd, wave * pixa + dd);
+            let (u1, v1) = (d[3] + nx * d1, -d[4] + ny * d1);
+            let (u2, v2) = (d[3] + nx * d2, -d[4] + ny * d2);
+            v.x = amount * (u1 + (u2 - u1) * p) * is;
+            v.y = amount * (v1 + (v2 - v1) * p) * is;
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: Some(|p, _| {
+            let mut d = p.to_vec();
+            d[7] = ftoi(p[7]) as f64;
+            let amp = p[2] * 0.01;
+            let ph = p[5] * M_2PI - M_PI;
+            let s = if p[6] == 0.0 { SMALL_EPSILON } else { p[6] };
+            d.extend([p[0] * 5.0, s, ph, 1.0 / s, ph * amp, (M_PI - ph) * amp, p[1] * ph]);
+            d
+        }),
+        wgsl: "let x = a.x * D(9) - D(3);
+let y = a.y * D(9) + D(4);
+var dd = sqrt(x * x * y * y);
+if (D(7) != 0.0) { dd = sqrt(x * x + y * y); }
+dd = max(dd, EPS);
+let n = vec2<f32>(x, y) / dd;
+let wave = cos(D(8) * dd - D(14));
+let d1 = wave * D(12) + dd;
+let d2 = wave * D(13) + dd;
+let c = vec2<f32>(D(3), -D(4));
+let p1 = c + n * d1;
+let p2 = c + n * d2;
+let q = mix(p1, p2, D(10));
+v.x = AMOUNT * q.x * D(11);
+v.y = AMOUNT * q.y * D(11);
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    simple(
+        "rippled",
+        false,
+        |_, ctx, a, v, amount| {
+            let d = sqr(a.x) + sqr(a.y);
+            v.x += amount / 2.0 * ((d + SMALL_EPSILON).tanh() * (2.0 * a.x));
+            v.y += amount / 2.0 * ((d + SMALL_EPSILON).cos() * (2.0 * a.y));
+            ctx.pass_z(a, v, amount);
+        },
+        "let d = a.x * a.x + a.y * a.y;
+v.x += AMOUNT / 2.0 * (tanh(d + EPS) * (2.0 * a.x));
+v.y += AMOUNT / 2.0 * (cos(d + EPS) * (2.0 * a.y));
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    ),
+    VarDef {
+        name: "robinson",
+        params: &[ParamDef::new("scale", 1.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let lat = java_max(-1.5707963267948966, java_min(1.5707963267948966, a.y * d[0]));
+            let t = lat.abs() / 1.5707963267948966;
+            let xs = 1.0 - 0.42 * t * t;
+            let ys = 1.0 + 0.12 * t;
+            v.x += amount * a.x * java_max(xs, 0.05) / d[0];
+            v.y += amount * lat * ys / d[0];
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "let lat = clamp(a.y * D(0), -HALF_PI, HALF_PI);
+let t = abs(lat) / HALF_PI;
+v.x += AMOUNT * a.x * max(1.0 - 0.42 * t * t, 0.05) / D(0);
+v.y += AMOUNT * lat * (1.0 + 0.12 * t) / D(0);
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
         name: "post_ztranslate_wf",
         params: &[],
         kind: VarKind::Post,
