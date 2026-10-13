@@ -410,6 +410,17 @@ fn jsignum(x: f64) -> f64 {
     }
 }
 
+/// GPU stand-in for `fmod(random(Integer.MAX_VALUE), re)`: the period in which the values repeat
+/// (smallest integer multiple of `re`), or 0 if there is none below 10000.
+fn juliac_period(re: f64) -> f64 {
+    (1..=10000)
+        .find(|&n| {
+            let t = n as f64 / re;
+            t != 0.0 && (t - t.round()).abs() < 1e-9
+        })
+        .map_or(0.0, |n| n as f64)
+}
+
 pub static DEFS: &[VarDef] = &[
     VarDef {
         name: "harmonograph_js",
@@ -2569,5 +2580,160 @@ if (zmode == 0) {
 } else {
   v.z += zq + a.z;
 }",
+    },
+    VarDef {
+        name: "julia3Dq",
+        // Default power: JWildfire picks a random one (+-2..7) for new instances
+        params: &[ParamDef::int("power", 3.0, -10.0, 10.0), ParamDef::int("divisor", 2.0, -10.0, 10.0)],
+        kind: VarKind::Normal,
+        is_3d: true,
+        // d = [power, divisor, inv_power, abs_inv_power, half_inv_power, inv_power_2pi]
+        apply: |d, ctx, a, v, amount| {
+            let ang = a.y.atan2(a.x) * d[2] + ctx.random_int(i32::MAX as usize) as f64 * d[5];
+            let z = a.z * d[3];
+            let r2d = a.x * a.x + a.y * a.y;
+            let r = amount * (r2d + z * z).powf(d[4]);
+            v.z += r * z;
+            let r = r * r2d.sqrt();
+            v.x += r * ang.cos();
+            v.y += r * ang.sin();
+        },
+        prepare: Some(|p, _| {
+            let (power, divisor) = (ftoi(p[0]) as f64, ftoi(p[1]) as f64);
+            let inv = divisor / power;
+            vec![power, divisor, inv, inv.abs(), 0.5 * inv - 0.5, M_2PI / power]
+        }),
+        // GPU: random multiple of 2 pi / power reduced modulo |power| (same angles)
+        wgsl: "let ang = atan2(a.y, a.x) * D(2) + floor(rnd() * abs(D(0))) * D(5);
+let z = a.z * D(3);
+let r2d = a.x * a.x + a.y * a.y;
+let r = AMOUNT * java_pow(r2d + z * z, D(4));
+v.z += r * z;
+v.x += r * sqrt(r2d) * cos(ang);
+v.y += r * sqrt(r2d) * sin(ang);",
+    },
+    VarDef {
+        name: "juliac",
+        // Default re: JWildfire picks a random one for new instances
+        params: &[ParamDef::new("re", 4.0), ParamDef::new("im", 0.5), ParamDef::new("dist", 1.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        // d = [re, im, dist, period]
+        apply: |d, ctx, a, v, amount| {
+            let re = 1.0 / (d[0] + SMALL_EPSILON);
+            let im = d[1] / 100.0;
+            let arg = a.y.atan2(a.x) + fmod(ctx.random_int(i32::MAX as usize) as f64, d[0]) * 2.0 * M_PI;
+            let lnmod = d[2] * 0.5 * (a.x * a.x + a.y * a.y).ln();
+            let ang = arg * re + lnmod * im;
+            let mod2 = (lnmod * re - arg * im).exp();
+            v.x += amount * mod2 * ang.cos();
+            v.y += amount * mod2 * ang.sin();
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: Some(|p, _| vec![p[0], p[1], p[2], juliac_period(p[0])]),
+        wgsl: "let re = 1.0 / D(0);
+let im = D(1) / 100.0;
+var k = floor(rnd() * 1000000.0);
+if (D(3) > 0.0) { k = floor(rnd() * D(3)); }
+let arg = atan2(a.y, a.x) + (k % D(0)) * TWO_PI;
+let lnmod = D(2) * 0.5 * log(a.x * a.x + a.y * a.y);
+let ang = arg * re + lnmod * im;
+let mod2 = exp(lnmod * re - arg * im);
+v.x += AMOUNT * mod2 * cos(ang);
+v.y += AMOUNT * mod2 * sin(ang);
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "julian2",
+        // Default power: JWildfire picks a random one (+-2..7) for new instances
+        params: &[
+            ParamDef::int("power", 3.0, -10.0, 10.0),
+            ParamDef::new("dist", 1.0),
+            ParamDef::new("a", 1.0),
+            ParamDef::new("b", 0.0),
+            ParamDef::new("c", 0.0),
+            ParamDef::new("d", 1.0),
+            ParamDef::new("e", 0.0),
+            ParamDef::new("f", 0.0)
+        ],
+        kind: VarKind::Normal,
+        is_3d: false,
+        // d = [power, dist, a..f, abs_n, cn]
+        apply: |d, ctx, a, v, amount| {
+            if d[0] == 0.0 {
+                return;
+            }
+            let x = d[2] * a.x + d[3] * a.y + d[6];
+            let y = d[4] * a.x + d[5] * a.y + d[7];
+            let k = (ctx.random_int(i32::MAX as usize) as i64 % d[8] as i64) as f64;
+            let angle = (y.atan2(x) + M_2PI * k) / d[0];
+            let r = amount * (x * x + y * y).powf(d[9]);
+            v.x += r * angle.cos();
+            v.y += r * angle.sin();
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: Some(|p, _| {
+            let mut d = p.to_vec();
+            let power = ftoi(p[0]) as f64;
+            d[0] = power;
+            d.extend([power.abs(), p[1] / power * 0.5]);
+            d
+        }),
+        wgsl: "if (D(0) != 0.0) {
+  let x = D(2) * a.x + D(3) * a.y + D(6);
+  let y = D(4) * a.x + D(5) * a.y + D(7);
+  let angle = (atan2(y, x) + TWO_PI * floor(rnd() * D(8))) / D(0);
+  let r = AMOUNT * java_pow(x * x + y * y, D(9));
+  v.x += r * cos(angle);
+  v.y += r * sin(angle);
+  if (PRESERVE_Z) { v.z += AMOUNT * a.z; }
+}",
+    },
+    VarDef {
+        name: "julian3Dx",
+        // Default power: JWildfire picks a random one (+-2..7) for new instances
+        params: &[
+            ParamDef::int("power", 3.0, -10.0, 10.0),
+            ParamDef::new("dist", 1.0),
+            ParamDef::new("a", 1.0),
+            ParamDef::new("b", 0.0),
+            ParamDef::new("c", 0.0),
+            ParamDef::new("d", 1.0),
+            ParamDef::new("e", 0.0),
+            ParamDef::new("f", 0.0)
+        ],
+        kind: VarKind::Normal,
+        is_3d: true,
+        // d = [power, dist, a..f, abs_n, cn]
+        apply: |d, ctx, a, v, amount| {
+            let z = a.x / d[8];
+            let rsq = a.x * a.x + a.y * a.y;
+            let rout = amount * (rsq + z * z).powf(d[9]);
+            v.z += rout * z;
+            let x = d[2] * a.x + d[3] * a.y + d[6];
+            let y = d[4] * a.x + d[5] * a.y + d[7];
+            let rand = ((ctx.random() * d[8]) as i32) as f64;
+            let alpha = (y.atan2(x) + M_2PI * rand) / d[0];
+            let gamma = rout * rsq.sqrt();
+            v.x += gamma * alpha.cos();
+            v.y += gamma * alpha.sin();
+        },
+        prepare: Some(|p, _| {
+            let mut d = p.to_vec();
+            let power = ftoi(p[0]) as f64;
+            d[0] = power;
+            d.extend([power.abs(), (p[1] / power - 1.0) / 2.0]);
+            d
+        }),
+        wgsl: "let z = a.x / D(8);
+let rsq = a.x * a.x + a.y * a.y;
+let rout = AMOUNT * java_pow(rsq + z * z, D(9));
+v.z += rout * z;
+let x = D(2) * a.x + D(3) * a.y + D(6);
+let y = D(4) * a.x + D(5) * a.y + D(7);
+let alpha = (atan2(y, x) + TWO_PI * trunc(rnd() * D(8))) / D(0);
+let gamma = rout * sqrt(rsq);
+v.x += gamma * cos(alpha);
+v.y += gamma * sin(alpha);",
     },
 ];
