@@ -7273,6 +7273,243 @@ if (cr0 && esc) {
 }",
     },
     VarDef {
+        name: "sphere_nja",
+        params: &[
+            ParamDef::new("circle_a", 1.0),
+            ParamDef::new("circle_b", 1.0),
+            ParamDef::new("shift_x", 0.0),
+            ParamDef::new("shift_y", 0.0),
+            ParamDef::new("shift_z", 0.0),
+            ParamDef::new("stretch", 1.0),
+        ],
+        kind: VarKind::Normal,
+        is_3d: true,
+        apply: |d, _, a, v, amount| {
+            // d = [circle_a, circle_b, shift_x, shift_y, shift_z, stretch]
+            let (x, y, z) = (a.x - d[2], a.y - d[3], a.z - d[4]);
+            let sq = (x * x + y * y).sqrt() + SMALL_EPSILON;
+            let t = sq / d[5] - M_PI / 2.0;
+            let r = t.cos() * amount;
+            let zz = t.sin() * amount;
+            v.x += r * (x / sq);
+            v.y += r * (y / sq);
+            v.z += zz;
+            v.x += r * z * (x / sq);
+            v.y += r * z * (y / sq);
+            v.z += z * zz / (r * r + zz * zz);
+            v.x += d[2];
+            v.y += d[3];
+            v.z += d[4];
+        },
+        prepare: None,
+        wgsl: "let x = a.x - D(2);
+let y = a.y - D(3);
+let z = a.z - D(4);
+let sq = sqrt(x * x + y * y) + EPS;
+let t = sq / D(5) - PI / 2.0;
+let r = cos(t) * AMOUNT;
+let zz = sin(t) * AMOUNT;
+v.x += r * (x / sq) + r * z * (x / sq) + D(2);
+v.y += r * (y / sq) + r * z * (y / sq) + D(3);
+v.z += zz + z * zz / (r * r + zz * zz) + D(4);",
+    },
+    VarDef {
+        name: "spherical3D_wf",
+        params: &[ParamDef::int("invert", 0.0, 0.0, 1.0), ParamDef::new("exponent", 2.0)],
+        kind: VarKind::Normal,
+        is_3d: true,
+        apply: |d, _, a, v, amount| {
+            // d = [invert, exponent, regular_form]
+            let r2 = a.x * a.x + a.y * a.y + a.z * a.z + SMALL_EPSILON;
+            let r = if d[2] != 0.0 { amount / r2 } else { amount / r2.powf(d[1] / 2.0) };
+            if d[0] as i32 == 0 {
+                v.x += a.x * r;
+                v.y += a.y * r;
+                v.z += a.z * r;
+            } else {
+                v.x -= a.x * r;
+                v.y -= a.y * r;
+                v.z -= a.z * r;
+            }
+        },
+        prepare: Some(|p, _| vec![ftoi(p[0]) as f64, p[1], if (p[1] - 2.0).abs() < EPSILON { 1.0 } else { 0.0 }]),
+        wgsl: "let r2 = a.x * a.x + a.y * a.y + a.z * a.z + EPS;
+var r = AMOUNT / r2;
+if (D(2) == 0.0) { r = AMOUNT / pow(r2, D(1) / 2.0); }
+if (i32(D(0)) != 0) { r = -r; }
+v.x += a.x * r;
+v.y += a.y * r;
+v.z += a.z * r;",
+    },
+    VarDef {
+        name: "sphericalN",
+        params: &[ParamDef::new("power", 3.0), ParamDef::new("dist", 1.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let r = (sqr(a.x) + sqr(a.y)).sqrt().powf(d[1]);
+            let n = (d[0] * ctx.random()).floor() as i32;
+            let alpha = a.y.atan2(a.x) + n as f64 * M_2PI / d[0].floor();
+            if r > SMALL_EPSILON {
+                v.x += amount * alpha.cos() / r;
+                v.y += amount * alpha.sin() / r;
+            }
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "let r = pow(sqrt(a.x * a.x + a.y * a.y), D(1));
+let n = floor(D(0) * rnd());
+let alpha = atan2(a.y, a.x) + n * TWO_PI / floor(D(0));
+if (r > EPS) {
+  v.x += AMOUNT * cos(alpha) / r;
+  v.y += AMOUNT * sin(alpha) / r;
+}
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "sph_harmonic",
+        params: &[ParamDef::int("l", 2.0, 0.0, 12.0), ParamDef::int("m", 1.0, 0.0, 12.0), ParamDef::new("strength", 0.3)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let theta = a.y.atan2(a.x);
+            let r = (a.x * a.x + a.y * a.y).sqrt();
+            let harm = (d[0] * theta).cos() * (d[1] * theta).cos();
+            let nr = r * (1.0 + d[2] * harm);
+            v.x += amount * nr * theta.cos();
+            v.y += amount * nr * theta.sin();
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: Some(|p, _| vec![(p[0] as i32) as f64, (p[1] as i32) as f64, p[2]]),
+        wgsl: "let theta = atan2(a.y, a.x);
+let nr = sqrt(a.x * a.x + a.y * a.y) * (1.0 + D(2) * cos(D(0) * theta) * cos(D(1) * theta));
+v.x += AMOUNT * nr * cos(theta);
+v.y += AMOUNT * nr * sin(theta);
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "sphtiling3v2",
+        params: &[
+            ParamDef::new("a", 0.5),
+            ParamDef::new("b", 1.0),
+            ParamDef::new("c", 1.0),
+            ParamDef::new("d", 0.5),
+            ParamDef::new("e", 1.0),
+            ParamDef::new("f", 0.5),
+            ParamDef::int("dc", 1.0, 0.0, 1.0),
+            ParamDef::new("dc1", 0.3),
+            ParamDef::new("dc2", 0.5),
+        ],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            // d = [a, b, c, d, e, f, dc, dc1, dc2]
+            const M_SQRT3_2: f64 = 0.8660254037844386;
+            // Java iterates one internal point across calls (per render thread here).
+            let [mut x, mut y] = *state_slot(ctx, d, 0, [0.0; 2]);
+            let (ux, uy);
+            if ctx.random() < d[0] {
+                let n = (3.0 * ctx.random()).floor();
+                let r = d[1] / M_SQRT3_2;
+                let (x0, y0) = (r * (n * M_2PI / 3.0).cos(), r * (n * M_2PI / 3.0).sin());
+                x -= x0;
+                y -= y0;
+                let rr = d[2] / (x * x + y * y + SMALL_EPSILON);
+                (ux, uy) = (x * rr + x0, y * rr + y0);
+            } else {
+                let rr = d[4] / (x * x + y * y + SMALL_EPSILON);
+                let (sx, sy) = (x * rr, y * rr);
+                (ux, uy) = (0.0411259 * (sx * d[5] - sy * M_SQRT3_2), 0.0411259 * (sx * M_SQRT3_2 + sy * d[3]));
+            }
+            if d[6] as i32 == 1 {
+                v.color = if a.x < 0.0 { d[8] } else { d[7] };
+            }
+            *state_slot(ctx, d, 0, [0.0; 2]) = [ux, uy];
+            v.x += amount * ux;
+            v.y += amount * uy;
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: Some(|p, _| {
+            let mut d = p.to_vec();
+            d[6] = limit_value(ftoi(p[6]), 0, 1) as f64;
+            d
+        }),
+        // GPU: no state across calls; the internal point is iterated 16 times from the origin.
+        wgsl: "let s32 = 0.8660254037844386;
+var p = vec2<f32>(0.0);
+for (var i = 0; i < 16; i++) {
+  if (rnd() < D(0)) {
+    let n = floor(3.0 * rnd());
+    let r = D(1) / s32;
+    let c0 = r * vec2<f32>(cos(n * TWO_PI / 3.0), sin(n * TWO_PI / 3.0));
+    let q = p - c0;
+    p = q * (D(2) / (dot(q, q) + EPS)) + c0;
+  } else {
+    let s = p * (D(4) / (dot(p, p) + EPS));
+    p = 0.0411259 * vec2<f32>(s.x * D(5) - s.y * s32, s.x * s32 + s.y * D(3));
+  }
+}
+if (i32(D(6)) == 1) { v.color = select(D(7), D(8), a.x < 0.0); }
+v.x += AMOUNT * p.x;
+v.y += AMOUNT * p.y;
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    simple(
+        "spiralwing",
+        false,
+        |_, ctx, a, v, amount| {
+            let c1 = sqr(a.x);
+            let c2 = sqr(a.y);
+            let dd = amount / (c1 + c2 + SMALL_EPSILON);
+            let s2 = c2.sin();
+            v.x += dd * c1.cos() * s2;
+            v.y += dd * c1.sin() * s2;
+            ctx.pass_z(a, v, amount);
+        },
+        "let c1 = a.x * a.x;
+let c2 = a.y * a.y;
+let dd = AMOUNT / (c1 + c2 + EPS);
+v.x += dd * cos(c1) * sin(c2);
+v.y += dd * sin(c1) * sin(c2);
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    ),
+    VarDef {
+        name: "spirograph",
+        params: &[
+            ParamDef::new("a", 3.0),
+            ParamDef::new("b", 2.0),
+            ParamDef::new("d", 0.0),
+            ParamDef::new("tmin", -1.0),
+            ParamDef::new("tmax", 1.0),
+            ParamDef::new("ymin", -1.0),
+            ParamDef::new("ymax", 1.0),
+            ParamDef::new("c1", 0.0),
+            ParamDef::new("c2", 0.0),
+        ],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            // d = [a, b, d, tmin, tmax, ymin, ymax, c1, c2]
+            let t = (d[4] - d[3]) * ctx.random() + d[3];
+            let y = (d[6] - d[5]) * ctx.random() + d[5];
+            let ab = d[0] + d[1];
+            let x1 = ab * t.cos() - d[7] * (ab / d[1] * t).cos();
+            let y1 = ab * t.sin() - d[8] * (ab / d[1] * t).sin();
+            v.x += amount * (x1 + d[2] * t.cos() + y);
+            v.y += amount * (y1 + d[2] * t.sin() + y);
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "let t = (D(4) - D(3)) * rnd() + D(3);
+let y = (D(6) - D(5)) * rnd() + D(5);
+let ab = D(0) + D(1);
+let x1 = ab * cos(t) - D(7) * cos(ab / D(1) * t);
+let y1 = ab * sin(t) - D(8) * sin(ab / D(1) * t);
+v.x += AMOUNT * (x1 + D(2) * cos(t) + y);
+v.y += AMOUNT * (y1 + D(2) * sin(t) + y);
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
         name: "post_ztranslate_wf",
         params: &[],
         kind: VarKind::Post,
