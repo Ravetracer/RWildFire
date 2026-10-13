@@ -345,3 +345,58 @@ mod tests {
         assert_eq!(gfx_step(0.5, 0.5), 1.0);
     }
 }
+
+/// `JacCnFunc.Jacobi_elliptic`: `(sn, cn, dn)` of `uu` for the parameter `emmc` (WGSL:
+/// `math_jacobi_elliptic`).
+pub fn jacobi_elliptic(uu: f64, emmc: f64) -> (f64, f64, f64) {
+    const CA: f64 = 0.0003;
+    let (mut emc, mut u) = (emmc, uu);
+    if emc == 0.0 {
+        let cn = 1.0 / u.cosh();
+        return (u.tanh(), cn, cn);
+    }
+    let (mut em, mut en) = ([0.0; 13], [0.0; 13]);
+    let (mut a, mut c, mut d) = (1.0, 0.0, 0.0);
+    let mut l = 0;
+    let bo = emc < 0.0;
+    if bo {
+        d = 1.0 - emc;
+        emc = -emc / d;
+        d = d.sqrt();
+        u *= d;
+    }
+    let mut dn = 1.0;
+    for i in 0..8 {
+        l = i;
+        em[i] = a;
+        emc = emc.sqrt();
+        en[i] = emc;
+        c = 0.5 * (a + emc);
+        if (a - emc).abs() <= CA * a {
+            break;
+        }
+        emc *= a;
+        a = c;
+    }
+    u *= c;
+    let (mut sn, mut cn) = (u.sin(), u.cos());
+    if sn != 0.0 {
+        a = cn / sn;
+        c *= a;
+        for ii in (0..=l).rev() {
+            let b = em[ii];
+            a *= c;
+            c *= dn;
+            dn = (en[ii] + a) / (b + a);
+            a = c / b;
+        }
+        a = 1.0 / (c * c + 1.0).sqrt();
+        sn = if sn < 0.0 { -a } else { a };
+        cn = c * sn;
+    }
+    if bo {
+        std::mem::swap(&mut dn, &mut cn);
+        sn /= d;
+    }
+    (sn, cn, dn)
+}

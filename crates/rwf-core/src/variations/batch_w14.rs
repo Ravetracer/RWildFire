@@ -313,6 +313,103 @@ fn inversion_apply(d: &[f64], ctx: &mut Ctx, a: &Pt, v: &mut Pt, amount: f64) {
     v.color = (base / 255.0).clamp(0.0, 1.0);
 }
 
+// `hehl.gl.Complex` operations of `JacAsnFunc` on `(re, im)` pairs.
+type Hc = (f64, f64);
+
+fn hc_mul(a: Hc, b: Hc) -> Hc {
+    (a.0 * b.0 - a.1 * b.1, a.0 * b.1 + a.1 * b.0)
+}
+
+fn hc_add(a: Hc, b: Hc) -> Hc {
+    (a.0 + b.0, a.1 + b.1)
+}
+
+fn hc_sub(a: Hc, b: Hc) -> Hc {
+    (a.0 - b.0, a.1 - b.1)
+}
+
+fn hc_scale(a: Hc, s: f64) -> Hc {
+    (s * a.0, s * a.1)
+}
+
+fn hc_mag(a: Hc) -> f64 {
+    (a.0 * a.0 + a.1 * a.1).sqrt()
+}
+
+fn hc_sqrt(z: Hc) -> Hc {
+    let (r, phi) = (hc_mag(z).sqrt(), z.1.atan2(z.0) / 2.0);
+    (r * phi.cos(), r * phi.sin())
+}
+
+fn hc_ln(z: Hc) -> Hc {
+    (hc_mag(z).ln() / std::f64::consts::E.ln(), z.1.atan2(z.0))
+}
+
+fn hc_sin(z: Hc) -> Hc {
+    (z.0.sin() * z.1.cosh(), z.0.cos() * z.1.sinh())
+}
+
+fn hc_tan(z: Hc) -> Hc {
+    let den = (2.0 * z.0).cos() + (2.0 * z.1).cosh();
+    ((2.0 * z.0).sin() / den, (2.0 * z.1).sinh() / den)
+}
+
+/// `j * z`
+fn hc_j(z: Hc) -> Hc {
+    (-z.1, z.0)
+}
+
+fn hc_asin(z: Hc) -> Hc {
+    let zz = hc_add(hc_sqrt(hc_sub((1.0, 0.0), hc_mul(z, z))), hc_j(z));
+    hc_scale(hc_j(hc_ln(zz)), -1.0)
+}
+
+fn hc_acos(z: Hc) -> Hc {
+    let zz = hc_add(z, hc_sqrt(hc_sub(hc_mul(z, z), (1.0, 0.0))));
+    hc_scale(hc_j(hc_ln(zz)), -1.0)
+}
+
+fn hc_asinh(zz: Hc) -> Hc {
+    hc_ln(hc_add(zz, hc_sqrt(hc_add((1.0, 0.0), hc_mul(zz, zz)))))
+}
+
+/// `JacElkFunc.RF`: Carlson's elliptic integral of the first kind.
+fn jac_elk_rf(mut x: f64, mut y: f64, mut z: f64) -> f64 {
+    let (mut a, mut dx, mut dy, mut dz);
+    let mut itc = 0;
+    loop {
+        let lamda = (x * y).sqrt() + (y * z).sqrt() + (z * x).sqrt();
+        x = (x + lamda) / 4.0;
+        y = (y + lamda) / 4.0;
+        z = (z + lamda) / 4.0;
+        a = (x + y + z) / 3.0;
+        dx = 1.0 - x / a;
+        dy = 1.0 - y / a;
+        dz = 1.0 - z / a;
+        itc += 1;
+        if itc >= 25 || java_max(java_max(dx.abs(), dy.abs()), dz.abs()) <= 1e-5 {
+            break;
+        }
+    }
+    let e2 = dx * dy + dy * dz + dz * dx;
+    let e3 = dy * dx * dz;
+    let r = 1.0 - (1.0 / 10.0) * e2 + (1.0 / 14.0) * e3 + (1.0 / 24.0) * (e2 * e2) - (3.0 / 44.0) * e2 * e3 - (5.0 / 208.0) * (e2 * e2 * e2)
+        + (3.0 / 104.0) * (e3 * e3)
+        + (1.0 / 16.0) * (e2 * e2) * e3;
+    r * (1.0 / a.sqrt())
+}
+
+/// `Math.signum`
+fn jsignum(x: f64) -> f64 {
+    if x > 0.0 {
+        1.0
+    } else if x < 0.0 {
+        -1.0
+    } else {
+        x
+    }
+}
+
 pub static DEFS: &[VarDef] = &[
     VarDef {
         name: "harmonograph_js",
@@ -1997,6 +2094,262 @@ let band = sin(D(0) * r) * D(1);
 let nt = theta + D(2) * band;
 v.x += AMOUNT * (r + band) * cos(nt);
 v.y += AMOUNT * (r + band) * sin(nt);
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "jac_asn",
+        params: &[ParamDef::new("kr", 0.5), ParamDef::new("ki", 0.0), ParamDef::int("type", 1.0, 0.0, 7.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let mut geo1: Hc = (0.0, 0.0);
+            let mut phi: Hc = (a.x, a.y);
+            let mut modul: Hc = (d[0], d[1]);
+            let t1: Hc = (1.0, 0.0);
+            let kind = d[2] as i32;
+            phi = match kind {
+                0 | 4 => hc_scale(hc_add(phi, hc_asin(hc_mul(modul, hc_sin(phi)))), 0.5),
+                1 | 5 => hc_scale(hc_add(hc_asin(phi), hc_asin(hc_mul(modul, phi))), 0.5),
+                2 | 6 => hc_scale(hc_add(hc_acos(phi), hc_asin(hc_mul(modul, hc_sqrt(hc_sub(t1, hc_mul(phi, phi)))))), 0.5),
+                _ => {
+                    let p = hc_j(hc_asinh(phi));
+                    hc_scale(hc_add(p, hc_asin(hc_mul(modul, hc_sin(p)))), 0.5)
+                }
+            };
+            if kind > 3 {
+                geo1 = phi;
+                phi = modul;
+                modul = geo1;
+            }
+            let mut geo: Hc = (amount, 0.0);
+            for jj in 0..10 {
+                let dm = hc_sub(t1, modul);
+                if dm.0 * dm.0 + dm.1 * dm.1 < SMALL_EPSILON {
+                    break;
+                }
+                if jj > 0 {
+                    phi = hc_scale(hc_add(phi, hc_asin(hc_mul(modul, hc_sin(phi)))), 0.5);
+                }
+                // divideBy: unchanged geo1 for a (numerically) zero denominator
+                let den = hc_add(t1, modul);
+                let rz = hc_mag(den);
+                if rz.abs() >= 1.0e-12 {
+                    geo1 = ((2.0 * den.0) / (rz * rz), (-2.0 * den.1) / (rz * rz));
+                }
+                geo = hc_mul(geo, geo1);
+                modul = hc_mul(geo1, hc_sqrt(modul));
+            }
+            let r = hc_mul(geo, hc_ln(hc_tan(hc_add(hc_scale(phi, 0.5), (M_PI_4, 0.0)))));
+            v.x += r.0;
+            v.y += r.1;
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: Some(|p, _| vec![p[0], p[1], limit_value(p[2], 0.0, 7.0).trunc()]),
+        wgsl: "fn jac_asn_mul(a: vec2<f32>, b: vec2<f32>) -> vec2<f32> { return vec2<f32>(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x); }
+fn jac_asn_sqrt(z: vec2<f32>) -> vec2<f32> {
+  let r = sqrt(length(z));
+  let phi = atan2(z.y, z.x) / 2.0;
+  return r * vec2<f32>(cos(phi), sin(phi));
+}
+fn jac_asn_ln(z: vec2<f32>) -> vec2<f32> { return vec2<f32>(log(length(z)), atan2(z.y, z.x)); }
+fn jac_asn_sin(z: vec2<f32>) -> vec2<f32> { return vec2<f32>(sin(z.x) * cosh(z.y), cos(z.x) * sinh(z.y)); }
+fn jac_asn_j(z: vec2<f32>) -> vec2<f32> { return vec2<f32>(-z.y, z.x); }
+fn jac_asn_asin(z: vec2<f32>) -> vec2<f32> {
+  let zz = jac_asn_sqrt(vec2<f32>(1.0, 0.0) - jac_asn_mul(z, z)) + jac_asn_j(z);
+  return -jac_asn_j(jac_asn_ln(zz));
+}
+fn jac_asn_acos(z: vec2<f32>) -> vec2<f32> {
+  let zz = z + jac_asn_sqrt(jac_asn_mul(z, z) - vec2<f32>(1.0, 0.0));
+  return -jac_asn_j(jac_asn_ln(zz));
+}
+@body
+var geo1 = vec2<f32>(0.0);
+var phi = vec2<f32>(a.x, a.y);
+var modul = vec2<f32>(D(0), D(1));
+let t1 = vec2<f32>(1.0, 0.0);
+let kind = i32(D(2));
+switch (kind) {
+  case 0, 4: { phi = 0.5 * (phi + jac_asn_asin(jac_asn_mul(modul, jac_asn_sin(phi)))); }
+  case 1, 5: { phi = 0.5 * (jac_asn_asin(phi) + jac_asn_asin(jac_asn_mul(modul, phi))); }
+  case 2, 6: { phi = 0.5 * (jac_asn_acos(phi) + jac_asn_asin(jac_asn_mul(modul, jac_asn_sqrt(t1 - jac_asn_mul(phi, phi))))); }
+  default: {
+    let p = jac_asn_j(jac_asn_ln(phi + jac_asn_sqrt(t1 + jac_asn_mul(phi, phi))));
+    phi = 0.5 * (p + jac_asn_asin(jac_asn_mul(modul, jac_asn_sin(p))));
+  }
+}
+if (kind > 3) {
+  geo1 = phi;
+  phi = modul;
+  modul = geo1;
+}
+var geo = vec2<f32>(AMOUNT, 0.0);
+for (var jj = 0; jj < 10; jj++) {
+  let dm = t1 - modul;
+  if (dot(dm, dm) < 1e-30) { break; }
+  if (jj > 0) { phi = 0.5 * (phi + jac_asn_asin(jac_asn_mul(modul, jac_asn_sin(phi)))); }
+  let den = t1 + modul;
+  let rz = length(den);
+  if (rz >= 1.0e-12) { geo1 = vec2<f32>(2.0 * den.x, -2.0 * den.y) / (rz * rz); }
+  geo = jac_asn_mul(geo, geo1);
+  modul = jac_asn_mul(geo1, jac_asn_sqrt(modul));
+}
+let hp = 0.5 * phi + vec2<f32>(PI / 4.0, 0.0);
+let tden = cos(2.0 * hp.x) + cosh(2.0 * hp.y);
+let r = jac_asn_mul(geo, jac_asn_ln(vec2<f32>(sin(2.0 * hp.x), sinh(2.0 * hp.y)) / tden));
+v.x += r.x;
+v.y += r.y;
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "jac_cn",
+        params: &[ParamDef::range("k", 0.5, -1.0, 1.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let k = d[0];
+            let (xs, xc, xd) = jacobi_elliptic(a.x, k);
+            let (ys, yc, yd) = jacobi_elliptic(a.y, 1.0 - k);
+            let (num_x, num_y) = (xc * yc, -xd * xs * yd * ys);
+            let den = amount / (SMALL_EPSILON + (xs * xs) * (ys * ys) * k + (yc * yc));
+            v.x += den * num_x;
+            v.y += den * num_y;
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: Some(|p, _| vec![limit_value(p[0], -1.0, 1.0)]),
+        wgsl: "let k = D(0);
+let jx = math_jacobi_elliptic(a.x, k);
+let jy = math_jacobi_elliptic(a.y, 1.0 - k);
+let den = AMOUNT / (1e-30 + jx.x * jx.x * jy.x * jy.x * k + jy.y * jy.y);
+v.x += den * (jx.y * jy.y);
+v.y += den * (-jx.z * jx.x * jy.z * jy.x);
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "jac_dn",
+        params: &[ParamDef::range("k", 0.5, -1.0, 1.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let k = d[0];
+            let (xs, xc, xd) = jacobi_elliptic(a.x, k);
+            let (ys, yc, yd) = jacobi_elliptic(a.y, 1.0 - k);
+            let (num_x, num_y) = (xd * yc * yd, -xc * xs * ys * k);
+            let den = amount / (SMALL_EPSILON + (xs * xs) * (ys * ys) * k + (yc * yc));
+            v.x += den * num_x;
+            v.y += den * num_y;
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: Some(|p, _| vec![limit_value(p[0], -1.0, 1.0)]),
+        wgsl: "let k = D(0);
+let jx = math_jacobi_elliptic(a.x, k);
+let jy = math_jacobi_elliptic(a.y, 1.0 - k);
+let den = AMOUNT / (1e-30 + jx.x * jx.x * jy.x * jy.x * k + jy.y * jy.y);
+v.x += den * (jx.z * jy.y * jy.z);
+v.y += den * (-jx.y * jx.x * jy.x * k);
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "jac_elk",
+        params: &[ParamDef::range("k", 0.5, -1.0, 1.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            const EPS: f64 = 1.0e-20;
+            let nonz = |nz: f64| if nz.abs() <= EPS { EPS * jsignum(nz) } else { nz };
+            let k = d[0];
+            let (phi, psi) = (a.x, a.y);
+            let cotphi = phi.cos() / nonz(phi.sin());
+            let cotphi2 = cotphi * cotphi;
+            let sp = psi.sinh() / (EPS + phi.sin());
+            let b = -(cotphi2 + k * (sp * sp) - 1.0 + k) / 2.0;
+            let c = -(1.0 - k) * cotphi2;
+            let c = (b * b - c).abs().sqrt();
+            let x1 = java_max(-b + c, -b - c);
+            let mu = jsignum(psi) * ((x1 / nonz(cotphi2) - 1.0) / nonz(k)).abs().sqrt();
+            let lambda = jsignum(phi) * x1.abs().sqrt();
+            let sina = jsignum(lambda) / (lambda * lambda + 1.0).sqrt();
+            let cosa = lambda * sina;
+            let e_phi = sina * jac_elk_rf(cosa * cosa, 1.0 - k * (sina * sina), 1.0);
+            let cosa = 1.0 / (mu * mu + 1.0).sqrt();
+            let sina = mu * cosa;
+            let e_psi = sina * jac_elk_rf(cosa * cosa, 1.0 - (1.0 - k) * (sina * sina), 1.0);
+            v.x += amount * e_phi;
+            v.y += amount * e_psi;
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: Some(|p, _| vec![limit_value(p[0], -1.0, 1.0)]),
+        wgsl: "fn jac_elk_nonz(nz: f32) -> f32 {
+  if (abs(nz) <= 1.0e-20) { return 1.0e-20 * sign(nz); }
+  return nz;
+}
+fn jac_elk_rf(x_in: f32, y_in: f32, z_in: f32) -> f32 {
+  var x = x_in;
+  var y = y_in;
+  var z = z_in;
+  var a = 0.0;
+  var dx = 0.0;
+  var dy = 0.0;
+  var dz = 0.0;
+  for (var it = 0; it < 25; it++) {
+    let lamda = sqrt(x * y) + sqrt(y * z) + sqrt(z * x);
+    x = (x + lamda) / 4.0;
+    y = (y + lamda) / 4.0;
+    z = (z + lamda) / 4.0;
+    a = (x + y + z) / 3.0;
+    dx = 1.0 - x / a;
+    dy = 1.0 - y / a;
+    dz = 1.0 - z / a;
+    if (max(max(abs(dx), abs(dy)), abs(dz)) <= 1e-5) { break; }
+  }
+  let e2 = dx * dy + dy * dz + dz * dx;
+  let e3 = dy * dx * dz;
+  let r = 1.0 - e2 / 10.0 + e3 / 14.0 + e2 * e2 / 24.0 - 3.0 / 44.0 * e2 * e3 - 5.0 / 208.0 * e2 * e2 * e2 + 3.0 / 104.0 * e3 * e3 + e2 * e2 * e3 / 16.0;
+  return r / sqrt(a);
+}
+@body
+let k = D(0);
+let phi = a.x;
+let psi = a.y;
+let cotphi = cos(phi) / jac_elk_nonz(sin(phi));
+let cotphi2 = cotphi * cotphi;
+let sp = sinh(psi) / (1.0e-20 + sin(phi));
+let b = -(cotphi2 + k * sp * sp - 1.0 + k) / 2.0;
+let c = sqrt(abs(b * b + (1.0 - k) * cotphi2));
+let x1 = max(-b + c, -b - c);
+let mu = sign(psi) * sqrt(abs((x1 / jac_elk_nonz(cotphi2) - 1.0) / jac_elk_nonz(k)));
+let lambda = sign(phi) * sqrt(abs(x1));
+var sina = sign(lambda) / sqrt(lambda * lambda + 1.0);
+var cosa = lambda * sina;
+let e_phi = sina * jac_elk_rf(cosa * cosa, 1.0 - k * sina * sina, 1.0);
+cosa = 1.0 / sqrt(mu * mu + 1.0);
+sina = mu * cosa;
+let e_psi = sina * jac_elk_rf(cosa * cosa, 1.0 - (1.0 - k) * sina * sina, 1.0);
+v.x += AMOUNT * e_phi;
+v.y += AMOUNT * e_psi;
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "jac_sn",
+        params: &[ParamDef::range("k", 0.5, -1.0, 1.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let k = d[0];
+            let (xs, xc, xd) = jacobi_elliptic(a.x, k);
+            let (ys, yc, yd) = jacobi_elliptic(a.y, 1.0 - k);
+            let (num_x, num_y) = (xs * yd, xc * xd * yc * ys);
+            let den = amount / (SMALL_EPSILON + (xs * xs) * (ys * ys) * k + (yc * yc));
+            v.x += den * num_x;
+            v.y += den * num_y;
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: Some(|p, _| vec![limit_value(p[0], -1.0, 1.0)]),
+        wgsl: "let k = D(0);
+let jx = math_jacobi_elliptic(a.x, k);
+let jy = math_jacobi_elliptic(a.y, 1.0 - k);
+let den = AMOUNT / (1e-30 + jx.x * jx.x * jy.x * jy.x * k + jy.y * jy.y);
+v.x += den * (jx.x * jy.z);
+v.y += den * (jx.y * jx.z * jy.y * jy.x);
 if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
     },
 ];

@@ -98,3 +98,65 @@ fn lgamma(x: f32) -> f32 {
     - 1.231739516 / (x + 3.0) + 0.00120858003 / (x + 4.0) - 0.00000536382 / (x + 5.0);
   return tmp + log(ser * sqrt(TWO_PI));
 }
+
+// JacCnFunc.Jacobi_elliptic: (sn, cn, dn) of u for the parameter emmc.
+fn math_jacobi_elliptic(uu: f32, emmc: f32) -> vec3<f32> {
+  var sn = 0.0;
+  var cn = 0.0;
+  var dn = 0.0;
+  var emc = emmc;
+  var u = uu;
+  if (emc == 0.0) {
+    cn = 1.0 / cosh(u);
+    return vec3<f32>(tanh(u), cn, cn);
+  }
+  var em = array<f32, 13>();
+  var en = array<f32, 13>();
+  var a = 1.0;
+  var b = 0.0;
+  var c = 0.0;
+  var d = 0.0;
+  var l = 0;
+  let bo = emc < 0.0;
+  if (bo) {
+    d = 1.0 - emc;
+    emc = -emc / d;
+    d = sqrt(d);
+    u = d * u;
+  }
+  dn = 1.0;
+  for (var i = 0; i < 8; i++) {
+    l = i;
+    em[i] = a;
+    emc = sqrt(emc);
+    en[i] = emc;
+    c = 0.5 * (a + emc);
+    if (abs(a - emc) <= 0.0003 * a) { break; }
+    emc = a * emc;
+    a = c;
+  }
+  u = c * u;
+  sn = sin(u);
+  cn = cos(u);
+  if (sn != 0.0) {
+    a = cn / sn;
+    c = a * c;
+    for (var ii = l; ii >= 0; ii--) {
+      b = em[ii];
+      a = c * a;
+      c = dn * c;
+      dn = (en[ii] + a) / (b + a);
+      a = c / b;
+    }
+    a = 1.0 / sqrt(c * c + 1.0);
+    if (sn < 0.0) { sn = -a; } else { sn = a; }
+    cn = c * sn;
+  }
+  if (bo) {
+    a = dn;
+    dn = cn;
+    cn = a;
+    sn = sn / d;
+  }
+  return vec3<f32>(sn, cn, dn);
+}

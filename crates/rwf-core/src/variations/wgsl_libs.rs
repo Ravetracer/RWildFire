@@ -56,6 +56,7 @@ mod tests {
   var acc = 0.0;
   // math.wgsl
   acc += math_inf() + math_nan() + f32(ftoi(x)) + limit_value(x, y, z) + f32(limit_value_i(n, 0, 3));
+  acc += math_jacobi_elliptic(x, y).x;
   acc += java_round(x) + java_pow(x, y) + gfx_lerp(x, y, z) + gfx_blerp(x, y, z, x, y, z);
   acc += gfx_smootherstep(x, y, z) + gfx_smootheststep(x, y, z) + erf(x) + lgamma(y);
   // glsl_complex.wgsl
