@@ -4118,4 +4118,79 @@ v.x += AMOUNT * (a.x + D(1) * sin(sc * a.x) * cos(sc * a.y));
 v.y += AMOUNT * (a.y + D(1) * 0.3 * sin(sc * 3.0 * a.y) * cos(sc * 3.0 * a.x));
 if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
     },
+    VarDef {
+        name: "line",
+        params: &[ParamDef::new("delta", 0.0), ParamDef::new("phi", 0.0)],
+        kind: VarKind::Normal,
+        is_3d: true,
+        apply: |d, ctx, _, v, amount| {
+            let (dl, ph) = (d[0] * M_PI, d[1] * M_PI);
+            let (ux, uy, uz) = (dl.cos() * ph.cos(), dl.sin() * ph.cos(), ph.sin());
+            let r = (ux * ux + uy * uy + uz * uz).sqrt();
+            let rand = ctx.random() * amount;
+            v.x += ux / r * rand;
+            v.y += uy / r * rand;
+            v.z += uz / r * rand;
+        },
+        prepare: None,
+        wgsl: "let dl = D(0) * PI;
+let ph = D(1) * PI;
+let u = normalize(vec3<f32>(cos(dl) * cos(ph), sin(dl) * cos(ph), sin(ph)));
+let rand = rnd() * AMOUNT;
+v.x += u.x * rand;
+v.y += u.y * rand;
+v.z += u.z * rand;",
+    },
+    VarDef {
+        name: "linearT3D",
+        params: &[ParamDef::new("powX", 1.35), ParamDef::new("powY", 0.85), ParamDef::new("powZ", 1.15)],
+        kind: VarKind::Normal,
+        is_3d: true,
+        apply: |d, _, a, v, amount| {
+            let sgn = |x: f64| if x > 0.0 { 1.0 } else { -1.0 };
+            v.x += sgn(a.x) * a.x.abs().powf(d[0]) * amount;
+            v.y += sgn(a.y) * a.y.abs().powf(d[1]) * amount;
+            v.z += sgn(a.z) * a.z.abs().powf(d[2]) * amount;
+        },
+        prepare: None,
+        wgsl: "let p = vec3<f32>(a.x, a.y, a.z);
+let sg = select(vec3<f32>(-1.0), vec3<f32>(1.0), p > vec3<f32>(0.0));
+v.x += sg.x * java_pow(abs(p.x), D(0)) * AMOUNT;
+v.y += sg.y * java_pow(abs(p.y), D(1)) * AMOUNT;
+v.z += sg.z * java_pow(abs(p.z), D(2)) * AMOUNT;",
+    },
+    VarDef {
+        name: "liquefaction",
+        params: &[ParamDef::new("freq", 3.0), ParamDef::new("amp", 0.3), ParamDef::new("phase", 0.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            v.x += amount * (a.x + d[1] * (d[0] * a.y + d[2]).sin());
+            v.y += amount * (a.y + d[1] * (d[0] * a.x + d[2]).sin());
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "v.x += AMOUNT * (a.x + D(1) * sin(D(0) * a.y + D(2)));
+v.y += AMOUNT * (a.y + D(1) * sin(D(0) * a.x + D(2)));
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "lituus_var",
+        params: &[ParamDef::new("a", 1.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let theta = a.y.atan2(a.x);
+            let nr = java_max((d[0] * d[0]) / java_max(theta.abs(), 1e-4), 0.0).sqrt();
+            v.x += amount * nr * theta.cos();
+            v.y += amount * nr * theta.sin();
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "let theta = atan2(a.y, a.x);
+let nr = sqrt(max((D(0) * D(0)) / max(abs(theta), 1e-4), 0.0));
+v.x += AMOUNT * nr * cos(theta);
+v.y += AMOUNT * nr * sin(theta);
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
 ];
