@@ -1914,4 +1914,89 @@ v.x += AMOUNT * D(0) * (cos(t) + t * sin(t));
 v.y += AMOUNT * D(0) * (sin(t) - t * cos(t));
 if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
     },
+    simple(
+        "invpolar",
+        false,
+        |_, ctx, a, v, amount| {
+            let ny = 1.0 + a.y;
+            v.x += amount * ny * (a.x * M_PI).sin();
+            v.y += amount * ny * (a.x * M_PI).cos();
+            ctx.pass_z(a, v, amount);
+        },
+        "let ny = 1.0 + a.y;
+v.x += AMOUNT * ny * sin(a.x * PI);
+v.y += AMOUNT * ny * cos(a.x * PI);
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    ),
+    simple(
+        "invsquircular",
+        false,
+        |_, ctx, a, v, amount| {
+            if amount != 0.0 {
+                let (u, w) = (a.x, a.y);
+                let r = u * u + w * w;
+                let r2 = (r * (amount * amount * r - 4.0 * u * u * w * w) / amount).sqrt();
+                let r = (r - r2).sqrt() / M_SQRT2;
+                v.x += r / u;
+                v.y += r / w;
+            }
+            ctx.pass_z(a, v, amount);
+        },
+        "if (AMOUNT != 0.0) {
+  let r = a.x * a.x + a.y * a.y;
+  let r2 = sqrt(r * (AMOUNT * AMOUNT * r - 4.0 * a.x * a.x * a.y * a.y) / AMOUNT);
+  let rr = sqrt(r - r2) / sqrt(2.0);
+  v.x += rr / a.x;
+  v.y += rr / a.y;
+}
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    ),
+    simple(
+        "invtree_js",
+        false,
+        |_, ctx, a, v, amount| {
+            let (x, y) = if ctx.random() < 0.333 {
+                (a.x / 2.0, a.y / 2.0)
+            } else if ctx.random() < 0.666 {
+                (1.0 / (a.x + 1.0), a.y / (a.y + 1.0))
+            } else {
+                (a.x / (a.x + 1.0), 1.0 / (a.y + 1.0))
+            };
+            v.x += x * amount;
+            v.y += y * amount;
+            ctx.pass_z(a, v, amount);
+        },
+        "var q = vec2<f32>(a.x / (a.x + 1.0), 1.0 / (a.y + 1.0));
+if (rnd() < 0.333) {
+  q = vec2<f32>(a.x / 2.0, a.y / 2.0);
+} else if (rnd() < 0.666) {
+  q = vec2<f32>(1.0 / (a.x + 1.0), a.y / (a.y + 1.0));
+}
+v.x += q.x * AMOUNT;
+v.y += q.y * AMOUNT;
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    ),
+    VarDef {
+        name: "isobar",
+        params: &[ParamDef::new("freq", 3.0), ParamDef::new("amp", 0.3), ParamDef::new("spin", 0.5)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let r = (a.x * a.x + a.y * a.y + 1.0e-10).sqrt();
+            let theta = a.y.atan2(a.x);
+            let band = (d[0] * r).sin() * d[1];
+            let (nr, nt) = (r + band, theta + d[2] * band);
+            v.x += amount * nr * nt.cos();
+            v.y += amount * nr * nt.sin();
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "let r = sqrt(a.x * a.x + a.y * a.y + 1.0e-10);
+let theta = atan2(a.y, a.x);
+let band = sin(D(0) * r) * D(1);
+let nt = theta + D(2) * band;
+v.x += AMOUNT * (r + band) * cos(nt);
+v.y += AMOUNT * (r + band) * sin(nt);
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
 ];
