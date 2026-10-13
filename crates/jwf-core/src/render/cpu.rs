@@ -90,6 +90,32 @@ struct Packet {
     antialias_amount: f64,
     antialias_radius: f64,
     symmetry: Symmetry,
+    post_blur: Option<PostBlur>,
+}
+
+/// `PostBlurRenderIterationState`: splats samples over a radial kernel.
+pub struct PostBlur {
+    pub radius: i64,
+    pub fade: f64,
+    /// `(2 * radius + 1)²` weights, row major.
+    pub kernel: Vec<f64>,
+}
+
+impl PostBlur {
+    pub fn new(flame: &Flame) -> Option<Self> {
+        if flame.post_blur_radius == 0 {
+            return None;
+        }
+        let radius = flame.post_blur_radius as i64;
+        let mut kernel = Vec::with_capacity(((2 * radius + 1) * (2 * radius + 1)) as usize);
+        for y in -radius..=radius {
+            for x in -radius..=radius {
+                let r = ((x * x + y * y) as f64).sqrt() / radius as f64;
+                kernel.push(2f64.powf(-r * flame.post_blur_falloff));
+            }
+        }
+        Some(Self { radius, fade: flame.post_blur_fade.clamp(0.0, 1.0), kernel })
+    }
 }
 
 struct Shared {
@@ -178,6 +204,7 @@ impl CpuRender {
                 antialias_amount: f.antialias_amount,
                 antialias_radius: f.antialias_radius,
                 symmetry: Symmetry::new(f),
+                post_blur: PostBlur::new(f),
             })
             .collect();
         let view = &packets[0].view;
@@ -440,7 +467,25 @@ fn plot(sh: &Shared, pk: &Packet, layer: &PreparedLayer, p: &Pt, q: &Pt, x: f64,
     r = (d[0] + (r - d[0]) * dz) * w;
     g = (d[1] + (g - d[1]) * dz) * w;
     b = (d[2] + (b - d[2]) * dz) * w;
-    sh.histogram.add(sx as u32, sy as u32, r, g, b);
+    match &pk.post_blur {
+        Some(pb) if ctx.random() > pb.fade => {
+            let side = 2 * pb.radius + 1;
+            for ky in 0..side {
+                let y = sy + ky - pb.radius;
+                if y < 0 || y >= v.raster_height as i64 {
+                    continue;
+                }
+                for kx in 0..side {
+                    let x = sx + kx - pb.radius;
+                    if x >= 0 && x < v.raster_width as i64 {
+                        let scl = pb.kernel[(ky * side + kx) as usize];
+                        sh.histogram.add(x as u32, y as u32, r * scl, g * scl, b * scl);
+                    }
+                }
+            }
+        }
+        _ => sh.histogram.add(sx as u32, sy as u32, r, g, b),
+    }
 }
 
 #[inline]

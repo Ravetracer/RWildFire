@@ -138,14 +138,25 @@ fn prepare_xform(xf: &XForm, color_type: ColorType, colormap: &[[f64; 3]], missi
             continue;
         };
         let data = def.prepare_data(&var.params, &xf.coefs);
-        let step = |mode| VarStep { def, mode, amount: var.amount, data: data.clone() };
+        let step = |def, mode| VarStep { def, mode, amount: var.amount, data: data.clone() };
+        // Slot selection of `XForm.createTransformations`: priority 2 and -2 put a variation into
+        // both the pre and the post slot.
         let p = var.priority;
         if p < 0 || p == 2 {
-            pre.push(step(if def.kind == VarKind::Normal { StepMode::EnforcedPre } else { StepMode::Pre }));
-        } else if p == 0 {
-            normal.push(step(if def.kind == VarKind::Normal { StepMode::Normal } else { StepMode::Enforced }));
-        } else {
-            post_vars.push(step(if def.kind == VarKind::Normal { StepMode::EnforcedPost } else { StepMode::Post }));
+            pre.push(match def.kind {
+                VarKind::PrePost(inverse) => step(inverse, StepMode::Pre),
+                VarKind::Pre => step(def, StepMode::Pre),
+                VarKind::Normal | VarKind::Post => step(def, StepMode::EnforcedPre),
+            });
+        }
+        if p == 0 {
+            normal.push(step(def, if def.kind == VarKind::Normal { StepMode::Normal } else { StepMode::Enforced }));
+        }
+        if p > 0 || p == -2 {
+            post_vars.push(match def.kind {
+                VarKind::Post | VarKind::PrePost(_) => step(def, StepMode::Post),
+                VarKind::Normal | VarKind::Pre => step(def, StepMode::EnforcedPost),
+            });
         }
     }
 
@@ -384,4 +395,39 @@ fn smooth_color(colormap: &[[f64; 3]], color: f64) -> [f64; 3] {
 /// Simple sanity check used by the UI: a flame is renderable if any layer has xforms.
 pub fn is_renderable(flame: &Flame) -> bool {
     flame.layers.iter().any(|l| l.visible && l.xforms.iter().any(|x| x.weight > EPSILON))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::VariationInstance;
+
+    fn slots(var: &str, priority: i32) -> (Vec<(String, StepMode)>, Vec<(String, StepMode)>, Vec<(String, StepMode)>) {
+        let mut xf = XForm::default();
+        let mut inst = VariationInstance::new(var, 1.0);
+        inst.priority = priority;
+        xf.variations.push(inst);
+        let p = prepare_xform(&xf, ColorType::Diffusion, &[[0.0; 3]; 256], &mut Vec::new());
+        let names = |l: &[VarStep]| l.iter().map(|s| (s.def.name.to_string(), s.mode)).collect();
+        (names(&p.pre), names(&p.normal), names(&p.post_vars))
+    }
+
+    #[test]
+    fn prepost_runs_inverse_in_pre_and_forward_in_post() {
+        let (pre, normal, post) = slots("prepost_mobius", 2);
+        assert_eq!(pre, vec![("prepost_mobius_inv".to_string(), StepMode::Pre)]);
+        assert!(normal.is_empty());
+        assert_eq!(post, vec![("prepost_mobius".to_string(), StepMode::Post)]);
+    }
+
+    #[test]
+    fn priority_slots_match_create_transformations() {
+        // Java: priority 2 / -2 put a normal variation into both the pre and the post slot.
+        let (pre, normal, post) = slots("linear", 2);
+        assert_eq!((pre[0].1, normal.len(), post[0].1), (StepMode::EnforcedPre, 0, StepMode::EnforcedPost));
+        let (pre, _, post) = slots("prepost_mobius", -1);
+        assert_eq!((pre[0].0.as_str(), post.len()), ("prepost_mobius_inv", 0));
+        let (pre, normal, post) = slots("prepost_mobius", 0);
+        assert_eq!((pre.len(), normal[0].1, post.len()), (0, StepMode::Enforced, 0));
+    }
 }

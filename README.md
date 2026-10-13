@@ -23,7 +23,7 @@ cargo run --release -p jwf-cli -- render-anim in.flame -o out.mp4 --gpu   # anim
 
 ### Variations
 
-Each variation is a `VarDef` with a CPU function and a WGSL snippet that read the same prepared data array (`crates/jwf-core/src/variations/`). 140 variations are ported, all of them with GPU support. Unknown variations in loaded files are kept on save and reported in the UI.
+Each variation is a `VarDef` with a CPU function and a WGSL snippet that read the same prepared data array (`crates/jwf-core/src/variations/`). 508 variations are ported, nearly all of them with GPU support. Pre/post variations of priority 2 (`prepost_*`, `ringtile`) run their inverse in the pre slot and their forward transform in the post slot, as in JWildfire. Unknown variations in loaded files are kept on save and reported in the UI.
 `cargo test -p jwf-gpu` validates every WGSL snippet with naga.
 
 ## Performance
@@ -51,6 +51,9 @@ Each variation is a `VarDef` with a CPU function and a WGSL snippet that read th
 - Depth of field: legacy z-plane and focus-point modes, bokeh shapes (bubble plus the variation-based JWildfire shapes)
 - Layers: add, duplicate, delete, hide, weight and density per layer
 - Post symmetry, 3D camera, anti-aliasing, filter kernels
+- Adaptive filter (`MITCHELL_SINEPOW`): per-pixel kernel choice by edge strength and density, with JWildfire's indicator view
+- Post blur (radius, fade, falloff)
+- AI post denoiser: runs Intel Open Image Denoise's `oidnDenoise` (found in `PATH` or via `JWF_OIDN_DENOISE`) on exported images and video frames
 
 ## Gradients
 
@@ -68,9 +71,9 @@ Each variation is a `VarDef` with a CPU function and a WGSL snippet that read th
 
 ## Status / roadmap
 
-Done (milestone 1): core editor, file compatibility, CPU and GPU renderer, 140 variations, gradient editing, random generators, mutations, PNG export.
+Done: core editor, file compatibility, CPU and GPU renderer, 508 variations (incl. prepost), gradient editing, random generators, mutations, PNG export, density estimation, DOF, layers, animation and video export, adaptive filter, post blur, AI denoiser.
 
 Next:
-- remaining JWildfire variations (~510; 13 batch files are prepared but empty, see `variations/batch_w*.rs` and the `wNN` features)
-- "prepost" (priority 2) variations need inverse-transform support
-- adaptive filter, solid rendering, post-blur, denoiser
+- solid rendering (lighting, materials, ambient occlusion, shadows, post DOF)
+- remaining JWildfire variations (~500; 13 batch files are prepared but empty, see `variations/batch_w*.rs` and the `wNN` features)
+- resource-based variations (images, formulas, subflames, SVG, text)

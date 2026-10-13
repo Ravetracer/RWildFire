@@ -1,5 +1,5 @@
 // Histogram resolve + log-density filter + gamma correction.
-// Port of LogDensityFilter / GammaCorrectionFilter (non-adaptive), see jwf-core render/tonemap.rs.
+// Port of LogDensityFilter / GammaCorrectionFilter, see jwf-core render/tonemap.rs.
 
 struct ResolveU { cells: u32, color_scale: f32, row: u32, _p: u32 }
 
@@ -29,8 +29,16 @@ struct ToneU {
     gamma: f32, gamma_threshold: f32, scl_gamma: f32, vib_int: f32,
     inv_vib_int: f32, alpha_scale: f32, mod_sat: f32, bg_kind: u32,
     bg_ul: vec4<f32>, bg_ur: vec4<f32>, bg_ll: vec4<f32>, bg_lr: vec4<f32>, bg_cc: vec4<f32>, bg_single: vec4<f32>,
-    smooth_offset: u32, mb_scl: f32, _p2: u32, _p3: u32,
+    smooth_offset: u32, mb_scl: f32, adaptive: u32, ad_sharpness: f32,
+    // Adaptive filter matrices (low density, soften, detail), all stored in `filt`.
+    ad_low_density: f32, low_off: u32, soft_off: u32, detail_off: u32,
+    low_size: u32, soft_size: u32, detail_size: u32, low_half: i32,
+    soft_half: i32, detail_half: i32, low_radius: f32, soft_radius: f32,
+    detail_radius: f32, prim_radius: f32, _q1: u32, _q2: u32,
 }
+
+// A filter matrix in `filt` plus its adaptive indicator color.
+struct Filt { off: u32, size: u32, half: i32, sharpen: u32, radius: f32, ind: vec3<f32> }
 
 @group(0) @binding(0) var<uniform> T: ToneU;
 @group(0) @binding(1) var<storage, read> acc: array<f32>;
@@ -48,6 +56,39 @@ fn cell(rx: i32, ry: i32) -> vec4<f32> {
     if (x < 0 || y < 0 || x >= i32(T.raster_w) || y >= i32(T.raster_h)) { return vec4<f32>(0.0); }
     let i = (u32(y) * T.raster_w + u32(x)) * 4u;
     return vec4<f32>(acc[i], acc[i + 1u], acc[i + 2u], acc[i + 3u]);
+}
+
+// Raster cell without the border offset (the adaptive filter samples it this way in JWildfire).
+fn raw_cell(x: i32, y: i32) -> vec4<f32> {
+    if (x < 0 || y < 0 || x >= i32(T.raster_w) || y >= i32(T.raster_h)) { return vec4<f32>(0.0); }
+    let i = (u32(y) * T.raster_w + u32(x)) * 4u;
+    return vec4<f32>(acc[i], acc[i + 1u], acc[i + 2u], acc[i + 3u]);
+}
+
+fn lum3(c: vec3<f32>) -> f32 { return 0.299 * c.x + 0.588 * c.y + 0.113 * c.z; }
+
+fn raw_lum(x: i32, y: i32) -> f32 { return lum3(raw_cell(x, y).yzw); }
+
+// LogDensityFilter.getFilter
+fn choose_filter(px: i32, py: i32) -> Filt {
+    let primary = Filt(0u, T.fsize, T.fhalf, T.sharpen, T.prim_radius, vec3<f32>(1.0));
+    if (T.adaptive == 0u) { return primary; }
+    let x = px * i32(T.os);
+    let y = py * i32(T.os);
+    let c = raw_cell(x, y);
+    if (c.x < 1.0) { return primary; }
+    if (log_scale(c.x) * c.x * T.white_level < T.ad_low_density) {
+        return Filt(T.low_off, T.low_size, T.low_half, 0u, T.low_radius, vec3<f32>(0.0, 0.2, 1.1));
+    }
+    // Scharr operator, including the (x + 1, y - 1) typo of LogDensityFilter.scharr_x.
+    let sx = 3.0 * raw_lum(x - 1, y - 1) - 3.0 * raw_lum(x + 1, y - 1) + 10.0 * raw_lum(x - 1, y) - 10.0 * raw_lum(x + 1, y - 1)
+        + 3.0 * raw_lum(x - 1, y + 1) - 3.0 * raw_lum(x + 1, y + 1);
+    let sy = 3.0 * raw_lum(x - 1, y - 1) + 10.0 * raw_lum(x, y - 1) + 3.0 * raw_lum(x + 1, y - 1)
+        - 3.0 * raw_lum(x - 1, y + 1) - 10.0 * raw_lum(x, y + 1) - 3.0 * raw_lum(x + 1, y + 1);
+    if (log(1.0 + sqrt(sx * sx + sy * sy)) * 0.434294481903252 < T.ad_sharpness) {
+        return Filt(T.soft_off, T.soft_size, T.soft_half, 0u, T.soft_radius, vec3<f32>(0.0, 0.9, 0.0));
+    }
+    return Filt(T.detail_off, T.detail_size, T.detail_half, 1u, T.detail_radius, vec3<f32>(1.0, 0.2, 0.0));
 }
 
 fn round_color(v: f32) -> f32 { return clamp(floor(v + 0.5), 0.0, 255.0); }
@@ -127,7 +168,21 @@ fn tonemap(@builtin(global_invocation_id) gid: vec3<u32>) {
     let os = i32(T.os);
     var col = vec3<f32>(0.0);
     var intensity = 0.0;
-    if (T.fsize <= 1u) {
+    let f = choose_filter(px, py);
+    if (T.adaptive == 2u) {
+        var scl = vec3<f32>(1.0);
+        if (f.size > 1u) { scl = f.ind * f.radius; }
+        for (var sx = 0; sx < os; sx++) {
+            for (var sy = 0; sy < os; sy++) {
+                let c = cell(px * os + sx, py * os + sy);
+                if (c.x > 0.0) {
+                    let ls = log_scale(c.x);
+                    col += lum3(ls * c.yzw) * scl;
+                    intensity += ls * c.x * T.white_level;
+                }
+            }
+        }
+    } else if (f.size <= 1u) {
         for (var sx = 0; sx < os; sx++) {
             for (var sy = 0; sy < os; sy++) {
                 let c = cell(px * os + sx, py * os + sy);
@@ -139,18 +194,18 @@ fn tonemap(@builtin(global_invocation_id) gid: vec3<u32>) {
             }
         }
     } else {
-        let fs = i32(T.fsize);
+        let fs = i32(f.size);
         for (var i = 0; i < fs; i++) {
             for (var j = 0; j < fs; j++) {
-                let c = cell(px * os + j - T.fhalf, py * os + i - T.fhalf);
+                let c = cell(px * os + j - f.half, py * os + i - f.half);
                 if (c.x > 0.0) {
-                    let ls = log_scale(c.x) * filt[u32(i * fs + j)];
+                    let ls = log_scale(c.x) * filt[f.off + u32(i * fs + j)];
                     col += ls * c.yzw * T.bal.xyz;
-                    if (T.sharpen == 0u) { intensity += ls * c.x * T.white_level; }
+                    if (f.sharpen == 0u) { intensity += ls * c.x * T.white_level; }
                 }
             }
         }
-        if (T.sharpen != 0u) {
+        if (f.sharpen != 0u) {
             let ss = i32(T.ssize);
             for (var i = 0; i < ss; i++) {
                 for (var j = 0; j < ss; j++) {

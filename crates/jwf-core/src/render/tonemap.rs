@@ -119,10 +119,50 @@ pub fn background_color(flame: &Flame, x: u32, y: u32, w: u32, h: u32) -> [i32; 
     }
 }
 
+/// Per-pixel kernel selection of the adaptive filter (`LogDensityFilter.getFilter`).
+pub struct AdaptiveFilter {
+    pub low_density: FilterMatrix,
+    pub soften: FilterMatrix,
+    pub detail: FilterMatrix,
+    pub sharpness: f64,
+    pub low_density_threshold: f64,
+    /// Debug view: pixels are colored by the chosen kernel instead of being filtered.
+    pub indicator: bool,
+}
+
+/// `FilterIndicator` colors.
+const INDICATOR_GREY: [f64; 3] = [1.0, 1.0, 1.0];
+const INDICATOR_DETAIL: [f64; 3] = [1.0, 0.2, 0.0];
+const INDICATOR_SOFTEN: [f64; 3] = [0.0, 0.9, 0.0];
+const INDICATOR_LOW_DENSITY: [f64; 3] = [0.0, 0.2, 1.1];
+
+impl AdaptiveFilter {
+    pub fn new(flame: &Flame, oversample: u32) -> Option<Self> {
+        let radius_a = flame.spatial_filter_radius + 0.25;
+        if !flame.filter_kernel.is_adaptive() || radius_a < 0.5 {
+            return None;
+        }
+        Some(Self {
+            low_density: FilterMatrix::new(FilterKernel::SinePow10, oversample, 1.5 * radius_a),
+            soften: FilterMatrix::new(FilterKernel::SinePow10, oversample, radius_a),
+            detail: FilterMatrix::new(flame.filter_kernel, oversample, 0.75 * radius_a),
+            sharpness: flame.filter_sharpness,
+            low_density_threshold: flame.filter_low_density,
+            indicator: flame.filter_indicator,
+        })
+    }
+}
+
+#[inline]
+fn lum(r: f64, g: f64, b: f64) -> f64 {
+    0.299 * r + 0.588 * g + 0.113 * b
+}
+
 pub struct ToneMapper {
     pub params: ToneParams,
     pub primary: FilterMatrix,
     pub smoothing: FilterMatrix,
+    pub adaptive: Option<AdaptiveFilter>,
     pub oversample: u32,
     pub border: u32,
     pub with_alpha: bool,
@@ -137,6 +177,7 @@ impl ToneMapper {
             params: ToneParams::new(flame, image_width, image_height, ppu, density),
             primary,
             smoothing: FilterMatrix::new(FilterKernel::Gaussian, oversample, 0.75),
+            adaptive: AdaptiveFilter::new(flame, oversample),
             oversample,
             border,
             with_alpha,
@@ -149,23 +190,60 @@ impl ToneMapper {
         self
     }
 
+    /// Kernel and indicator color for one output pixel. Like JWildfire, the adaptive filter
+    /// samples the raster without the border offset.
+    fn choose_filter<R: Raster>(&self, raster: &R, x: u32, y: u32) -> (&FilterMatrix, [f64; 3]) {
+        let Some(ad) = &self.adaptive else {
+            return (&self.primary, INDICATOR_GREY);
+        };
+        let read = |rx: i64, ry: i64| read_cell(raster, rx, ry);
+        let (cx, cy) = (x as i64 * self.oversample as i64, y as i64 * self.oversample as i64);
+        let c = read(cx, cy);
+        if c[0] < 1.0 {
+            return (&self.primary, INDICATOR_GREY);
+        }
+        let intensity = self.params.log_scale(c[0]) * c[0] * self.params.white_level;
+        if intensity < ad.low_density_threshold {
+            return (&ad.low_density, INDICATOR_LOW_DENSITY);
+        }
+        let l = |dx: i64, dy: i64| {
+            let c = read(cx + dx, cy + dy);
+            lum(c[1], c[2], c[3])
+        };
+        // Scharr operator, including the (x + 1, y - 1) typo of LogDensityFilter.scharr_x.
+        let sx = 3.0 * l(-1, -1) - 3.0 * l(1, -1) + 10.0 * l(-1, 0) - 10.0 * l(1, -1) + 3.0 * l(-1, 1) - 3.0 * l(1, 1);
+        let sy = 3.0 * l(-1, -1) + 10.0 * l(0, -1) + 3.0 * l(1, -1) - 3.0 * l(-1, 1) - 10.0 * l(0, 1) - 3.0 * l(1, 1);
+        if (1.0 + (sx * sx + sy * sy).sqrt()).log10() < ad.sharpness {
+            (&ad.soften, INDICATOR_SOFTEN)
+        } else {
+            (&ad.detail, INDICATOR_DETAIL)
+        }
+    }
+
     /// Log-density filtered `[intensity, r, g, b]` for one output pixel.
     fn filtered<R: Raster>(&self, raster: &R, x: u32, y: u32) -> [f64; 4] {
         let p = &self.params;
         let os = self.oversample as i64;
         let b = self.border as i64;
-        let read = |rx: i64, ry: i64| -> [f64; 4] {
-            let rx = rx + b;
-            let ry = ry + b;
-            if rx < 0 || ry < 0 || rx >= raster.width() as i64 || ry >= raster.height() as i64 {
-                [0.0; 4]
-            } else {
-                raster.cell(rx as u32, ry as u32)
-            }
-        };
+        let read = |rx: i64, ry: i64| read_cell(raster, rx + b, ry + b);
         let (mut r, mut g, mut bl, mut intensity) = (0.0, 0.0, 0.0, 0.0);
-        let f = &self.primary;
-        if f.is_empty() {
+        let (f, indicator) = self.choose_filter(raster, x, y);
+        if self.adaptive.as_ref().is_some_and(|ad| ad.indicator) {
+            let scl = if f.is_empty() { [1.0; 3] } else { indicator.map(|c| c * f.radius) };
+            for px in 0..os {
+                for py in 0..os {
+                    let c = read(x as i64 * os + px, y as i64 * os + py);
+                    if c[0] > 0.0 {
+                        let ls = p.log_scale(c[0]);
+                        let l = lum(ls * c[1], ls * c[2], ls * c[3]);
+                        r += l * scl[0];
+                        g += l * scl[1];
+                        bl += l * scl[2];
+                        intensity += ls * c[0] * p.white_level;
+                    }
+                }
+            }
+        } else if f.is_empty() {
             for px in 0..os {
                 for py in 0..os {
                     let c = read(x as i64 * os + px, y as i64 * os + py);
@@ -264,6 +342,14 @@ impl ToneMapper {
             }
         });
         out
+    }
+}
+
+fn read_cell<R: Raster>(raster: &R, rx: i64, ry: i64) -> [f64; 4] {
+    if rx < 0 || ry < 0 || rx >= raster.width() as i64 || ry >= raster.height() as i64 {
+        [0.0; 4]
+    } else {
+        raster.cell(rx as u32, ry as u32)
     }
 }
 

@@ -416,6 +416,9 @@ fn variations_editor(ui: &mut Ui, doc: &mut Document, st: &mut TransformsState) 
                             variations::VarKind::Post => {
                                 ui.label(RichText::new("post").small().color(theme::TEXT_MUTED));
                             }
+                            variations::VarKind::PrePost(_) => {
+                                ui.label(RichText::new("prepost").small().color(theme::TEXT_MUTED));
+                            }
                             _ => {}
                         }
                         if !def.supports_gpu() {

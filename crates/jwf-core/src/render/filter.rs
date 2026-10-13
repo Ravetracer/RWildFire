@@ -23,7 +23,7 @@ pub enum FilterKernel {
     SinePow10,
     SinePow15,
     Triangle,
-    /// Adaptive in JWildfire; rendered with its primary (Mitchell smooth) kernel here.
+    /// Adaptive: Mitchell (smooth) at edges, sine pow 10 in smooth and low-density areas.
     MitchellSinePow,
 }
 
@@ -100,6 +100,10 @@ impl FilterKernel {
 
     pub fn parse(s: &str) -> Option<Self> {
         Self::ALL.iter().copied().find(|k| k.as_str() == s)
+    }
+
+    pub fn is_adaptive(&self) -> bool {
+        *self == FilterKernel::MitchellSinePow
     }
 
     pub fn is_sharpening(&self) -> bool {
@@ -281,6 +285,8 @@ pub struct FilterMatrix {
     pub half: i64,
     pub data: Vec<f64>,
     pub kernel: FilterKernel,
+    /// Filter radius (`FilterHolder.getIntensity`).
+    pub radius: f64,
 }
 
 impl FilterMatrix {
@@ -305,7 +311,7 @@ impl FilterMatrix {
                 *v = *v / sum * os2;
             }
         }
-        Self { size, half, data, kernel }
+        Self { size, half, data, kernel, radius }
     }
 
     pub fn is_empty(&self) -> bool {

@@ -23,6 +23,7 @@ struct Running {
     width: u32,
     height: u32,
     with_alpha: bool,
+    flame: Flame,
     started: Instant,
     target_density: f64,
 }
@@ -78,6 +79,11 @@ impl Default for ExportDialog {
             status: None,
         }
     }
+}
+
+/// Runs the flame's AI post denoiser, if any (`apply_post_denoiser`).
+fn denoise(flame: &Flame, img: &mut [u8], w: u32, h: u32, gpu: bool) -> Result<(), String> {
+    jwf_core::render::denoise::apply_post_denoiser(flame, img, w, h, gpu).map(|_| ()).map_err(|e| format!("denoiser: {e}"))
 }
 
 pub fn write_png(path: &std::path::Path, w: u32, h: u32, rgba: &[u8]) -> Result<(), String> {
@@ -144,6 +150,7 @@ impl ExportDialog {
             width: self.width,
             height: self.height,
             with_alpha: self.transparent,
+            flame: f,
             started: Instant::now(),
             target_density: self.quality,
         });
@@ -162,10 +169,10 @@ impl ExportDialog {
                     return (renderer.samples() as f64 / *target as f64) as f32;
                 }
                 renderer.tonemap();
-                let result = renderer
-                    .read_image()
-                    .ok_or_else(|| "readback failed".to_string())
-                    .and_then(|img| write_png(&run.path, run.width, run.height, &img));
+                let result = renderer.read_image().ok_or_else(|| "readback failed".to_string()).and_then(|mut img| {
+                    denoise(&run.flame, &mut img, run.width, run.height, true)?;
+                    write_png(&run.path, run.width, run.height, &img)
+                });
                 self.finish(result);
                 1.0
             }
@@ -183,10 +190,11 @@ impl ExportDialog {
                 }
                 let r = render.take().expect("cpu render");
                 let (tx, rx) = channel();
-                let (path, w, h, alpha) = (run.path.clone(), run.width, run.height, run.with_alpha);
+                let (path, w, h, alpha, flame) = (run.path.clone(), run.width, run.height, run.with_alpha, run.flame.clone());
                 std::thread::spawn(move || {
-                    let img = r.image(alpha);
-                    let _ = tx.send(write_png(&path, w, h, &img));
+                    let mut img = r.image(alpha);
+                    let result = denoise(&flame, &mut img, w, h, false).and_then(|_| write_png(&path, w, h, &img));
+                    let _ = tx.send(result);
                 });
                 *saving = Some(rx);
                 0.99
@@ -225,7 +233,7 @@ impl ExportDialog {
                         let _ = sink.finish();
                         return Err("Cancelled".into());
                     }
-                    let img = match &mut gpu_r {
+                    let mut img = match &mut gpu_r {
                         Some(r) => r.render_frame(&flame, frame as f64, w, h, q)?,
                         None => {
                             let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
@@ -234,6 +242,7 @@ impl ExportDialog {
                                 .image(false)
                         }
                     };
+                    denoise(&flame, &mut img, w, h, gpu_r.is_some())?;
                     sink.write_frame(i as u32, &img).map_err(|e| e.to_string())?;
                     d2.fetch_add(1, Ordering::Relaxed);
                 }

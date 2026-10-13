@@ -426,6 +426,21 @@ pub struct Flame {
     pub spatial_filter_radius: f64,
     pub filter_kernel: crate::render::filter::FilterKernel,
     pub spatial_oversampling: u32,
+    /// Adaptive filter (`MitchellSinePow`): edge detection threshold and the intensity below
+    /// which the low-density kernel is used.
+    pub filter_sharpness: f64,
+    pub filter_low_density: f64,
+    /// Debug view of the adaptive filter: colors pixels by the kernel chosen for them.
+    pub filter_indicator: bool,
+    /// Post blur: every sample is splatted over a `(2r+1)²` kernel, except a `fade` fraction
+    /// of them; `falloff` controls the kernel decay.
+    pub post_blur_radius: u32,
+    pub post_blur_fade: f64,
+    pub post_blur_falloff: f64,
+    /// AI post denoiser applied to final renders; `blend` mixes the original back in.
+    pub ai_post_denoiser: crate::render::denoise::Denoiser,
+    pub post_denoiser_blend: f64,
+    pub post_denoiser_only_for_cpu: bool,
     pub antialias_amount: f64,
     pub antialias_radius: f64,
     /// Density estimation radius (0 = off), curve and the before/after comparison line (0..1).
@@ -499,6 +514,15 @@ impl Default for Flame {
             spatial_filter_radius: 0.75,
             filter_kernel: crate::render::filter::FilterKernel::MitchellSmooth,
             spatial_oversampling: 1,
+            filter_sharpness: 4.0,
+            filter_low_density: 0.025,
+            filter_indicator: false,
+            post_blur_radius: 0,
+            post_blur_fade: 0.95,
+            post_blur_falloff: 2.0,
+            ai_post_denoiser: crate::render::denoise::Denoiser::None,
+            post_denoiser_blend: 0.11111,
+            post_denoiser_only_for_cpu: true,
             antialias_amount: 0.25,
             antialias_radius: 0.5,
             de_radius: 1.0,

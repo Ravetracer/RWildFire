@@ -3,6 +3,7 @@
 pub mod analysis;
 pub mod cpu;
 pub mod de;
+pub mod denoise;
 pub mod dof;
 pub mod filter;
 pub mod prepared;

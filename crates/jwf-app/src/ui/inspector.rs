@@ -3,6 +3,7 @@
 use egui::{RichText, Ui};
 use jwf_core::Gradient;
 use jwf_core::model::{BgColorType, ColorType, DrawMode, PostSymmetryType};
+use jwf_core::render::denoise::{self, Denoiser};
 use jwf_core::render::filter::FilterKernel;
 
 use super::widgets::{self, drag, grid, slider, slider_log};
@@ -475,12 +476,52 @@ fn render_tab(ui: &mut Ui, doc: &mut Document, preview: &mut Preview, canvas: &m
         });
         ui.end_row();
         slider(ui, "Filter radius", &mut f.spatial_filter_radius, 0.0..=3.0);
+        if f.filter_kernel.is_adaptive() {
+            slider(ui, "Sharpness", &mut f.filter_sharpness, 0.0..=15.0).on_hover_text("Edge threshold: below it the soft kernel is used");
+            slider(ui, "Low density", &mut f.filter_low_density, 0.0..=0.5).on_hover_text("Intensity below which the wide low-density kernel is used");
+            widgets::label(ui, "Indicator");
+            ui.checkbox(&mut f.filter_indicator, "Show chosen kernel").on_hover_text("Red: detail, green: soft, blue: low density");
+            ui.end_row();
+        }
         widgets::label(ui, "Oversampling");
         ui.add(egui::Slider::new(&mut f.spatial_oversampling, 1..=4));
         ui.end_row();
         slider(ui, "Antialias amount", &mut f.antialias_amount, 0.0..=1.0);
         slider(ui, "Antialias radius", &mut f.antialias_radius, 0.0..=2.0);
     });
+
+    theme::section_label(ui, "Post blur");
+    grid(ui, "post_blur", |ui| {
+        widgets::label(ui, "Radius");
+        ui.add(egui::Slider::new(&mut f.post_blur_radius, 0..=16)).on_hover_text("Splats samples over a radial kernel (0 = off)");
+        ui.end_row();
+        if f.post_blur_radius > 0 {
+            slider(ui, "Fade", &mut f.post_blur_fade, 0.0..=1.0).on_hover_text("Fraction of samples that are not blurred");
+            slider(ui, "Falloff", &mut f.post_blur_falloff, 0.0..=10.0);
+        }
+    });
+
+    theme::section_label(ui, "Denoiser");
+    grid(ui, "denoiser", |ui| {
+        widgets::label(ui, "AI denoiser");
+        egui::ComboBox::from_id_salt("denoiser").selected_text(f.ai_post_denoiser.label()).show_ui(ui, |ui| {
+            for d in Denoiser::ALL {
+                ui.selectable_value(&mut f.ai_post_denoiser, *d, d.label());
+            }
+        });
+        ui.end_row();
+        if f.ai_post_denoiser != Denoiser::None {
+            slider(ui, "Blend", &mut f.post_denoiser_blend, 0.0..=1.0).on_hover_text("Mixes the original image back in (0 = fully denoised)");
+            widgets::label(ui, "");
+            ui.checkbox(&mut f.post_denoiser_only_for_cpu, "Only for CPU renders");
+            ui.end_row();
+        }
+    });
+    if f.ai_post_denoiser != Denoiser::None && denoise::find_tool().is_none() {
+        ui.label(
+            RichText::new(format!("oidnDenoise not found (PATH or {}); exports stay un-denoised", denoise::TOOL_ENV)).small().color(theme::WARN),
+        );
+    }
 
     theme::section_label(ui, "Density estimation");
     grid(ui, "de", |ui| {

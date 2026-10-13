@@ -10,6 +10,7 @@ use std::sync::OnceLock;
 
 use crate::gradient::Gradient;
 use crate::model::*;
+use crate::render::denoise::Denoiser;
 use crate::render::filter::FilterKernel;
 use crate::variations;
 use xml::{Element, escape};
@@ -125,6 +126,20 @@ fn parse_flame(el: &Element) -> Flame {
                     flame.filter_kernel = kern;
                 }
             }
+            "post_optix_denoiser" => flame.ai_post_denoiser = Denoiser::Optix,
+            "ai_post_denoiser" => {
+                if let Some(d) = Denoiser::parse(v) {
+                    flame.ai_post_denoiser = d;
+                }
+            }
+            "post_optix_denoiser_blend" => flame.post_denoiser_blend = f.unwrap_or(0.11111),
+            "ai_post_denoiser_only_for_cpu" => flame.post_denoiser_only_for_cpu = v.trim() == "1",
+            "post_blur_radius" => flame.post_blur_radius = f.unwrap_or(0.0).max(0.0) as u32,
+            "post_blur_fade" => flame.post_blur_fade = f.unwrap_or(0.95),
+            "post_blur_falloff" => flame.post_blur_falloff = f.unwrap_or(2.0),
+            "filter_sharpness" => flame.filter_sharpness = f.unwrap_or(4.0),
+            "filter_low_density" => flame.filter_low_density = f.unwrap_or(0.025),
+            "filter_indicator" => flame.filter_indicator = v.trim() == "1",
             "oversample" => flame.spatial_oversampling = f.unwrap_or(1.0).clamp(1.0, 6.0) as u32,
             "quality" => flame.sample_density = f.unwrap_or(100.0),
             "background" => {
@@ -486,6 +501,15 @@ pub fn write_flame(flame: &Flame) -> String {
     attr(&mut s, "filter", fmt_f(flame.spatial_filter_radius));
     attr(&mut s, "filter_type", if flame.filter_kernel == FilterKernel::MitchellSinePow { "ADAPTIVE" } else if flame.filter_kernel.is_sharpening() { "GLOBAL_SHARPENING" } else { "GLOBAL_SMOOTHING" });
     attr(&mut s, "filter_kernel", flame.filter_kernel.as_str());
+    attr(&mut s, "filter_indicator", if flame.filter_indicator { "1" } else { "0" });
+    attr(&mut s, "filter_sharpness", fmt_f(flame.filter_sharpness));
+    attr(&mut s, "filter_low_density", fmt_f(flame.filter_low_density));
+    attr(&mut s, "post_blur_radius", flame.post_blur_radius.to_string());
+    attr(&mut s, "post_blur_fade", fmt_f(flame.post_blur_fade));
+    attr(&mut s, "post_blur_falloff", fmt_f(flame.post_blur_falloff));
+    attr(&mut s, "ai_post_denoiser", flame.ai_post_denoiser.as_str());
+    attr(&mut s, "post_optix_denoiser_blend", fmt_f(flame.post_denoiser_blend));
+    attr(&mut s, "ai_post_denoiser_only_for_cpu", if flame.post_denoiser_only_for_cpu { "1" } else { "0" });
     attr(&mut s, "oversample", flame.spatial_oversampling.to_string());
     attr(&mut s, "de_radius", fmt_f(flame.de_radius));
     attr(&mut s, "de_curve", fmt_f(flame.de_curve));

@@ -6,6 +6,7 @@ use std::borrow::Cow;
 use bytemuck::{Pod, Zeroable};
 use jwf_core::model::{BgColorType, Flame, PostSymmetryType};
 use jwf_core::render::filter::{FilterKernel, FilterMatrix};
+use jwf_core::render::tonemap::AdaptiveFilter;
 use jwf_core::render::tonemap::ToneParams;
 use jwf_core::render::{PreparedFlame, View};
 
@@ -111,8 +112,25 @@ struct ToneUniforms {
     bg_single: [f32; 4],
     smooth_offset: u32,
     mb_scl: f32,
-    _p2: u32,
-    _p3: u32,
+    /// 0 = off, 1 = adaptive filter, 2 = adaptive filter indicator view.
+    adaptive: u32,
+    ad_sharpness: f32,
+    ad_low_density: f32,
+    low_off: u32,
+    soft_off: u32,
+    detail_off: u32,
+    low_size: u32,
+    soft_size: u32,
+    detail_size: u32,
+    low_half: i32,
+    soft_half: i32,
+    detail_half: i32,
+    low_radius: f32,
+    soft_radius: f32,
+    detail_radius: f32,
+    prim_radius: f32,
+    _q1: u32,
+    _q2: u32,
 }
 
 /// A wgpu device + queue pair.
@@ -446,6 +464,17 @@ impl GpuRenderer {
         let mut fdata: Vec<f32> = primary.data.iter().map(|v| *v as f32).collect();
         let smooth_offset = fdata.len() as u32;
         fdata.extend(smoothing.data.iter().map(|v| *v as f32));
+        let adaptive = AdaptiveFilter::new(flame, os);
+        let mut push = |m: Option<&FilterMatrix>| {
+            let off = fdata.len() as u32;
+            if let Some(m) = m {
+                fdata.extend(m.data.iter().map(|v| *v as f32));
+            }
+            (off, m.map_or(0, |m| m.size as u32), m.map_or(0, |m| m.half as i32), m.map_or(0.0, |m| m.radius as f32))
+        };
+        let (low_off, low_size, low_half, low_radius) = push(adaptive.as_ref().map(|a| &a.low_density));
+        let (soft_off, soft_size, soft_half, soft_radius) = push(adaptive.as_ref().map(|a| &a.soften));
+        let (detail_off, detail_size, detail_half, detail_radius) = push(adaptive.as_ref().map(|a| &a.detail));
         fdata.push(0.0);
         self.filter = Some(self.upload(&self.filter, "filter", bytemuck::cast_slice(&fdata)));
 
@@ -532,8 +561,28 @@ impl GpuRenderer {
             bg_single: c4(flame.background.color),
             smooth_offset,
             mb_scl: 1.0,
-            _p2: 0,
-            _p3: 0,
+            adaptive: match &adaptive {
+                None => 0,
+                Some(a) if a.indicator => 2,
+                Some(_) => 1,
+            },
+            ad_sharpness: flame.filter_sharpness as f32,
+            ad_low_density: flame.filter_low_density as f32,
+            low_off,
+            soft_off,
+            detail_off,
+            low_size,
+            soft_size,
+            detail_size,
+            low_half,
+            soft_half,
+            detail_half,
+            low_radius,
+            soft_radius,
+            detail_radius,
+            prim_radius: primary.radius as f32,
+            _q1: 0,
+            _q2: 0,
         };
         self.tone_base = Some(tone);
 

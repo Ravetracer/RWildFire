@@ -129,7 +129,7 @@ fn render_anim_cmd() {
     let mut gpu_renderer = gpu.then(|| jwf_gpu::GpuRenderer::new(jwf_gpu::GpuContext::new_headless().expect("GPU")));
     let t0 = Instant::now();
     for frame in from..=to {
-        let img = match &mut gpu_renderer {
+        let mut img = match &mut gpu_renderer {
             Some(r) => {
                 r.set_with_alpha(false);
                 r.render_frame(&flame, frame as f64, w, h, q).unwrap_or_else(|e| {
@@ -144,6 +144,9 @@ fn render_anim_cmd() {
                     .image(false)
             }
         };
+        if let Err(e) = jwf_core::render::denoise::apply_post_denoiser(&flame, &mut img, w, h, gpu) {
+            eprintln!("warning: denoiser failed: {e}");
+        }
         sink.write_frame(frame - from, &img).expect("write frame");
         eprintln!("frame {frame}/{to}");
     }
@@ -203,6 +206,12 @@ fn main() {
         eprintln!("{} samples", r.samples());
         r.image(flame.bg_transparency)
     };
+    let mut rgba = rgba;
+    match jwf_core::render::denoise::apply_post_denoiser(flame, &mut rgba, w, h, args.gpu) {
+        Ok(true) => eprintln!("denoised ({})", flame.ai_post_denoiser.label()),
+        Ok(false) => {}
+        Err(e) => eprintln!("warning: denoiser failed: {e}"),
+    }
     let dt = t0.elapsed();
     if let Err(e) = write_png(&args.output, w, h, &rgba) {
         eprintln!("failed to write {}: {e}", args.output.display());

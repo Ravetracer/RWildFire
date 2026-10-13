@@ -1,9 +1,8 @@
 //! Variations ported from the JWildfire sources (batch w19).
 //!
-//! Note on `prepost_*` (JWildfire priority 2): JWildfire runs `invtransform` as a pre step and
-//! `transform` as a post step. The registry only knows Pre/Normal/Post, so these are registered
-//! as `Post` (the forward `transform`); the inverse pre step is not emulated. For
-//! `prepost_affine` the inverse is available separately as `pre_prepost_affine`.
+//! Note on `prepost_*` and `ringtile` (JWildfire priority 2): JWildfire runs `invtransform` as a
+//! pre step and `transform` as a post step. They are registered as `VarKind::PrePost` with the
+//! inverse as a separate, unregistered `VarDef` (`*_INV` below).
 
 use super::complex::Complex;
 #[allow(unused_imports)]
@@ -189,6 +188,196 @@ fn prepost_affine_prepare(p: &[f64], _: &Affine) -> Vec<f64> {
     ]);
     d
 }
+
+
+/// `pre_prepost_affine` (JWildfire `InternalPrePostAffinePreWFFunc`), also the inverse of
+/// `prepost_affine`.
+const PRE_PREPOST_AFFINE: VarDef = VarDef {
+    name: "pre_prepost_affine",
+    params: PREPOST_AFFINE_PARAMS,
+    kind: VarKind::Pre,
+    is_3d: true,
+    apply: |d, _, a, _, amount| {
+        // Inverse of prepost_affine (the GPU code of InternalPrePostAffinePreWFFunc; its Java
+        // CPU transform is empty).
+        if amount == 0.0 {
+            return;
+        }
+        let x = a.x - d[6];
+        let y = a.y - d[7];
+        let z = a.z - d[8];
+        a.x = (d[18] * x + d[19] * y + d[20] * z) / (amount * d[0]);
+        a.y = (d[21] * x + d[22] * y + d[23] * z) / (amount * d[1]);
+        a.z = (d[24] * x + d[25] * y + d[26] * z) / (amount * d[2]);
+    },
+    prepare: Some(prepost_affine_prepare),
+    wgsl: "if (AMOUNT != 0.0) {
+  let x = a.x - D(6);
+  let y = a.y - D(7);
+  let z = a.z - D(8);
+  a.x = (D(18) * x + D(19) * y + D(20) * z) / (AMOUNT * D(0));
+  a.y = (D(21) * x + D(22) * y + D(23) * z) / (AMOUNT * D(1));
+  a.z = (D(24) * x + D(25) * y + D(26) * z) / (AMOUNT * D(2));
+}",
+};
+
+static PREPOST_AFFINE_INV: VarDef = PRE_PREPOST_AFFINE;
+
+
+// ---------------------------------------------------------------------------------------------
+// Inverse (pre slot) halves of the priority 2 variations (`invtransform`)
+
+const PREPOST_BLOB_PARAMS: &[ParamDef] =
+    &[ParamDef::new("low", 0.8), ParamDef::new("high", 1.2), ParamDef::range("waves", 6.0, 1.0, 31.0)];
+
+static PREPOST_BLOB_INV: VarDef = VarDef {
+    name: "prepost_blob_inv",
+    params: PREPOST_BLOB_PARAMS,
+    kind: VarKind::Pre,
+    is_3d: false,
+    apply: |d, _, a, _, amount| {
+        let alow = 1.0 - amount * (1.0 - d[0]);
+        let ahigh = 1.0 - amount * (1.0 - d[1]);
+        let ang = a.x.atan2(a.y);
+        let r = (a.x * a.x + a.y * a.y).sqrt() / (alow + (ahigh - alow) * (0.5 + 0.5 * (d[2] * ang).sin()));
+        a.x = ang.sin() * r;
+        a.y = ang.cos() * r;
+    },
+    prepare: None,
+    wgsl: "let alow = 1.0 - AMOUNT * (1.0 - D(0));
+let ahigh = 1.0 - AMOUNT * (1.0 - D(1));
+let ang = atan2(a.x, a.y);
+let r = sqrt(a.x * a.x + a.y * a.y) / (alow + (ahigh - alow) * (0.5 + 0.5 * sin(D(2) * ang)));
+a.x = sin(ang) * r;
+a.y = cos(ang) * r;",
+};
+
+const PREPOST_CIRCLIZE_PARAMS: &[ParamDef] = &[
+    ParamDef::int("n", 4.0, 3.0, 50.0),
+    ParamDef::range("rotation", 45.0, -180.0, 180.0),
+    ParamDef::int("reverse", 0.0, 0.0, 1.0),
+];
+
+// d = [n, rotation, reverse, rot_rad, pi_n, cospi_n]
+fn prepost_circlize_prepare(p: &[f64], _: &Affine) -> Vec<f64> {
+    let n = ftoi_limit(p[0], 3, 50);
+    let pi_n = M_PI / n;
+    vec![n, p[1], ftoi_limit(p[2], 0, 1), p[1] * M_PI / 180.0, pi_n, pi_n.cos()]
+}
+
+static PREPOST_CIRCLIZE_INV: VarDef = VarDef {
+    name: "prepost_circlize_inv",
+    params: PREPOST_CIRCLIZE_PARAMS,
+    kind: VarKind::Pre,
+    is_3d: false,
+    apply: |d, _, a, _, amount| {
+        let theta = a.atan_yx();
+        let r = a.rad();
+        let tr = theta - d[3];
+        let factor = d[5] / (tr - d[4] * (2.0 * (d[0] * tr / M_2PI).floor() + 1.0)).cos();
+        // invtransform: reverse == 0 -> circlize (r / factor), else uncirclize (r * factor)
+        let target = if d[2] as i32 == 0 { r / factor } else { r * factor };
+        let l = (1.0 - amount) * r + amount * target;
+        a.x = l * theta.cos();
+        a.y = l * theta.sin();
+    },
+    prepare: Some(prepost_circlize_prepare),
+    wgsl: "let theta = atan_yx(a);
+let r = rad(a);
+let tr = theta - D(3);
+let factor = D(5) / cos(tr - D(4) * (2.0 * floor(D(0) * tr / TWO_PI) + 1.0));
+var tgt = r * factor;
+if (i32(D(2)) == 0) { tgt = r / factor; }
+let l = (1.0 - AMOUNT) * r + AMOUNT * tgt;
+a.x = l * cos(theta);
+a.y = l * sin(theta);",
+};
+
+const PREPOST_MOBIUS_PARAMS: &[ParamDef] = &[
+    ParamDef::new("re_a", 1.0),
+    ParamDef::new("re_b", 0.0),
+    ParamDef::new("re_c", 0.0),
+    ParamDef::new("re_d", 1.0),
+    ParamDef::new("im_a", 0.0),
+    ParamDef::new("im_b", 0.0),
+    ParamDef::new("im_c", 0.0),
+    ParamDef::new("im_d", 0.0),
+];
+
+static PREPOST_MOBIUS_INV: VarDef = VarDef {
+    name: "prepost_mobius_inv",
+    params: PREPOST_MOBIUS_PARAMS,
+    kind: VarKind::Pre,
+    is_3d: false,
+    apply: |d, _, a, _, amount| {
+        // d = [re_a, re_b, re_c, re_d, im_a, im_b, im_c, im_d]
+        if amount == 0.0 {
+            return;
+        }
+        let re_u = d[3] * a.x - d[7] * a.y - d[1];
+        let im_u = d[3] * a.y + d[7] * a.x - d[5];
+        let re_v = -d[2] * a.x + d[6] * a.y + d[0];
+        let im_v = -d[2] * a.y - d[6] * a.x + d[4];
+        let den = re_v * re_v + im_v * im_v;
+        if den == 0.0 {
+            return;
+        }
+        let rad_v = 1.0 / (amount * den);
+        a.x = rad_v * (re_u * re_v + im_u * im_v);
+        a.y = rad_v * (im_u * re_v - re_u * im_v);
+    },
+    prepare: None,
+    wgsl: "let re_u = D(3) * a.x - D(7) * a.y - D(1);
+let im_u = D(3) * a.y + D(7) * a.x - D(5);
+let re_v = -D(2) * a.x + D(6) * a.y + D(0);
+let im_v = -D(2) * a.y - D(6) * a.x + D(4);
+let den = re_v * re_v + im_v * im_v;
+if (AMOUNT != 0.0 && den != 0.0) {
+  let rad_v = 1.0 / (AMOUNT * den);
+  a.x = rad_v * (re_u * re_v + im_u * im_v);
+  a.y = rad_v * (im_u * re_v - re_u * im_v);
+}",
+};
+
+// ringtile: d = [power, tilesize, width1, width2, outline]
+const RINGTILE_PARAMS: &[ParamDef] = &[
+    ParamDef::new("power", 5.0),
+    ParamDef::new("tilesize", 0.5),
+    ParamDef::new("width1", 0.5),
+    ParamDef::new("width2", 0.3),
+    ParamDef::new("outline", 0.000001),
+];
+
+static RINGTILE_INV: VarDef = VarDef {
+    name: "ringtile_inv",
+    params: RINGTILE_PARAMS,
+    kind: VarKind::Pre,
+    is_3d: false,
+    apply: |d, ctx, a, v, _| {
+        let yr1 = d[4] * d[3];
+        let yh = if ctx.random() < 0.5 { d[0] } else { -d[0] };
+        v.y += d[1] * (a.y + java_round(yh * ctx.random().ln()));
+        if a.x > d[3] {
+            v.x += d[2] * (-d[3] + fmod(a.x + d[3], yr1));
+        } else if a.x < -d[3] {
+            v.x += d[2] * (d[3] - fmod(d[3] - a.x, yr1));
+        } else {
+            v.x += d[2] * a.x;
+        }
+    },
+    prepare: None,
+    wgsl: "let yr1 = D(4) * D(3);
+var yh = -D(0);
+if (rnd() < 0.5) { yh = D(0); }
+v.y += D(1) * (a.y + java_round(yh * log(max(rnd(), 1e-30))));
+if (a.x > D(3)) {
+  v.x += D(2) * (-D(3) + fmod(a.x + D(3), yr1));
+} else if (a.x < -D(3)) {
+  v.x += D(2) * (D(3) - fmod(D(3) - a.x, yr1));
+} else {
+  v.x += D(2) * a.x;
+}",
+};
 
 // ---------------------------------------------------------------------------------------------
 // primitives_wf
@@ -713,7 +902,7 @@ v.color = abs(fmod(vo.w, 1.0));",
     VarDef {
         name: "prepost_affine",
         params: PREPOST_AFFINE_PARAMS,
-        kind: VarKind::Post,
+        kind: VarKind::PrePost(&PREPOST_AFFINE_INV),
         is_3d: true,
         apply: |d, _, _, v, amount| {
             if amount == 0.0 {
@@ -738,8 +927,8 @@ v.color = abs(fmod(vo.w, 1.0));",
     },
     VarDef {
         name: "prepost_blob",
-        params: &[ParamDef::new("low", 0.8), ParamDef::new("high", 1.2), ParamDef::range("waves", 6.0, 1.0, 31.0)],
-        kind: VarKind::Post,
+        params: PREPOST_BLOB_PARAMS,
+        kind: VarKind::PrePost(&PREPOST_BLOB_INV),
         is_3d: false,
         apply: |d, _, _, v, amount| {
             let alow = 1.0 - amount * (1.0 - d[0]);
@@ -759,12 +948,8 @@ v.y = cos(ang) * r;",
     },
     VarDef {
         name: "prepost_circlize",
-        params: &[
-            ParamDef::int("n", 4.0, 3.0, 50.0),
-            ParamDef::range("rotation", 45.0, -180.0, 180.0),
-            ParamDef::int("reverse", 0.0, 0.0, 1.0),
-        ],
-        kind: VarKind::Post,
+        params: PREPOST_CIRCLIZE_PARAMS,
+        kind: VarKind::PrePost(&PREPOST_CIRCLIZE_INV),
         is_3d: false,
         apply: |d, _, _, v, amount| {
             // d = [n, rotation, reverse, rot_rad, pi_n, cospi_n]
@@ -778,11 +963,7 @@ v.y = cos(ang) * r;",
             v.x = l * theta.cos();
             v.y = l * theta.sin();
         },
-        prepare: Some(|p, _| {
-            let n = ftoi_limit(p[0], 3, 50);
-            let pi_n = M_PI / n;
-            vec![n, p[1], ftoi_limit(p[2], 0, 1), p[1] * M_PI / 180.0, pi_n, pi_n.cos()]
-        }),
+        prepare: Some(prepost_circlize_prepare),
         wgsl: "let theta = atan_yx(v);
 let r = rad(v);
 let tr = theta - D(3);
@@ -795,17 +976,8 @@ v.y = l * sin(theta);",
     },
     VarDef {
         name: "prepost_mobius",
-        params: &[
-            ParamDef::new("re_a", 1.0),
-            ParamDef::new("re_b", 0.0),
-            ParamDef::new("re_c", 0.0),
-            ParamDef::new("re_d", 1.0),
-            ParamDef::new("im_a", 0.0),
-            ParamDef::new("im_b", 0.0),
-            ParamDef::new("im_c", 0.0),
-            ParamDef::new("im_d", 0.0),
-        ],
-        kind: VarKind::Post,
+        params: PREPOST_MOBIUS_PARAMS,
+        kind: VarKind::PrePost(&PREPOST_MOBIUS_INV),
         is_3d: false,
         apply: |d, _, _, v, amount| {
             // d = [re_a, re_b, re_c, re_d, im_a, im_b, im_c, im_d]
@@ -836,33 +1008,24 @@ if (AMOUNT != 0.0 && den != 0.0) {
   v.y = rad_v * (im_u * re_v - re_u * im_v);
 }",
     },
+    PRE_PREPOST_AFFINE,
     VarDef {
-        name: "pre_prepost_affine",
-        params: PREPOST_AFFINE_PARAMS,
-        kind: VarKind::Pre,
-        is_3d: true,
-        apply: |d, _, a, _, amount| {
-            // Inverse of prepost_affine (the GPU code of InternalPrePostAffinePreWFFunc; its Java
-            // CPU transform is empty).
-            if amount == 0.0 {
-                return;
-            }
-            let x = a.x - d[6];
-            let y = a.y - d[7];
-            let z = a.z - d[8];
-            a.x = (d[18] * x + d[19] * y + d[20] * z) / (amount * d[0]);
-            a.y = (d[21] * x + d[22] * y + d[23] * z) / (amount * d[1]);
-            a.z = (d[24] * x + d[25] * y + d[26] * z) / (amount * d[2]);
+        name: "ringtile",
+        params: RINGTILE_PARAMS,
+        kind: VarKind::PrePost(&RINGTILE_INV),
+        is_3d: false,
+        apply: |_, ctx, a, v, amount| {
+            let mut z = Complex::new(v.x, v.y);
+            z.exp();
+            v.x = amount * z.re;
+            v.y = amount * z.im;
+            ctx.pass_z(a, v, amount);
         },
-        prepare: Some(prepost_affine_prepare),
-        wgsl: "if (AMOUNT != 0.0) {
-  let x = a.x - D(6);
-  let y = a.y - D(7);
-  let z = a.z - D(8);
-  a.x = (D(18) * x + D(19) * y + D(20) * z) / (AMOUNT * D(0));
-  a.y = (D(21) * x + D(22) * y + D(23) * z) / (AMOUNT * D(1));
-  a.z = (D(24) * x + D(25) * y + D(26) * z) / (AMOUNT * D(2));
-}",
+        prepare: None,
+        wgsl: "let e = exp(v.x);
+v.x = AMOUNT * e * cos(v.y);
+v.y = AMOUNT * e * sin(v.y);
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
     },
     VarDef {
         name: "pre_recip",
@@ -1552,6 +1715,7 @@ mod tests {
         "prepost_circlize",
         "prepost_mobius",
         "pre_prepost_affine",
+        "ringtile",
         "pre_recip",
         "pre_rect_wf",
         "pre_rotate_y",
@@ -1660,6 +1824,35 @@ mod tests {
             let mut dummy = Pt::default();
             (fwd.apply)(&dp, &mut ctx, &mut dummy, &mut w, 0.8);
             assert!((w.x - p.0).abs() < 1e-9 && (w.y - p.1).abs() < 1e-9 && (w.z - p.2).abs() < 1e-9, "{p:?} -> {w:?}");
+        }
+    }
+
+    /// The pre slot runs `invtransform`, the post slot `transform`: for these parameters the
+    /// pair is the identity.
+    #[test]
+    fn prepost_inverse_then_forward_is_identity() {
+        let cases: &[(&str, &[f64])] = &[
+            ("prepost_affine", &[1.5, 0.7, 2.0, 30.0, -20.0, 45.0, 0.3, -0.2, 0.1]),
+            ("prepost_blob", &[0.6, 1.4, 5.0]),
+            ("prepost_circlize", &[5.0, 20.0, 0.0]),
+            ("prepost_circlize", &[7.0, -40.0, 1.0]),
+            ("prepost_mobius", &[1.2, 0.3, 0.4, 0.9, -0.2, 0.1, 0.25, 0.05]),
+        ];
+        let mut ctx = Ctx::new(1, false);
+        for &(name, params) in cases {
+            let fwd = find(name);
+            let VarKind::PrePost(inv) = fwd.kind else { panic!("{name} is not prepost") };
+            let d = fwd.prepare_data(params, &Affine::IDENTITY);
+            for &p in POINTS {
+                let mut a = Pt { x: p.0, y: p.1, z: p.2, ..Default::default() };
+                let mut v = Pt::default();
+                (inv.apply)(&d, &mut ctx, &mut a, &mut v, 1.0);
+                let mut w = Pt { x: a.x, y: a.y, z: a.z, ..Default::default() };
+                let mut dummy = Pt::default();
+                (fwd.apply)(&d, &mut ctx, &mut dummy, &mut w, 1.0);
+                let z_ok = !fwd.is_3d || (w.z - p.2).abs() < 1e-9;
+                assert!((w.x - p.0).abs() < 1e-9 && (w.y - p.1).abs() < 1e-9 && z_ok, "{name} {p:?} -> {w:?}");
+            }
         }
     }
 

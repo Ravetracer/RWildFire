@@ -315,6 +315,9 @@ impl Program {
         let mut next_len = 0usize;
 
         let _ = write!(sig, "pz{}|sym{:?}|3d{}|", prepared.preserve_z, flame.post_symmetry.kind, flame.is_3d_projection_required());
+        if flame.post_blur_radius > 0 {
+            let _ = write!(sig, "pb{}/{}/{}|", flame.post_blur_radius, flame.post_blur_fade, flame.post_blur_falloff);
+        }
         for (li, layer) in prepared.layers.iter().enumerate() {
             let header = param_len;
             param_len += lo::SIZE;
@@ -439,6 +442,16 @@ impl Program {
             ));
         } else {
             w.push_str(PROJECT_FN);
+        }
+        if flame.post_blur_radius > 0 {
+            w.push_str(
+                &SPLAT_POST_BLUR
+                    .replace("PB_R", &format!("{}", flame.post_blur_radius.min(64) as i32))
+                    .replace("PB_FADE", &format!("{:?}", flame.post_blur_fade.clamp(0.0, 1.0) as f32))
+                    .replace("PB_FALLOFF", &format!("{:?}", flame.post_blur_falloff as f32)),
+            );
+        } else {
+            w.push_str(SPLAT_PLAIN);
         }
         match flame.post_symmetry.kind {
             PostSymmetryType::None => w.push_str("fn plot_sym(q: Pt, col: vec3<f32>) { plot(q.x, q.y, q.z, col); }\n"),
@@ -656,12 +669,34 @@ fn plot(px_in: f32, py_in: f32, pz: f32, col_in: vec3<f32>) {
     let ix = i32(floor(rx + 0.5));
     let iy = i32(floor(ry + 0.5));
     if (ix < 0 || iy < 0 || ix >= i32(U.raster_w) || iy >= i32(U.raster_h)) { return; }
-    let col = col_in * intensity;
+    splat(ix, iy, col_in * intensity);
+}
+
+fn hist_add(ix: i32, iy: i32, col: vec3<f32>) {
     let idx = (u32(iy) * U.raster_w + u32(ix)) * 4u;
     atomicAdd(&hist[idx], 1);
     atomicAdd(&hist[idx + 1u], i32(col.x * U.color_scale));
     atomicAdd(&hist[idx + 2u], i32(col.y * U.color_scale));
     atomicAdd(&hist[idx + 3u], i32(col.z * U.color_scale));
+}
+"#;
+
+const SPLAT_PLAIN: &str = "fn splat(ix: i32, iy: i32, col: vec3<f32>) { hist_add(ix, iy, col); }\n";
+
+/// `PostBlurRenderIterationState`; `PB_R`, `PB_FADE` and `PB_FALLOFF` are substituted.
+const SPLAT_POST_BLUR: &str = r#"
+fn splat(ix: i32, iy: i32, col: vec3<f32>) {
+    if (rnd() <= PB_FADE) { hist_add(ix, iy, col); return; }
+    for (var ky = -PB_R; ky <= PB_R; ky++) {
+        let y = iy + ky;
+        if (y < 0 || y >= i32(U.raster_h)) { continue; }
+        for (var kx = -PB_R; kx <= PB_R; kx++) {
+            let x = ix + kx;
+            if (x < 0 || x >= i32(U.raster_w)) { continue; }
+            let r = sqrt(f32(kx * kx + ky * ky)) / f32(PB_R);
+            hist_add(x, y, col * exp2(-r * PB_FALLOFF));
+        }
+    }
 }
 "#;
 

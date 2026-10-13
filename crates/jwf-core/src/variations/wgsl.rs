@@ -163,14 +163,26 @@ mod tests {
         validate(&src).unwrap();
     }
 
+    /// Registered variations plus the unregistered inverse halves of prepost variations.
+    fn gpu_defs() -> Vec<&'static VarDef> {
+        let mut defs = Vec::new();
+        for &def in variations::all() {
+            defs.push(def);
+            if let variations::VarKind::PrePost(inv) = def.kind {
+                defs.push(inv);
+            }
+        }
+        defs.retain(|d| d.supports_gpu());
+        defs.sort_by_key(|d| d.name);
+        defs.dedup_by_key(|d| d.name);
+        defs
+    }
+
     /// Every snippet on its own.
     #[test]
     fn every_variation_snippet_is_valid_wgsl() {
         let mut failures = Vec::new();
-        for def in variations::all() {
-            if !def.supports_gpu() {
-                continue;
-            }
+        for def in gpu_defs() {
             if let Err(e) = validate(&test_shader(&[def])) {
                 failures.push(format!("--- {} ---\n{}", def.name, e));
             }
@@ -181,8 +193,7 @@ mod tests {
     /// All snippets together (catches helper-name collisions between variations).
     #[test]
     fn all_variations_in_one_module() {
-        let defs: Vec<&VarDef> = variations::all().iter().copied().filter(|d| d.supports_gpu()).collect();
-        if let Err(e) = validate(&test_shader(&defs)) {
+        if let Err(e) = validate(&test_shader(&gpu_defs())) {
             panic!("combined module invalid:\n{}", e.lines().take(30).collect::<Vec<_>>().join("\n"));
         }
     }

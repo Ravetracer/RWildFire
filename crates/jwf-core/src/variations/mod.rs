@@ -176,13 +176,36 @@ pub type ApplyFn = fn(d: &[f64], ctx: &mut Ctx, a: &mut Pt, v: &mut Pt, amount: 
 pub type PrepareFn = fn(params: &[f64], coefs: &Affine) -> Vec<f64>;
 
 /// Default execution slot of a variation function (JWildfire `getPriority`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy)]
 pub enum VarKind {
     Normal,
     /// Runs before the normal variations and modifies the affine point in place.
     Pre,
     /// Runs after the normal variations and modifies the accumulated point in place.
     Post,
+    /// JWildfire priority 2: the inverse (`invtransform`) runs in the pre slot, the forward
+    /// transform in the post slot. The inverse is a separate, unregistered `VarDef` that shares
+    /// the parameters and `prepare` function of the forward one.
+    PrePost(&'static VarDef),
+}
+
+impl PartialEq for VarKind {
+    fn eq(&self, other: &Self) -> bool {
+        std::mem::discriminant(self) == std::mem::discriminant(other)
+    }
+}
+
+impl Eq for VarKind {}
+
+impl std::fmt::Debug for VarKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            VarKind::Normal => f.write_str("Normal"),
+            VarKind::Pre => f.write_str("Pre"),
+            VarKind::Post => f.write_str("Post"),
+            VarKind::PrePost(inv) => write!(f, "PrePost({})", inv.name),
+        }
+    }
 }
 
 impl VarKind {
@@ -191,6 +214,7 @@ impl VarKind {
             VarKind::Normal => 0,
             VarKind::Pre => -1,
             VarKind::Post => 1,
+            VarKind::PrePost(_) => 2,
         }
     }
 }
