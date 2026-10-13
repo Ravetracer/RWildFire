@@ -44,11 +44,17 @@ fn compare_with_jwildfire() {
     let spec = std::fs::read_to_string(std::env::var("JWF_SPEC").expect("JWF_SPEC")).unwrap();
     let reference = std::fs::read_to_string(std::env::var("JWF_REF").expect("JWF_REF")).unwrap();
     let (mut ok, mut bad) = (0, 0);
-    for line in spec.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')) {
+    for (no, line) in spec.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')).enumerate() {
         let mut tok = line.split_whitespace();
         let name = tok.next().unwrap();
-        let rows: Vec<Vec<&str>> =
-            reference.lines().map(|l| l.split_whitespace().collect::<Vec<_>>()).filter(|t| t.first() == Some(&name)).collect();
+        let no = no.to_string();
+        // rows: [line, name, point, values...] -> [name, point, values...]
+        let rows: Vec<Vec<&str>> = reference
+            .lines()
+            .map(|l| l.split_whitespace().collect::<Vec<_>>())
+            .filter(|t| t.first() == Some(&no.as_str()))
+            .map(|t| t[1..].to_vec())
+            .collect();
         if rows.iter().any(|r| r.get(1) == Some(&"ERROR")) || rows.is_empty() {
             println!("{name}: no JWildfire reference");
             continue;
@@ -87,7 +93,7 @@ fn compare_with_jwildfire() {
             None => ok += 1,
             Some(d) => {
                 bad += 1;
-                println!("{name}: MISMATCH {d}");
+                println!("{line}: MISMATCH {d}");
             }
         }
     }

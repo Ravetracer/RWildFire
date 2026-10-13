@@ -32,7 +32,8 @@ import java.util.Locale;
 /**
  * Reference outputs of JWildfire variations for the RWildFire port.
  *
- * Reads lines "name [param=value ...]" from stdin and prints, for six fixed input points, the
+ * Reads lines "name [param=value ...]" from stdin and prints, for six fixed input points (prefixed
+ * by the index of the spec line), the
  * affine and the accumulated point after one transform call. The random generator reproduces
  * RWildFire's xoshiro256+ (`rwf_core::rng::Rng`, including `random_int`), reseeded per point, so
  * random variations can be compared value by value. See `crates/rwf-core/tests/jwf_harness.rs`.
@@ -112,11 +113,13 @@ public class VarHarness {
   public static void main(String[] args) throws Exception {
     BufferedReader in = new BufferedReader(new InputStreamReader(System.in));
     String line;
+    int lineNo = -1;
     while ((line = in.readLine()) != null) {
       line = line.trim();
       if (line.isEmpty() || line.startsWith("#")) {
         continue;
       }
+      lineNo++;
       String[] tok = line.split("\\s+");
       String name = tok[0];
       try {
@@ -141,10 +144,10 @@ public class VarHarness {
           XYZPoint a = point(POINTS[k]);
           XYZPoint v = point(new double[] {0.1, -0.05, 0.02, POINTS[k][3]});
           func.transform(ctx, xf, a, v, AMOUNT);
-          System.out.println(name + " " + k + " " + fmt(a) + " " + fmt(v));
+          System.out.println(lineNo + " " + name + " " + k + " " + fmt(a) + " " + fmt(v));
         }
       } catch (Throwable ex) {
-        System.out.println(name + " ERROR " + ex);
+        System.out.println(lineNo + " " + name + " ERROR " + ex);
       }
     }
   }

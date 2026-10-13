@@ -26,4 +26,581 @@ use crate::math::*;
 #[allow(unused_imports)]
 use crate::model::Affine;
 
-pub static DEFS: &[VarDef] = &[];
+/// `Cubic_3DFunc` / `CubicLattice3DFunc` node: sign of the lattice offset per axis
+/// (x flips with bit 2, y with bit 0, z with bit 1).
+fn lattice_signs(node: i32) -> [f64; 3] {
+    let s = |bit: i32| if node & bit != 0 { -1.0 } else { 1.0 };
+    [s(4), s(1), s(2)]
+}
+
+/// `CactusGlobeFunc.applySpikeRealism`
+fn cactus_spike(d: &[f64], ctx: &mut Ctx, p: [f64; 3]) -> [f64; 3] {
+    // d[13] spike_length, d[14] spike_angle_rand, d[15] spike_droop
+    let len = d[13] * ctx.random();
+    let body = (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt();
+    if body < 1e-6 {
+        return [0.0; 3];
+    }
+    let mut s = [p[0] / body * len, p[1] / body * len, p[2] / body * len];
+    s[2] -= d[15] * len;
+    if d[14] > 0.0 {
+        let r = [ctx.random() - 0.5, ctx.random() - 0.5, ctx.random() - 0.5];
+        let rl = (r[0] * r[0] + r[1] * r[1] + r[2] * r[2]).sqrt();
+        if rl > 1e-6 {
+            let m = d[14] * len * ctx.random();
+            for k in 0..3 {
+                s[k] += r[k] / rl * m;
+            }
+        }
+    }
+    s
+}
+
+/// `CactusGlobeFunc.calculateCactusPoint`: `(point, has feature)`
+fn cactus_point(d: &[f64], ctx: &mut Ctx, a: &Pt, size: f64) -> ([f64; 3], bool) {
+    // d = [pattern_mode, generator_mode, size, ribs_1, ribDepth_1, spiral_1, ribs_2, ribDepth_2,
+    //      spiral_2, areoles_per_rib, areole_density, areole_focus, areole_size, ...]
+    let (rho, theta, phi) = if d[1] as i32 == 1 {
+        let rho = size * ctx.random().powf(1.0 / 3.0);
+        let theta = ctx.random() * 2.0 * M_PI;
+        (rho, theta, (2.0 * ctx.random() - 1.0).acos())
+    } else {
+        let s = if d[2] > 0.0 { size / d[2] } else { size };
+        let (x, y, z) = (a.x * s, a.y * s, a.z * s);
+        let rho = (x * x + y * y + z * z).sqrt();
+        if rho == 0.0 {
+            return ([0.0; 3], false);
+        }
+        (rho, y.atan2(x), (z / rho).acos())
+    };
+    let (sp, cp) = phi.sin_cos();
+    let mut feature = false;
+    let mut q;
+    if d[0] as i32 == 0 {
+        let rib_cos = (theta * d[3]).cos();
+        let r = rho + d[4] * sp * rib_cos;
+        let t = theta + phi * d[5];
+        q = [r * sp * t.cos(), r * sp * t.sin(), r * cp];
+        if d[9] > 0.0 {
+            let rib_width = 2.0 * M_PI / d[3];
+            let rib_center = (theta / rib_width + 0.5).floor() * rib_width;
+            let cell = M_PI / d[9];
+            let ac = (phi / cell).floor() * cell + cell * 0.5;
+            let dist = (phi.sin() * ac.sin() * (theta - rib_center).cos() + phi.cos() * ac.cos()).acos();
+            if dist < d[12] {
+                feature = true;
+                let s = cactus_spike(d, ctx, q);
+                q = [q[0] + s[0], q[1] + s[1], q[2] + s[2]];
+            }
+        }
+    } else {
+        let rc1 = ((theta + phi * d[5]) * d[3]).cos();
+        let rc2 = ((theta + phi * d[8]) * d[6]).cos();
+        let r = rho + d[4] * sp * rc1 + d[7] * sp * rc2;
+        q = [r * sp * theta.cos(), r * sp * theta.sin(), r * cp];
+        if d[10] > 0.0 && ctx.random() < d[10] {
+            let f = (((rc1 + 1.0) / 2.0) * ((rc2 + 1.0) / 2.0)).powf(d[11]);
+            if ctx.random() < f {
+                feature = true;
+                let s = cactus_spike(d, ctx, q);
+                q = [q[0] + s[0], q[1] + s[1], q[2] + s[2]];
+            }
+        }
+    }
+    (q, feature)
+}
+
+fn rot_x(p: &mut [f64; 3], ang: f64) {
+    let (s, c) = ang.sin_cos();
+    let (y, z) = (p[1], p[2]);
+    p[1] = c * y - s * z;
+    p[2] = s * y + c * z;
+}
+fn rot_y(p: &mut [f64; 3], ang: f64) {
+    let (s, c) = ang.sin_cos();
+    let (x, z) = (p[0], p[2]);
+    p[0] = c * x + s * z;
+    p[2] = -s * x + c * z;
+}
+fn rot_z(p: &mut [f64; 3], ang: f64) {
+    let (s, c) = ang.sin_cos();
+    let (x, y) = (p[0], p[1]);
+    p[0] = c * x - s * y;
+    p[1] = s * x + c * y;
+}
+
+/// `ChaosCubesFunc` cube selection: is cell `(ix, iy, iz)` part of the fractal in `mode`?
+fn chaos_cube_valid(mode: i32, invert: bool, ix: i32, iy: i32, iz: i32) -> bool {
+    let zeros = (ix == 0) as i32 + (iy == 0) as i32 + (iz == 0) as i32;
+    let manhattan = ix.abs() + iy.abs() + iz.abs();
+    let centre = ix == 0 && iy == 0 && iz == 0;
+    let v = match mode {
+        0 => zeros < 2,
+        1 => manhattan <= 1,
+        2 => !centre,
+        3 => return if invert { zeros >= 2 && !centre } else { zeros < 2 || centre },
+        4 => manhattan == 3,
+        _ => 3 - zeros == 2,
+    };
+    v != invert
+}
+
+pub static DEFS: &[VarDef] = &[
+    VarDef {
+        name: "barycentroid",
+        params: &[ParamDef::new("a", 1.0), ParamDef::new("b", 0.0), ParamDef::new("c", 0.0), ParamDef::new("d", 1.0)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let (dot00, dot01) = (d[0] * d[0] + d[1] * d[1], d[0] * d[2] + d[1] * d[3]);
+            let (dot02, dot11) = (d[0] * a.x + d[1] * a.y, d[2] * d[2] + d[3] * d[3]);
+            let dot12 = d[2] * a.x + d[3] * a.y;
+            let inv = 1.0 / (dot00 * dot11 - dot01 * dot01);
+            let u = (dot11 * dot02 - dot01 * dot12) * inv;
+            let w = (dot00 * dot12 - dot01 * dot02) * inv;
+            let sgn = |x: f64| if x < 0.0 { -1.0 } else if x > 0.0 { 1.0 } else { 0.0 };
+            v.x += amount * (u * u + a.x * a.x).sqrt() * sgn(u);
+            v.y += amount * (w * w + a.y * a.y).sqrt() * sgn(w);
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "let dot00 = D(0) * D(0) + D(1) * D(1);
+let dot01 = D(0) * D(2) + D(1) * D(3);
+let dot02 = D(0) * a.x + D(1) * a.y;
+let dot11 = D(2) * D(2) + D(3) * D(3);
+let dot12 = D(2) * a.x + D(3) * a.y;
+let inv = 1.0 / (dot00 * dot11 - dot01 * dot01);
+let u = (dot11 * dot02 - dot01 * dot12) * inv;
+let w = (dot00 * dot12 - dot01 * dot02) * inv;
+v.x += AMOUNT * sqrt(u * u + a.x * a.x) * sign(u);
+v.y += AMOUNT * sqrt(w * w + a.y * a.y) * sign(w);
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "cubic3D",
+        params: &[ParamDef::new("xpand", 0.25), ParamDef::new("style", 1.0)],
+        kind: VarKind::Normal,
+        is_3d: true,
+        apply: |d, ctx, a, v, amount| {
+            // d = [xpand, style, fill, smoothStyle]
+            let node = (ctx.random() * 8.0).trunc() as i32;
+            let lattd = amount * 0.5;
+            let smooth = if amount.abs() <= 0.5 { amount * 2.0 } else { 1.0 };
+            let (fill, ss) = (d[2], d[3]);
+            let ex = 1.0 - ss * (1.0 - a.x.atan2(a.z).cos());
+            let wy = 1.0 - ss * (1.0 - a.y.atan2(a.z).sin());
+            let zn = if ss > 1.0 { 1.0 - ss * (1.0 - (ex + wy) / 2.0 * ss) } else { 1.0 - ss * (1.0 - (ex + wy) / 2.0) };
+            let s = lattice_signs(node);
+            v.x = (v.x - smooth * (1.0 - fill) * v.x * ex) + a.x * smooth * fill * ex + s[0] * lattd;
+            v.y = (v.y - smooth * (1.0 - fill) * v.y * wy) + a.y * smooth * fill * wy + s[1] * lattd;
+            v.z = (v.z - smooth * (1.0 - fill) * v.z * zn) + a.z * smooth * fill * zn + s[2] * lattd;
+        },
+        prepare: Some(|p, _| {
+            let fill = if p[0].abs() <= 1.0 { p[0] * 0.5 } else { p[0].sqrt() * 0.5 };
+            let ss = if p[1].abs() <= 1.0 {
+                p[1]
+            } else if p[1] > 1.0 {
+                1.0 + (p[1] - 1.0) * 0.25
+            } else {
+                (p[1] + 1.0) * 0.25 - 1.0
+            };
+            vec![p[0], p[1], fill, ss]
+        }),
+        wgsl: "let node = i32(trunc(rnd() * 8.0));
+let lattd = AMOUNT * 0.5;
+var smth = 1.0;
+if (abs(AMOUNT) <= 0.5) { smth = AMOUNT * 2.0; }
+let fill = D(2);
+let ss = D(3);
+let ex = 1.0 - ss * (1.0 - cos(atan2(a.x, a.z)));
+let wy = 1.0 - ss * (1.0 - sin(atan2(a.y, a.z)));
+var zn = 1.0 - ss * (1.0 - (ex + wy) / 2.0);
+if (ss > 1.0) { zn = 1.0 - ss * (1.0 - (ex + wy) / 2.0 * ss); }
+let s = vec3<f32>(select(1.0, -1.0, (node & 4) != 0), select(1.0, -1.0, (node & 1) != 0), select(1.0, -1.0, (node & 2) != 0));
+v.x = (v.x - smth * (1.0 - fill) * v.x * ex) + a.x * smth * fill * ex + s.x * lattd;
+v.y = (v.y - smth * (1.0 - fill) * v.y * wy) + a.y * smth * fill * wy + s.y * lattd;
+v.z = (v.z - smth * (1.0 - fill) * v.z * zn) + a.z * smth * fill * zn + s.z * lattd;",
+    },
+    VarDef {
+        name: "cubicLattice_3D",
+        params: &[ParamDef::new("xpand", 0.2), ParamDef::new("style", 1.0)],
+        kind: VarKind::Normal,
+        is_3d: true,
+        apply: |d, ctx, a, v, amount| {
+            // d = [xpand, style, fill, style 2]
+            let (ex, wy, zn) = if d[3] != 0.0 {
+                let ex = a.x.atan2(a.z).cos();
+                let wy = a.y.atan2(a.z).sin();
+                (ex, wy, (ex + wy) / 2.0)
+            } else {
+                (1.0, 1.0, 1.0)
+            };
+            let s = lattice_signs((ctx.random() * 8.0).trunc() as i32);
+            let fill = d[2];
+            v.x = (v.x + a.x) * fill * ex + s[0] * amount;
+            v.y = (v.y + a.y) * fill * wy + s[1] * amount;
+            v.z = (v.z + a.z) * fill * zn + s[2] * amount;
+        },
+        prepare: Some(|p, _| {
+            let fill = if p[0].abs() <= 1.0 { p[0] * 0.5 } else { p[0].sqrt() * 0.5 };
+            vec![p[0], p[1], fill, if p[1].abs() >= 2.0 { 1.0 } else { 0.0 }]
+        }),
+        wgsl: "var ex = 1.0;
+var wy = 1.0;
+var zn = 1.0;
+if (D(3) != 0.0) {
+  ex = cos(atan2(a.x, a.z));
+  wy = sin(atan2(a.y, a.z));
+  zn = (ex + wy) / 2.0;
+}
+let node = i32(trunc(rnd() * 8.0));
+let s = vec3<f32>(select(1.0, -1.0, (node & 4) != 0), select(1.0, -1.0, (node & 1) != 0), select(1.0, -1.0, (node & 2) != 0));
+v.x = (v.x + a.x) * D(2) * ex + s.x * AMOUNT;
+v.y = (v.y + a.y) * D(2) * wy + s.y * AMOUNT;
+v.z = (v.z + a.z) * D(2) * zn + s.z * AMOUNT;",
+    },
+    VarDef {
+        name: "cactusGlobe",
+        params: &[
+            ParamDef::int("pattern_mode", 0.0, 0.0, 1.0),
+            ParamDef::int("generator_mode", 1.0, 0.0, 1.0),
+            ParamDef::new("size", 1.0),
+            ParamDef::range("ribs_1", 12.0, 0.0, 40.0),
+            ParamDef::new("ribDepth_1", 0.1),
+            ParamDef::new("spiral_1", 0.5),
+            ParamDef::range("ribs_2", 0.0, 0.0, 40.0),
+            ParamDef::new("ribDepth_2", 0.0),
+            ParamDef::new("spiral_2", 0.0),
+            ParamDef::range("areoles_per_rib", 10.0, 0.0, 40.0),
+            ParamDef::range("areole_density", 1.0, 0.0, 1.0),
+            ParamDef::range("areole_focus", 16.0, 0.0, 64.0),
+            ParamDef::new("areole_size", 0.05),
+            ParamDef::new("spike_length", 0.1),
+            ParamDef::new("spike_angle_rand", 0.0),
+            ParamDef::new("spike_droop", 0.0),
+            ParamDef::int("recursion_depth", 3.0, 0.0, 8.0),
+            ParamDef::range("pup_chance", 0.3, 0.0, 1.0),
+            ParamDef::int("pups_count", 3.0, 1.0, 12.0),
+            ParamDef::new("pup_size", 0.5),
+            ParamDef::new("pups_spread", 1.0),
+            ParamDef::new("pups_vertical_offset", -0.5),
+            ParamDef::range("feature_color", 1.0, 0.0, 1.0),
+        ],
+        kind: VarKind::Normal,
+        is_3d: true,
+        apply: |d, ctx, a, v, amount| {
+            let mut size = d[2];
+            let mut off = [0.0; 3];
+            for _ in 0..d[16] as i32 {
+                if ctx.random() < d[17] {
+                    let idx = (ctx.random() * d[18]).trunc();
+                    let ang = idx / d[18] * 2.0 * M_PI;
+                    off[0] += size * d[20] * ang.cos();
+                    off[1] += size * d[20] * ang.sin();
+                    off[2] += size * d[21];
+                    size *= d[19];
+                } else {
+                    break;
+                }
+            }
+            let (q, feature) = cactus_point(d, ctx, a, size);
+            if feature {
+                v.color = d[22];
+            }
+            v.x += (q[0] + off[0]) * amount;
+            v.y += (q[1] + off[1]) * amount;
+            v.z += (q[2] + off[2]) * amount;
+        },
+        prepare: Some(|p, _| {
+            let mut d = p.to_vec();
+            d[0] = ftoi(p[0]).clamp(0, 1) as f64;
+            d[1] = ftoi(p[1]).clamp(0, 1) as f64;
+            d[10] = limit_value(p[10], 0.0, 1.0);
+            d[16] = ftoi(p[16]).clamp(0, 8) as f64;
+            d[17] = limit_value(p[17], 0.0, 1.0);
+            d[18] = p[18].trunc();
+            d[22] = limit_value(p[22], 0.0, 1.0);
+            d
+        }),
+        wgsl: "fn cactusGlobe_spike(base: u32, p: vec3<f32>) -> vec3<f32> {
+  let len = prm[base + 13u] * rnd();
+  let body = length(p);
+  if (body < 1e-6) { return vec3<f32>(0.0); }
+  var s = p / body * len;
+  s.z -= prm[base + 15u] * len;
+  if (prm[base + 14u] > 0.0) {
+    let r = vec3<f32>(rnd() - 0.5, rnd() - 0.5, rnd() - 0.5);
+    let rl = length(r);
+    if (rl > 1e-6) { s += r / rl * (prm[base + 14u] * len * rnd()); }
+  }
+  return s;
+}
+// (point, feature flag)
+fn cactusGlobe_point(base: u32, a: Pt, size: f32) -> vec4<f32> {
+  var rho = 0.0;
+  var theta = 0.0;
+  var phi = 0.0;
+  if (i32(prm[base + 1u]) == 1) {
+    rho = size * pow(rnd(), 1.0 / 3.0);
+    theta = rnd() * TWO_PI;
+    phi = acos(2.0 * rnd() - 1.0);
+  } else {
+    var s = size;
+    if (prm[base + 2u] > 0.0) { s = size / prm[base + 2u]; }
+    let q = vec3<f32>(a.x, a.y, a.z) * s;
+    rho = length(q);
+    if (rho == 0.0) { return vec4<f32>(0.0, 0.0, 0.0, -1.0); }
+    theta = atan2(q.y, q.x);
+    phi = acos(q.z / rho);
+  }
+  let sp = sin(phi);
+  let cp = cos(phi);
+  var feature = -1.0;
+  var q = vec3<f32>(0.0);
+  if (i32(prm[base]) == 0) {
+    let r = rho + prm[base + 4u] * sp * cos(theta * prm[base + 3u]);
+    let t = theta + phi * prm[base + 5u];
+    q = vec3<f32>(r * sp * cos(t), r * sp * sin(t), r * cp);
+    if (prm[base + 9u] > 0.0) {
+      let rib_width = TWO_PI / prm[base + 3u];
+      let rib_center = floor(theta / rib_width + 0.5) * rib_width;
+      let cell = PI / prm[base + 9u];
+      let ac = floor(phi / cell) * cell + cell * 0.5;
+      let dist = acos(sin(phi) * sin(ac) * cos(theta - rib_center) + cos(phi) * cos(ac));
+      if (dist < prm[base + 12u]) { feature = 1.0; q += cactusGlobe_spike(base, q); }
+    }
+  } else {
+    let rc1 = cos((theta + phi * prm[base + 5u]) * prm[base + 3u]);
+    let rc2 = cos((theta + phi * prm[base + 8u]) * prm[base + 6u]);
+    let r = rho + prm[base + 4u] * sp * rc1 + prm[base + 7u] * sp * rc2;
+    q = vec3<f32>(r * sp * cos(theta), r * sp * sin(theta), r * cp);
+    if (prm[base + 10u] > 0.0 && rnd() < prm[base + 10u]) {
+      let f = pow(((rc1 + 1.0) / 2.0) * ((rc2 + 1.0) / 2.0), prm[base + 11u]);
+      if (rnd() < f) { feature = 1.0; q += cactusGlobe_spike(base, q); }
+    }
+  }
+  return vec4<f32>(q, feature);
+}
+@body
+var size = D(2);
+var off = vec3<f32>(0.0);
+for (var i = 0; i < i32(D(16)); i++) {
+  if (rnd() < D(17)) {
+    let ang = trunc(rnd() * D(18)) / D(18) * TWO_PI;
+    off += vec3<f32>(size * D(20) * cos(ang), size * D(20) * sin(ang), size * D(21));
+    size *= D(19);
+  } else { break; }
+}
+let q = cactusGlobe_point(base, a, size);
+if (q.w > 0.0) { v.color = D(22); }
+v.x += (q.x + off.x) * AMOUNT;
+v.y += (q.y + off.y) * AMOUNT;
+v.z += (q.z + off.z) * AMOUNT;",
+    },
+    VarDef {
+        name: "chaosCubes",
+        params: &[
+            ParamDef::int("mode", 0.0, 0.0, 7.0),
+            ParamDef::int("mode7_A", 0.0, 0.0, 5.0),
+            ParamDef::int("mode7_B", 1.0, 0.0, 5.0),
+            ParamDef::int("depth", 5.0, 1.0, 15.0),
+            ParamDef::new("twistX", 0.0),
+            ParamDef::new("twistY", 0.0),
+            ParamDef::new("twistZ", 0.0),
+            ParamDef::range("scaleX", 0.3333333, 0.0, 1.0),
+            ParamDef::range("scaleY", 0.3333333, 0.0, 1.0),
+            ParamDef::range("scaleZ", 0.3333333, 0.0, 1.0),
+            ParamDef::new("offset", 1.0),
+            ParamDef::range("rotX", 0.0, -180.0, 180.0),
+            ParamDef::range("rotY", 0.0, -180.0, 180.0),
+            ParamDef::range("rotZ", 0.0, -180.0, 180.0),
+            ParamDef::int("invert", 0.0, 0.0, 1.0),
+            ParamDef::int("julia", 0.0, 0.0, 1.0),
+            ParamDef::int("colorMode", 0.0, 0.0, 5.0),
+            ParamDef::new("colorSpeed", 1.0),
+            ParamDef::int("sphereInvert", 0.0, 0.0, 1.0),
+            ParamDef::new("sphereRadius", 1.0),
+        ],
+        kind: VarKind::Normal,
+        is_3d: true,
+        apply: |d, ctx, a, v, amount| {
+            let mut p = [a.x, a.y, a.z];
+            let (rx, ry, rz) = (d[11].to_radians(), d[12].to_radians(), d[13].to_radians());
+            if rx != 0.0 {
+                rot_x(&mut p, rx);
+            }
+            if ry != 0.0 {
+                rot_y(&mut p, ry);
+            }
+            if rz != 0.0 {
+                rot_z(&mut p, rz);
+            }
+            let c = p;
+            let (mode, off, invert) = (d[0] as i32, d[10], d[14] != 0.0);
+            let scale = [d[7], d[8], d[9]];
+            let (mut last, mut last_v, mut path) = ([0i32; 3], 0, 0.0);
+            for _ in 0..d[3] as i32 {
+                let m = if mode == 7 { if ctx.random() < 0.5 { d[1] as i32 } else { d[2] as i32 } } else { mode };
+                if m <= 5 {
+                    let cell = loop {
+                        let ix = (ctx.random() * 3.0) as i32 - 1;
+                        let iy = (ctx.random() * 3.0) as i32 - 1;
+                        let iz = (ctx.random() * 3.0) as i32 - 1;
+                        if chaos_cube_valid(m, invert, ix, iy, iz) {
+                            break [ix, iy, iz];
+                        }
+                    };
+                    last = cell;
+                    for k in 0..3 {
+                        p[k] = p[k] * scale[k] - cell[k] as f64 * off * (1.0 - scale[k]);
+                        if d[15] != 0.0 {
+                            p[k] += c[k];
+                        }
+                    }
+                } else {
+                    last_v = (ctx.random() * 5.0) as i32;
+                    let vt = [[off, off, 0.0], [off, -off, 0.0], [-off, -off, 0.0], [-off, off, 0.0], [0.0, 0.0, off * scale[1] * 0.5]][last_v as usize];
+                    for k in 0..3 {
+                        p[k] = (p[k] + vt[k]) * 0.5;
+                    }
+                }
+                if d[4] != 0.0 {
+                    let ang = p[0] * d[4];
+                    rot_x(&mut p, ang);
+                }
+                if d[5] != 0.0 {
+                    let ang = p[1] * d[5];
+                    rot_y(&mut p, ang);
+                }
+                if d[6] != 0.0 {
+                    let ang = p[2] * d[6];
+                    rot_z(&mut p, ang);
+                }
+                path += (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt();
+            }
+            if d[18] != 0.0 {
+                let r2 = p[0] * p[0] + p[1] * p[1] + p[2] * p[2];
+                if r2 > 1.0e-6 {
+                    let f = d[19] * d[19] / r2;
+                    p = [p[0] * f, p[1] * f, p[2] * f];
+                }
+            }
+            v.x += p[0] * amount;
+            v.y += p[1] * amount;
+            v.z += p[2] * amount;
+            if d[16] as i32 > 0 {
+                let col = match d[16] as i32 {
+                    1 => (p[0] / off + p[1] / off + p[2] / off) / 3.0,
+                    2 => {
+                        if mode == 6 {
+                            last_v as f64 / 4.0
+                        } else {
+                            (last[0] + 1 + (last[1] + 1) * 3 + (last[2] + 1) * 9) as f64 / 26.0
+                        }
+                    }
+                    3 => (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt() / off,
+                    4 => path / (d[3] * off),
+                    _ => (p[1].atan2(p[0]) + p[2].atan2(p[0]) + 2.0 * M_PI) / (4.0 * M_PI),
+                } * d[17];
+                let col = ((col % 1.0) + 1.0) % 1.0;
+                v.color += (col - v.color) * amount;
+            }
+        },
+        prepare: Some(|p, _| {
+            let mut d = p.to_vec();
+            let clamp = |v: f64, lo: f64, hi: f64| v.min(hi).max(lo).trunc();
+            d[0] = clamp(p[0], 0.0, 7.0);
+            d[1] = clamp(p[1], 0.0, 5.0);
+            d[2] = clamp(p[2], 0.0, 5.0);
+            d[3] = clamp(p[3], 1.0, 15.0);
+            for i in [14, 15, 18] {
+                d[i] = if p[i] > 0.5 { 1.0 } else { 0.0 };
+            }
+            d[16] = clamp(p[16], 0.0, 5.0);
+            d
+        }),
+        wgsl: "fn chaosCubes_rot(p: vec3<f32>, axis: i32, ang: f32) -> vec3<f32> {
+  let s = sin(ang);
+  let c = cos(ang);
+  if (axis == 0) { return vec3<f32>(p.x, c * p.y - s * p.z, s * p.y + c * p.z); }
+  if (axis == 1) { return vec3<f32>(c * p.x + s * p.z, p.y, -s * p.x + c * p.z); }
+  return vec3<f32>(c * p.x - s * p.y, s * p.x + c * p.y, p.z);
+}
+fn chaosCubes_valid(mode: i32, invert: bool, c: vec3<i32>) -> bool {
+  let zeros = select(0, 1, c.x == 0) + select(0, 1, c.y == 0) + select(0, 1, c.z == 0);
+  let manhattan = abs(c.x) + abs(c.y) + abs(c.z);
+  let centre = c.x == 0 && c.y == 0 && c.z == 0;
+  var v = false;
+  if (mode == 0) { v = zeros < 2; }
+  else if (mode == 1) { v = manhattan <= 1; }
+  else if (mode == 2) { v = !centre; }
+  else if (mode == 3) { if (invert) { return zeros >= 2 && !centre; } return zeros < 2 || centre; }
+  else if (mode == 4) { v = manhattan == 3; }
+  else { v = 3 - zeros == 2; }
+  return v != invert;
+}
+@body
+var p = vec3<f32>(a.x, a.y, a.z);
+let rx = radians(D(11));
+let ry = radians(D(12));
+let rz = radians(D(13));
+if (rx != 0.0) { p = chaosCubes_rot(p, 0, rx); }
+if (ry != 0.0) { p = chaosCubes_rot(p, 1, ry); }
+if (rz != 0.0) { p = chaosCubes_rot(p, 2, rz); }
+let c = p;
+let mode = i32(D(0));
+let off = D(10);
+let invert = D(14) != 0.0;
+let scale = vec3<f32>(D(7), D(8), D(9));
+var last = vec3<i32>(0);
+var last_v = 0;
+var path = 0.0;
+for (var i = 0; i < i32(D(3)); i++) {
+  var m = mode;
+  if (mode == 7) { m = select(i32(D(2)), i32(D(1)), rnd() < 0.5); }
+  if (m <= 5) {
+    var cell = vec3<i32>(0);
+    for (var t = 0; t < 256; t++) {
+      cell = vec3<i32>(i32(rnd() * 3.0) - 1, i32(rnd() * 3.0) - 1, i32(rnd() * 3.0) - 1);
+      if (chaosCubes_valid(m, invert, cell)) { break; }
+    }
+    last = cell;
+    p = p * scale - vec3<f32>(cell) * off * (1.0 - scale);
+    if (D(15) != 0.0) { p += c; }
+  } else {
+    last_v = i32(rnd() * 5.0);
+    var vt = vec3<f32>(0.0, 0.0, off * scale.y * 0.5);
+    if (last_v == 0) { vt = vec3<f32>(off, off, 0.0); }
+    else if (last_v == 1) { vt = vec3<f32>(off, -off, 0.0); }
+    else if (last_v == 2) { vt = vec3<f32>(-off, -off, 0.0); }
+    else if (last_v == 3) { vt = vec3<f32>(-off, off, 0.0); }
+    p = (p + vt) * 0.5;
+  }
+  if (D(4) != 0.0) { p = chaosCubes_rot(p, 0, p.x * D(4)); }
+  if (D(5) != 0.0) { p = chaosCubes_rot(p, 1, p.y * D(5)); }
+  if (D(6) != 0.0) { p = chaosCubes_rot(p, 2, p.z * D(6)); }
+  path += length(p);
+}
+if (D(18) != 0.0) {
+  let r2 = dot(p, p);
+  if (r2 > 1.0e-6) { p *= D(19) * D(19) / r2; }
+}
+v.x += p.x * AMOUNT;
+v.y += p.y * AMOUNT;
+v.z += p.z * AMOUNT;
+let cm = i32(D(16));
+if (cm > 0) {
+  var col = 0.0;
+  if (cm == 1) { col = (p.x / off + p.y / off + p.z / off) / 3.0; }
+  else if (cm == 2) {
+    if (mode == 6) { col = f32(last_v) / 4.0; } else { col = f32(last.x + 1 + (last.y + 1) * 3 + (last.z + 1) * 9) / 26.0; }
+  }
+  else if (cm == 3) { col = length(p) / off; }
+  else if (cm == 4) { col = path / (D(3) * off); }
+  else { col = (atan2(p.y, p.x) + atan2(p.z, p.x) + TWO_PI) / (4.0 * PI); }
+  col *= D(17);
+  col = fmod(fmod(col, 1.0) + 1.0, 1.0);
+  v.color += (col - v.color) * AMOUNT;
+}",
+    },
+];

@@ -16,7 +16,7 @@ thiserror = "2.0.21"
 naga = { version = "30", features = ["wgsl-in"] }
 
 [features]
-default = ["w01", "w02", "w03", "w04", "w05", "w06", "w07", "w08", "w09", "w10", "w16", "w19"]
+default = ["w01", "w02", "w03", "w04", "w05", "w06", "w07", "w08", "w09", "w10", "w11", "w16", "w19"]
 w01 = []
 w02 = []
 w03 = []
