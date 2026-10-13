@@ -1787,10 +1787,11 @@ pub static DEFS: &[VarDef] = &[
         ],
         kind: VarKind::Normal,
         is_3d: false,
-        // The Java canvas cycles through the segments in order; here a random segment is picked.
+        // The Java canvas cycles through the segments in order; here per render thread (the GPU
+        // picks a random segment).
         apply: |d, ctx, a, v, amount| {
             let nseg = d[11] as usize;
-            let k = BROWNIAN_PATH + 2 * ctx.random_int(nseg);
+            let k = BROWNIAN_PATH + 2 * ctx.cycle_index(d.as_ptr() as usize, nseg);
             let (x1, y1, x2, y2) = (d[k], d[k + 1], d[k + 2], d[k + 3]);
             let rnd = ctx.random();
             let (mut ox, mut oy) = (0.0, 0.0);

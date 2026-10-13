@@ -4408,13 +4408,23 @@ if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
         },
         // one value, so that every instance has its own state key
         prepare: Some(|_, _| vec![0.0]),
-        wgsl: "var<private> pre_blur3D_ring: array<f32, 6>;
+        wgsl: "fn pre_blur3D_hash(i: u32) -> f32 {
+  var x = i * 747796405u + 2891336453u;
+  x = ((x >> ((x >> 28u) + 4u)) ^ x) * 277803737u;
+  x = (x >> 22u) ^ x;
+  return f32(x >> 8u) / 16777216.0;
+}
+var<private> pre_blur3D_ring: array<f32, 6>;
 var<private> pre_blur3D_idx: u32;
 var<private> pre_blur3D_init: bool;
 fn pre_blur3D_gauss() -> f32 {
   if (!pre_blur3D_init) {
     pre_blur3D_init = true;
-    for (var i = 0; i < 6; i++) { pre_blur3D_ring[i] = rnd(); }
+    // JWildfire fills the ring once per render thread and only ever replaces entries 0
+    // and 1, so entries 2..5 stay constant per thread: they come from one of 16 fixed
+    // sets here (like 16 render threads).
+    let ring_set = min(u32(rnd() * 16.0), 15u);
+    for (var i = 0u; i < 6u; i++) { pre_blur3D_ring[i] = select(rnd(), pre_blur3D_hash(ring_set * 6u + i), i >= 2u); }
   }
   let s = pre_blur3D_ring[0] + pre_blur3D_ring[1] + pre_blur3D_ring[2] + pre_blur3D_ring[3] + pre_blur3D_ring[4] + pre_blur3D_ring[5];
   pre_blur3D_ring[pre_blur3D_idx] = rnd();

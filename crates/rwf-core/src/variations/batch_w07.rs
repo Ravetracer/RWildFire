@@ -983,13 +983,23 @@ dc_output(&v, AMOUNT, uv, col, i32(D(7)), D(8), D(9), i32(D(10)));",
             d
         }),
         wgsl: "fn dc_gnarly_asinh(x: f32) -> f32 { return log(x + sqrt(x * x + 1.0)); }
+fn dc_gnarly_hash(i: u32) -> f32 {
+  var x = i * 747796405u + 2891336453u;
+  x = ((x >> ((x >> 28u) + 4u)) ^ x) * 277803737u;
+  x = (x >> 22u) ^ x;
+  return f32(x >> 8u) / 16777216.0;
+}
 var<private> dc_gnarly_ring: array<f32, 6>;
 var<private> dc_gnarly_idx: u32;
 var<private> dc_gnarly_init: bool;
 fn dc_gnarly_gauss() -> f32 {
   if (!dc_gnarly_init) {
     dc_gnarly_init = true;
-    for (var i = 0; i < 6; i++) { dc_gnarly_ring[i] = rnd(); }
+    // JWildfire fills the ring once per render thread and only ever replaces entries 0
+    // and 1, so entries 2..5 stay constant per thread: they come from one of 16 fixed
+    // sets here (like 16 render threads).
+    let ring_set = min(u32(rnd() * 16.0), 15u);
+    for (var i = 0u; i < 6u; i++) { dc_gnarly_ring[i] = select(rnd(), dc_gnarly_hash(ring_set * 6u + i), i >= 2u); }
   }
   let s = dc_gnarly_ring[0] + dc_gnarly_ring[1] + dc_gnarly_ring[2] + dc_gnarly_ring[3] + dc_gnarly_ring[4] + dc_gnarly_ring[5];
   dc_gnarly_ring[dc_gnarly_idx] = rnd();
