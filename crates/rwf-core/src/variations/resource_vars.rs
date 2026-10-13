@@ -1179,6 +1179,128 @@ fn knots_load(d: &mut Vec<f64>, res: &[Vec<u8>], _: &LoadEnv) {
     pack_mesh(d, o, &mesh);
 }
 
+/// `terrain3D` parameters: roughness, z_exaggeration, size, seed, dc, then the mesh parameters.
+static TERRAIN_PARAMS: [ParamDef; 19] = {
+    let mut p = [ParamDef::new("roughness", 0.5); 19];
+    p[1] = ParamDef::new("z_exaggeration", 0.7);
+    p[2] = ParamDef::int("Size (N PowersOf 2)", 5.0, 1.0, 8.0);
+    // JWildfire draws a random default seed (0..999)
+    p[3] = ParamDef::int("seed", 42.0, 0.0, 10000.0);
+    p[4] = ParamDef::int("dc", 1.0, 0.0, 1.0);
+    let mut i = 0;
+    while i < 14 {
+        p[5 + i] = MESH_PARAMS[i];
+        i += 1;
+    }
+    p
+};
+
+/// `FracTerrain3DFunc.FractalTerrain`: diamond-square height field as a mesh.
+fn terrain_mesh(lod: i32, roughness: f64, seed: i32, exaggeration: f64) -> Mesh {
+    let n = 1usize << lod;
+    let mut rng = crate::rng::JavaRandom::new(seed as i64);
+    let mut rnd = move || 2.0 * rng.next_double() - 1.0;
+    let mut t = vec![vec![0.0f64; n + 1]; n + 1];
+    t[0][0] = rnd();
+    t[0][n] = rnd();
+    t[n][n] = rnd();
+    t[n][0] = rnd();
+    let mut rough = roughness;
+    for i in 0..lod {
+        let r = 1i64 << (lod - i);
+        let s = r >> 1;
+        let div = n as i64;
+        for j in (0..div).step_by(r as usize) {
+            for k in (0..div).step_by(r as usize) {
+                // diamond
+                if r > 1 {
+                    let (x, y, side) = (j as usize, k as usize, r as usize);
+                    let half = side / 2;
+                    let avg = (t[x][y] + t[x + side][y] + t[x + side][y + side] + t[x][y + side]) * 0.25;
+                    t[x + half][y + half] = avg + rnd() * rough;
+                }
+            }
+        }
+        if s > 0 {
+            let mut j = 0;
+            while j <= div {
+                let mut k = (j + s) % r;
+                while k <= div {
+                    // square
+                    let (x, y, side) = (j - s, k - s, r);
+                    let half = side / 2;
+                    let (mut avg, mut sum) = (0.0, 0.0);
+                    if x >= 0 {
+                        avg += t[x as usize][(y + half) as usize];
+                        sum += 1.0;
+                    }
+                    if y >= 0 {
+                        avg += t[(x + half) as usize][y as usize];
+                        sum += 1.0;
+                    }
+                    if x + side <= div {
+                        avg += t[(x + side) as usize][(y + half) as usize];
+                        sum += 1.0;
+                    }
+                    if y + side <= div {
+                        avg += t[(x + half) as usize][(y + side) as usize];
+                        sum += 1.0;
+                    }
+                    t[(x + half) as usize][(y + half) as usize] = avg / sum + rnd() * rough;
+                    k += r;
+                }
+                j += s;
+            }
+        }
+        rough *= roughness;
+    }
+    let (mut min, mut max) = (t[0][0], t[0][0]);
+    for row in &t {
+        for &h in row {
+            if h < min {
+                min = h;
+            } else if h > max {
+                max = h;
+            }
+        }
+    }
+    let mut m = Mesh::default();
+    for i in 0..=n {
+        for j in 0..=n {
+            let (x, z) = (i as f64 / n as f64, j as f64 / n as f64);
+            let alt = (t[(x * n as f64) as usize][(z * n as f64) as usize] - min) / (max - min);
+            m.add_vertex(x - 0.5, alt * exaggeration, z - 0.5, None);
+        }
+    }
+    let w = (n + 1) as u32;
+    for i in 0..n as u32 {
+        for j in 0..n as u32 {
+            m.add_face(w * i + j, w * (i + 1) + j, w * i + j + 1);
+            m.add_face(w * (i + 1) + j, w * (i + 1) + j + 1, w * i + j + 1);
+        }
+    }
+    m
+}
+
+fn terrain_load(d: &mut Vec<f64>, res: &[Vec<u8>], _: &LoadEnv) {
+    let p = 5;
+    let o = p + MESH_PARAMS.len();
+    load_image(d, o, &res[0]);
+    load_image(d, o + M_DISPL, &res[1]);
+    let (lod, roughness, seed, exaggeration) = (d[2] as i32, d[0], d[3] as i32, d[1]);
+    let (level, passes, lambda, mu) = (d[p + 6] as i32, d[p + 7] as i32, d[p + 8], d[p + 9]);
+    let key = format!("terrain3D#{lod}#{roughness}#{seed}#{exaggeration}#{level}#{passes}#{lambda}#{mu}");
+    let mesh = mesh::cached(key, || {
+        let mut m = terrain_mesh(lod, roughness, seed, exaggeration);
+        for _ in 0..level.min(2) {
+            m = m.interpolate();
+            m.taubin_smooth(passes, lambda, mu);
+        }
+        m
+    });
+    pack_mesh(d, o, &mesh);
+}
+
 fn sattractor_load(d: &mut Vec<f64>, res: &[Vec<u8>], _: &LoadEnv) {
     let p = 17;
     let o = p + MESH_PARAMS.len();
@@ -1680,6 +1802,27 @@ if (i32(D(3)) == 0) {
         wgsl: "v = res_mesh(base, 12u, v, AMOUNT);",
     },
     VarDef {
+        name: "terrain3D",
+        params: &TERRAIN_PARAMS,
+        kind: VarKind::Normal,
+        is_3d: true,
+        apply: |d, ctx, _, v, amount| {
+            mesh_apply(d, 5, ctx, v, amount);
+            if d[4] as i32 == 1 {
+                v.color = v.y % 1.0;
+            }
+        },
+        prepare: Some(|p, _| {
+            let mut d = mesh_prepare(p, 5);
+            d[2] = (limit_value(p[2], 1.0, 8.0) as i32) as f64;
+            d[3] = ftoi(p[3]) as f64;
+            d[4] = (limit_value(p[4], 0.0, 1.0) as i32) as f64;
+            d
+        }),
+        wgsl: "v = res_mesh(base, 5u, v, AMOUNT);
+if (i32(D(4)) == 1) { v.color = v.y % 1.0; }",
+    },
+    VarDef {
         name: "sattractor3D",
         params: &SATTRACTOR_PARAMS,
         kind: VarKind::Normal,
@@ -1833,6 +1976,7 @@ pub static RESOURCES: &[ResourceVar] = &[
         load: |d, res, _| push_image(d, KI_IMG, &source_image(&res[0], &res[1], None, 1)),
     },
     ResourceVar { name: "knots3D", resources: &CURVE_RESOURCES, load: knots_load },
+    ResourceVar { name: "terrain3D", resources: &IMAGE_RESOURCES, load: terrain_load },
     ResourceVar { name: "sattractor3D", resources: &CURVE_RESOURCES, load: sattractor_load },
     ResourceVar {
         name: "svg_wf",

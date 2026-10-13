@@ -253,7 +253,7 @@ impl Mesh {
         }
     }
 
-    fn taubin_smooth(&mut self, passes: i32, lambda: f64, mu: f64) {
+    pub(crate) fn taubin_smooth(&mut self, passes: i32, lambda: f64, mu: f64) {
         let n = self.neighbours();
         for _ in 0..passes {
             self.laplace_smooth(&n, lambda);
@@ -262,7 +262,7 @@ impl Mesh {
     }
 
     /// One subdivision step: every triangle becomes four (`SimpleMesh.interpolate`).
-    fn interpolate(&self) -> Self {
+    pub(crate) fn interpolate(&self) -> Self {
         let mut m = Self::default();
         let mid = |a: f32, b: f32| (a as f64 + (b - a) as f64 * 0.5) as f32;
         let half = |a: &Vertex, b: &Vertex| Vertex {
