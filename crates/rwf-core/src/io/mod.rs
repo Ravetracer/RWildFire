@@ -496,6 +496,7 @@ fn parse_xform(el: &Element) -> XForm {
         }
         xf.extra_attrs.push((k.clone(), v.clone()));
     }
+    xf.weighting = crate::weighting::WeightingField::take_from_attrs(&mut xf.extra_attrs);
     xf
 }
 
@@ -745,6 +746,7 @@ fn write_xform_attrs(s: &mut String, xf: &XForm) {
     if !xf.chaos.is_empty() {
         attr(s, "chaos", xf.chaos.iter().map(|v| fmt_f(*v)).collect::<Vec<_>>().join(" "));
     }
+    xf.weighting.write_attrs(|k, v| attr(s, k, v));
     for (k, v) in &xf.extra_attrs {
         attr(s, k, v);
     }

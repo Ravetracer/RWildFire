@@ -21,9 +21,12 @@
 //! xaos selection tables and color maps. Mirrors `XForm.initTransform` and
 //! `Layer.refreshModWeightTables`.
 
-use crate::math::{EPSILON, lerp};
-use crate::model::{Affine, ColorType, DrawMode, Flame, Layer, XForm};
+use std::sync::Arc;
+
+use crate::math::{EPSILON, ftoi, lerp};
+use crate::model::{Affine, ColorType, DrawMode, Flame, Layer, VariationInstance, XForm};
 use crate::variations::{self, Ctx, Pt, VarDef, VarKind};
+use crate::weighting::{Field, FieldInput};
 
 pub const NEXT_XFORM_TABLE_SIZE: usize = 1024;
 
@@ -50,6 +53,37 @@ pub struct VarStep {
     pub mode: StepMode,
     pub amount: f64,
     pub data: Vec<f64>,
+    /// Weighting field modulation of the amount / parameters (`Variation.weightFieldParamValueList`).
+    pub weighting: Option<Arc<StepWeighting>>,
+}
+
+/// One modulated value of a variation: the amount (`param` = `None`) or a parameter.
+#[derive(Clone, Debug)]
+pub struct WeightedParam {
+    pub param: Option<usize>,
+    pub integer: bool,
+    pub intensity: f64,
+}
+
+/// Weighting field modulation of a variation step.
+pub struct StepWeighting {
+    pub params: Vec<WeightedParam>,
+    pub only_amount: bool,
+    /// For re-preparing the variation with modulated parameters.
+    pub inst: VariationInstance,
+    pub coefs: Affine,
+    pub frame: u32,
+}
+
+/// The active weighting field of an xform.
+pub struct PreparedWeighting {
+    pub field: Field,
+    pub input: FieldInput,
+    pub var_amount_intensity: f64,
+    /// `colorIntensity * 0.1`
+    pub color_scale: f64,
+    /// `jitterIntensity * 0.1`
+    pub jitter: f64,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -88,6 +122,7 @@ pub struct PreparedXForm {
     pub pre: Vec<VarStep>,
     pub normal: Vec<VarStep>,
     pub post_vars: Vec<VarStep>,
+    pub weighting: Option<Arc<PreparedWeighting>>,
     /// Indices of the next xform, `None` if all weights are zero.
     pub next: Option<Box<[u16; NEXT_XFORM_TABLE_SIZE]>>,
 }
@@ -159,7 +194,8 @@ fn prepare_xform(xf: &XForm, color_type: ColorType, colormap: &[[f64; 3]], frame
             continue;
         };
         let data = variations::prepare_instance(def, var, &xf.coefs, frame);
-        let step = |def, mode| VarStep { def, mode, amount: var.amount, data: data.clone() };
+        let weighting = step_weighting(xf, def, var, frame);
+        let step = |def, mode| VarStep { def, mode, amount: var.amount, data: data.clone(), weighting: weighting.clone() };
         // Slot selection of `XForm.createTransformations`: priority 2 and -2 put a variation into
         // both the pre and the post slot.
         let p = var.priority;
@@ -208,8 +244,47 @@ fn prepare_xform(xf: &XForm, color_type: ColorType, colormap: &[[f64; 3]], frame
         pre,
         normal,
         post_vars,
+        weighting: xf.weighting.is_active().then(|| {
+            Arc::new(PreparedWeighting {
+                field: xf.weighting.field(),
+                input: xf.weighting.input,
+                var_amount_intensity: xf.weighting.var_amount_intensity,
+                color_scale: xf.weighting.color_intensity * 0.1,
+                jitter: xf.weighting.jitter_intensity * 0.1,
+            })
+        }),
         next: None,
     }
+}
+
+/// `XForm.createTransformations` / `Variation.addWeightingFieldParam`: the modulated values of
+/// a variation (in the order of the three weighting field parameter slots, no duplicates).
+fn step_weighting(xf: &XForm, def: &'static VarDef, var: &VariationInstance, frame: u32) -> Option<Arc<StepWeighting>> {
+    if !xf.weighting.is_active() || !crate::weighting::is_valid_variation(&var.name) {
+        return None;
+    }
+    let mut params: Vec<WeightedParam> = Vec::new();
+    let mut names: Vec<&str> = Vec::new();
+    for wp in &xf.weighting.var_params {
+        if wp.intensity.abs() <= EPSILON || wp.var_name != var.name || names.contains(&wp.param_name.as_str()) {
+            continue;
+        }
+        let param = if wp.param_name == "amount" {
+            None
+        } else {
+            match def.params.iter().position(|p| p.name == wp.param_name) {
+                Some(i) => Some(i),
+                None => continue,
+            }
+        };
+        names.push(&wp.param_name);
+        params.push(WeightedParam { param, integer: param.is_some_and(|i| def.params[i].integer), intensity: wp.intensity });
+    }
+    if params.is_empty() {
+        return None;
+    }
+    let only_amount = params.iter().all(|p| p.param.is_none());
+    Some(Arc::new(StepWeighting { params, only_amount, inst: var.clone(), coefs: xf.coefs, frame }))
 }
 
 fn prepare_layer(layer: &Layer, frame: u32, missing: &mut Vec<String>) -> PreparedLayer {
@@ -301,19 +376,63 @@ fn apply_affine(mode: AffineMode, xy: &Affine, yz: &Affine, zx: &Affine, sx: f64
 }
 
 #[inline]
-fn run_step(step: &VarStep, ctx: &mut Ctx, a: &mut Pt, v: &mut Pt) {
+fn call_step(step: &VarStep, data: &[f64], ctx: &mut Ctx, a: &mut Pt, v: &mut Pt, amount: f64) {
     let f = step.def.apply;
     match step.mode {
-        StepMode::Pre | StepMode::Normal | StepMode::Post => f(&step.data, ctx, a, v, step.amount),
+        StepMode::Pre | StepMode::Normal | StepMode::Post => f(data, ctx, a, v, amount),
         StepMode::EnforcedPre => {
             let mut tmp = *a;
-            f(&step.data, ctx, &mut tmp, a, step.amount);
+            f(data, ctx, &mut tmp, a, amount);
         }
         StepMode::Enforced | StepMode::EnforcedPost => {
             let mut tmp = *v;
-            f(&step.data, ctx, &mut tmp, v, step.amount);
+            f(data, ctx, &mut tmp, v, amount);
         }
     }
+}
+
+/// `Variation.transform` with the weighting field value `wmv` of the affine point
+/// (`var_amount_intensity` of the xform).
+#[inline]
+fn run_step(step: &VarStep, ctx: &mut Ctx, a: &mut Pt, v: &mut Pt, wmv: f64, var_amount_intensity: f64) {
+    if wmv == 0.0 && step.weighting.is_none() {
+        call_step(step, &step.data, ctx, a, v, step.amount);
+        return;
+    }
+    // The enforced steps pass a copy of the variation point, whose weighting value is never
+    // set in JWildfire.
+    let wmv = if matches!(step.mode, StepMode::Enforced | StepMode::EnforcedPost) { 0.0 } else { wmv };
+    let amount = if wmv.abs() > EPSILON && var_amount_intensity.abs() > EPSILON { step.amount * (1.0 + wmv * var_amount_intensity) } else { step.amount };
+    let Some(w) = &step.weighting else {
+        call_step(step, &step.data, ctx, a, v, amount);
+        return;
+    };
+    if w.only_amount {
+        for p in &w.params {
+            call_step(step, &step.data, ctx, a, v, amount * (1.0 + wmv * p.intensity));
+        }
+        return;
+    }
+    // modulated parameters: the variation is prepared again (JWildfire: init per sample)
+    let mut inst = w.inst.clone();
+    inst.params.resize(step.def.params.len().max(inst.params.len()), 0.0);
+    for (i, d) in step.def.params.iter().enumerate() {
+        if i >= w.inst.params.len() {
+            inst.params[i] = d.default;
+        }
+    }
+    for p in &w.params {
+        if let Some(i) = p.param {
+            let factor = 1.0 + wmv * p.intensity;
+            inst.params[i] = if p.integer { ftoi(inst.params[i].round() * factor) as f64 } else { inst.params[i] * factor };
+        }
+    }
+    let v_amount = match w.params.iter().find(|p| p.param.is_none()) {
+        Some(p) => amount * (1.0 + wmv * p.intensity),
+        None => amount,
+    };
+    let data = variations::prepare_instance(step.def, &inst, &w.coefs, w.frame);
+    call_step(step, &data, ctx, a, v, v_amount);
 }
 
 impl PreparedXForm {
@@ -346,23 +465,45 @@ impl PreparedXForm {
         a.y = y;
         a.z = z;
 
+        // Weighting field value of the affine point (TransformationInitWeightingFieldStep)
+        let (wmv, vai) = match &self.weighting {
+            Some(w) => {
+                let p = if w.input == FieldInput::Position { src } else { &a };
+                (w.field.value(p.x, p.y, p.z), w.var_amount_intensity)
+            }
+            None => (0.0, 0.0),
+        };
+
         // Prepare pre-variations: v starts at zero and carries the attributes of a.
         let mut v = Pt { x: 0.0, y: 0.0, z: 0.0, ..a };
         for step in &self.pre {
-            run_step(step, ctx, &mut a, &mut v);
+            run_step(step, ctx, &mut a, &mut v, wmv, vai);
         }
         // Prepare variations: copy attributes (not coordinates) again.
         v = Pt { x: v.x, y: v.y, z: v.z, ..a };
         for step in &self.normal {
-            run_step(step, ctx, &mut a, &mut v);
+            run_step(step, ctx, &mut a, &mut v, wmv, vai);
         }
         for step in &self.post_vars {
-            run_step(step, ctx, &mut a, &mut v);
+            run_step(step, ctx, &mut a, &mut v, wmv, vai);
         }
 
         // Post affine
         let (x, y, z) = apply_affine(self.post_mode, &self.post, &self.yz_post, &self.zx_post, v.x, v.y, v.z);
         let mut dst = Pt { x, y, z, ..v };
+
+        if let Some(w) = &self.weighting {
+            // TransformationApplyWeightMapJitter
+            if w.jitter.abs() > EPSILON {
+                dst.x += w.field.value(dst.x, dst.y, dst.z) * w.jitter;
+                dst.y += w.field.value(dst.y, dst.x, dst.z) * w.jitter;
+                dst.z += w.field.value(dst.z, dst.x, dst.y) * w.jitter;
+            }
+            // TransformationApplyWeightMapToColorStep
+            if w.color_scale.abs() > EPSILON {
+                dst.color *= 1.0 + wmv * w.color_scale;
+            }
+        }
 
         // Color step
         if !dst.rgb_color {

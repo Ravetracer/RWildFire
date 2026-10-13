@@ -261,6 +261,7 @@ pub struct XForm {
     /// Per-target weight multipliers ("chaos"/xaos).
     pub chaos: Vec<f64>,
     pub variations: Vec<VariationInstance>,
+    pub weighting: crate::weighting::WeightingField,
     /// Attributes not understood by this port, kept for round-tripping.
     pub extra_attrs: Vec<(String, String)>,
 }
@@ -294,6 +295,7 @@ impl Default for XForm {
             zx_post: Affine::IDENTITY,
             chaos: Vec::new(),
             variations: Vec::new(),
+            weighting: Default::default(),
             extra_attrs: Vec::new(),
         }
     }

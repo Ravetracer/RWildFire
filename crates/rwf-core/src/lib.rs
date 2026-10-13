@@ -23,6 +23,7 @@ pub mod animation;
 pub mod formula;
 pub mod brush;
 pub mod curves;
+pub mod fastnoise;
 pub mod gradient;
 pub mod gradient_io;
 pub mod io;
@@ -37,6 +38,7 @@ pub mod shapes;
 pub mod solid;
 pub mod variations;
 pub mod video;
+pub mod weighting;
 
 pub use gradient::Gradient;
 pub use model::{Affine, ColorType, DrawMode, Flame, Layer, VariationInstance, XForm};
