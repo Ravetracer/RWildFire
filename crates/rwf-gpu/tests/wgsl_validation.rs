@@ -60,3 +60,30 @@ fn solid_programs_and_passes_are_valid() {
         }
     }
 }
+
+#[test]
+fn weighting_field_programs_are_valid() {
+    use rwf_core::model::VariationInstance;
+    use rwf_core::weighting::{FieldInput, FieldType, VarParamWeight};
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../testdata/TINA0001.flame");
+    let mut flame = rwf_core::io::read_flames_from_file(std::path::Path::new(path)).unwrap().remove(0);
+    for t in FieldType::ALL {
+        let xf = &mut flame.layers[0].xforms[0];
+        xf.variations.push(VariationInstance::new("pdj", 0.5));
+        xf.weighting.field_type = t;
+        xf.weighting.input = if t == FieldType::WhiteNoise { FieldInput::Position } else { FieldInput::Affine };
+        xf.weighting.color_intensity = 1.0;
+        xf.weighting.var_amount_intensity = 0.5;
+        xf.weighting.jitter_intensity = 0.2;
+        xf.weighting.var_params[0] = VarParamWeight { intensity: 1.0, var_name: "pdj".into(), param_name: "a".into() };
+        xf.weighting.var_params[1] = VarParamWeight { intensity: 0.5, var_name: "pdj".into(), param_name: "amount".into() };
+        let prepared = PreparedFlame::new(&flame);
+        let prog = Program::new(&flame, &prepared);
+        assert_eq!(prog.wf_tables.is_some(), t != FieldType::None, "{t:?}");
+        if let Err(err) = validate_wgsl(&prog.wgsl) {
+            panic!("weighting field {t:?}: {err}");
+        }
+        let p = prog.pack_params(&flame, &prepared);
+        assert_eq!(p.len(), prog.param_len.max(1));
+    }
+}

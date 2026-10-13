@@ -159,7 +159,7 @@ const G33: f32 = G3 * 3.0 - 1.0;
 const CUBIC_3D_BOUNDING: f32 = 1.0 / (1.5 * 1.5 * 1.5) as f32;
 
 impl FastNoise {
-    fn fractal_bounding(&self) -> f32 {
+    pub fn fractal_bounding(&self) -> f32 {
         let mut amp = self.gain;
         let mut amp_fractal = 1.0f32;
         for _ in 1..self.octaves {
@@ -678,3 +678,8 @@ const CELL_3D: [[f32; 3]; 256] = [
     [-0.2016773589, 0.008816271194, -0.4021797064],
     [-0.07527055435, -0.425643481, -0.1251477955],
 ];
+
+/// `GRAD_3D` followed by `CELL_3D`, flattened (for the GPU).
+pub fn tables() -> Vec<f32> {
+    GRAD_3D.iter().chain(CELL_3D.iter()).flatten().copied().collect()
+}

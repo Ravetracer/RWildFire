@@ -143,6 +143,43 @@ pub fn variation_function(def: &VarDef, preserve_z: bool) -> String {
     )
 }
 
+/// Like [`variation_function`], for a weighting field that scales parameters: the reads `D(k)`
+/// of the parameters in `params` (`(index, integer)`) are multiplied by the extra arguments
+/// `wpf0`, `wpf1`, ... (integer parameters are rounded like `Tools.FTOI`). Exact for variations
+/// without a `prepare` step (prepared data = parameters).
+pub fn variation_function_weighted(def: &VarDef, preserve_z: bool, name: &str, params: &[(usize, bool)]) -> String {
+    let (helpers, body) = split_snippet(def.wgsl);
+    let pz = if preserve_z { "true" } else { "false" };
+    let mut body = body.to_string();
+    for (n, (k, integer)) in params.iter().enumerate() {
+        let scaled = if *integer { format!("f32(wf_ftoi(prm[base + {k}u] * wpf{n}))") } else { format!("(prm[base + {k}u] * wpf{n})") };
+        body = replace_param_read(&body, *k, &scaled);
+    }
+    let body = expand_snippet(&body).replace("PRESERVE_Z", pz);
+    let args: String = (0..params.len()).map(|n| format!(", wpf{n}: f32")).collect();
+    let _ = helpers;
+    format!("fn {name}(a_in: Pt, v_in: Pt, base: u32, AMOUNT: f32{args}) -> PtPair {{\n  var a = a_in;\n  var v = v_in;\n  {{\n{body}\n  }}\n  return PtPair(a, v);\n}}\n")
+}
+
+/// Replaces the reads `D(k)` (not part of a longer identifier) by `with`.
+fn replace_param_read(src: &str, k: usize, with: &str) -> String {
+    let pat = format!("D({k})");
+    let mut out = String::with_capacity(src.len());
+    let mut rest = src;
+    while let Some(i) = rest.find(&pat) {
+        let before = rest[..i].chars().last();
+        out.push_str(&rest[..i]);
+        if before.is_some_and(|c| c.is_ascii_alphanumeric() || c == '_') {
+            out.push_str(&pat);
+        } else {
+            out.push_str(with);
+        }
+        rest = &rest[i + pat.len()..];
+    }
+    out.push_str(rest);
+    out
+}
+
 /// A small compute shader calling the given variations, used to validate snippets.
 pub fn test_shader(defs: &[&VarDef]) -> String {
     let mut w = prelude();

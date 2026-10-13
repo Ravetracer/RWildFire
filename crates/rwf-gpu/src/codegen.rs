@@ -29,7 +29,8 @@ use std::fmt::Write as _;
 use rwf_core::model::{ColorType, DrawMode, Flame, PostSymmetryType};
 use rwf_core::render::prepared::{AffineMode, NEXT_XFORM_TABLE_SIZE, PreparedFlame, PreparedXForm, StepMode, VarStep};
 use rwf_core::variations::VarDef;
-use rwf_core::variations::wgsl::{prelude, var_fn_name, variation_function};
+use rwf_core::variations::wgsl::{prelude, var_fn_name, variation_function, variation_function_weighted};
+use rwf_core::weighting::{Field, FieldInput};
 
 /// Offsets inside an xform parameter block.
 mod xo {
@@ -87,6 +88,8 @@ pub struct Program {
     /// Shadow map index of every light (`None` = casts no shadow).
     pub shadow_maps: Vec<Option<u32>>,
     pub shadow_map_size: usize,
+    /// Start of the weighting field tables in `prm` (if any xform has a weighting field).
+    pub wf_tables: Option<usize>,
 }
 
 /// Floats per shadow map in the solid `prm` block.
@@ -197,8 +200,71 @@ fn step_mode_tag(m: StepMode) -> &'static str {
 }
 
 fn xform_block_len(xf: &PreparedXForm) -> usize {
+    wf_offset(xf) + wf_len(xf)
+}
+
+/// Start of the weighting field block inside an xform block (after the variation data).
+fn wf_offset(xf: &PreparedXForm) -> usize {
     xo::VARS + xf.pre.iter().chain(&xf.normal).chain(&xf.post_vars).map(|s| 1 + s.data.len()).sum::<usize>()
 }
+
+/// Offsets inside a weighting field block (see `weighting.wgsl`), followed by one amount
+/// intensity per variation step and the image pixels (image maps).
+mod wfo {
+    pub const TYPE: usize = 0;
+    pub const SEED: usize = 1;
+    pub const FREQUENCY: usize = 2;
+    pub const OCTAVES: usize = 3;
+    pub const LACUNARITY: usize = 4;
+    pub const GAIN: usize = 5;
+    pub const BOUNDING: usize = 6;
+    pub const FRACTAL: usize = 7;
+    pub const CELL_DIST: usize = 8;
+    pub const CELL_RET: usize = 9;
+    pub const IMG: usize = 10;
+    pub const PIXELS: usize = 16;
+    pub const VAR_AMOUNT: usize = 17;
+    pub const COLOR_SCALE: usize = 18;
+    pub const JITTER: usize = 19;
+    /// Per variation step: amount intensity, then the intensities of up to 3 parameters.
+    pub const STEPS: usize = 20;
+    pub const STEP_LEN: usize = 4;
+}
+
+fn wf_len(xf: &PreparedXForm) -> usize {
+    match &xf.weighting {
+        Some(w) => {
+            let pixels = match &w.field {
+                Field::Image { img, .. } => (img.width * img.height) as usize,
+                _ => 0,
+            };
+            wfo::STEPS + wfo::STEP_LEN * steps(xf).count() + pixels
+        }
+        None => 0,
+    }
+}
+
+/// Parameters of a step a weighting field scales on the GPU (`(index, integer)`): only for
+/// variations without a `prepare` step, whose prepared data are the parameters.
+fn gpu_weighted_params(s: &VarStep) -> Vec<(usize, bool)> {
+    match &s.weighting {
+        Some(w) if s.def.prepare.is_none() && !matches!(s.mode, StepMode::Enforced | StepMode::EnforcedPost) => {
+            w.params.iter().filter_map(|q| q.param.map(|k| (k, q.integer))).collect()
+        }
+        _ => Vec::new(),
+    }
+}
+
+fn weighted_fn_name(def: &VarDef, params: &[(usize, bool)]) -> String {
+    let mut n = format!("{}_wf", var_fn_name(def));
+    for (k, int) in params {
+        let _ = write!(n, "_{k}{}", if *int { "i" } else { "" });
+    }
+    n
+}
+
+/// Weighting field function tables (`GRAD_3D`, `CELL_3D`) in `prm`.
+const WF_TABLES_LEN: usize = 16 * 3 + 256 * 3;
 
 fn color_tag(c: ColorType) -> &'static str {
     match c {
@@ -269,13 +335,38 @@ fn emit_xform(out: &mut String, fname: &str, xf: &PreparedXForm, base: usize, la
         let _ = writeln!(out, "  a.color = src.color * prm[B + {}u] + prm[B + {}u];", xo::C1, xo::C2);
     }
     emit_affine(out, xf.affine_mode, "B", xo::COEFS, xo::YZ, xo::ZX, "a", "src");
+    let wf = wf_offset(xf);
+    if let Some(w) = &xf.weighting {
+        let p = if w.input == FieldInput::Position { "src" } else { "a" };
+        let _ = writeln!(out, "  let wmv = wf_value(B + {wf}u, {p}.x, {p}.y, {p}.z);");
+        let _ = writeln!(out, "  let vai = prm[B + {}u];", wf + wfo::VAR_AMOUNT);
+        out.push_str("  let wamt = select(1.0, 1.0 + wmv * vai, abs(wmv) > EPSILON && abs(vai) > EPSILON);\n");
+    }
     out.push_str("  var v = Pt(0.0, 0.0, 0.0, a.color, a.r, a.g, a.b, a.rgbc, a.hide, a.rso);\n");
     let mut off = xo::VARS;
+    let mut si = 0usize;
+    let weighted = xf.weighting.is_some();
     let mut emit_steps = |out: &mut String, list: &[VarStep]| {
         for s in list {
             let f = var_fn_name(s.def);
             let call_base = off + 1;
-            let amt = format!("prm[B + {off}u]");
+            // Weighting field: amount scaled by the field value (not for the enforced steps,
+            // which see no field value in JWildfire). Modulated parameters are not supported on
+            // the GPU.
+            let so = wf + wfo::STEPS + wfo::STEP_LEN * si;
+            let amt = if weighted && !matches!(s.mode, StepMode::Enforced | StepMode::EnforcedPost) {
+                format!("(prm[B + {off}u] * wamt * (1.0 + wmv * prm[B + {so}u]))")
+            } else {
+                format!("prm[B + {off}u]")
+            };
+            let wp = gpu_weighted_params(s);
+            let (f, amt) = if wp.is_empty() || !s.def.supports_gpu() {
+                (f, amt)
+            } else {
+                let extra: String = (0..wp.len()).map(|n| format!(", 1.0 + wmv * prm[B + {}u]", so + 1 + n)).collect();
+                (weighted_fn_name(s.def, &wp), format!("{amt}{extra}"))
+            };
+            si += 1;
             match s.mode {
                 StepMode::Pre | StepMode::Normal | StepMode::Post => {
                     let _ = writeln!(out, "  {{ let r = {f}(a, v, B + {call_base}u, {amt}); a = r.a; v = r.v; }}");
@@ -296,6 +387,14 @@ fn emit_xform(out: &mut String, fname: &str, xf: &PreparedXForm, base: usize, la
     emit_steps(out, &xf.post_vars);
     out.push_str("  var d = v;\n");
     emit_affine(out, xf.post_mode, "B", xo::POST, xo::YZ_POST, xo::ZX_POST, "d", "v");
+    if xf.weighting.is_some() {
+        let _ = writeln!(
+            out,
+            "  {{ let j = prm[B + {j}u]; if (abs(j) > EPSILON) {{ d.x += wf_value(B + {wf}u, d.x, d.y, d.z) * j; d.y += wf_value(B + {wf}u, d.y, d.x, d.z) * j; d.z += wf_value(B + {wf}u, d.z, d.x, d.y) * j; }}\n    let cs = prm[B + {c}u]; if (abs(cs) > EPSILON) {{ d.color *= 1.0 + wmv * cs; }} }}",
+            j = wf + wfo::JITTER,
+            c = wf + wfo::COLOR_SCALE
+        );
+    }
     out.push_str("  if (d.rgbc == 0.0) {\n");
     match xf.color_type {
         ColorType::Diffusion | ColorType::Cyclic => {
@@ -349,6 +448,8 @@ impl Program {
         let mut layers = Vec::new();
         let mut param_len = 0usize;
         let mut next_len = 0usize;
+        let mut any_weighting = false;
+        let mut weighted_fns: BTreeMap<String, (&'static VarDef, Vec<(usize, bool)>)> = BTreeMap::new();
 
         let _ = write!(sig, "pz{}|sym{:?}|3d{}|", prepared.preserve_z, flame.post_symmetry.kind, flame.is_3d_projection_required());
         let solid = flame.solid.enabled;
@@ -398,7 +499,17 @@ impl Program {
                     },
                     if xf.next.is_some() { "t" } else { "-" }
                 );
+                if let Some(w) = &xf.weighting {
+                    let _ = write!(sig, "w{}{},", wf_len(xf), w.input == FieldInput::Position);
+                    any_weighting = true;
+                }
                 for s in steps(xf) {
+                    let wp = gpu_weighted_params(s);
+                    if !wp.is_empty() && s.def.supports_gpu() {
+                        let name = weighted_fn_name(s.def, &wp);
+                        let _ = write!(sig, "{name},");
+                        weighted_fns.insert(name, (s.def, wp));
+                    }
                     let _ = write!(sig, "{}{}:{},", s.def.name, step_mode_tag(s.mode), s.data.len());
                     if s.def.supports_gpu() {
                         used_vars.insert(s.def.name, s.def);
@@ -414,12 +525,25 @@ impl Program {
             sig.push('|');
         }
 
+        let wf_tables = any_weighting.then(|| {
+            param_len += WF_TABLES_LEN;
+            param_len - WF_TABLES_LEN
+        });
+
         // ---- WGSL ----
         let mut w = String::with_capacity(32 * 1024);
         w.push_str(&prelude());
         w.push_str(ITER_BINDINGS);
+        if let Some(t) = wf_tables {
+            let _ = writeln!(w, "const WF_TABLES: u32 = {t}u;");
+            w.push_str(include_str!("weighting.wgsl"));
+            sig.push_str("wf|");
+        }
         for def in used_vars.values() {
             w.push_str(&variation_function(def, prepared.preserve_z));
+        }
+        for (name, (def, wp)) in &weighted_fns {
+            w.push_str(&variation_function_weighted(def, prepared.preserve_z, name, wp));
         }
         // Variations without GPU code compile to a no-op.
         w.push_str("fn var_unsupported(a_in: Pt, v_in: Pt, base: u32, AMOUNT: f32) -> PtPair { return PtPair(a_in, v_in); }\n");
@@ -550,7 +674,7 @@ impl Program {
         }
         w.push_str(ITER_MAIN_TAIL);
 
-        Self { signature: sig, wgsl: w, layer_count: layers.len(), layers, param_len, next_len, unsupported, dof_base, solid_base, shadow_maps, shadow_map_size }
+        Self { signature: sig, wgsl: w, layer_count: layers.len(), layers, param_len, next_len, unsupported, dof_base, solid_base, shadow_maps, shadow_map_size, wf_tables }
     }
 
     /// Packs all numeric values into the `prm` buffer layout of this program.
@@ -582,6 +706,9 @@ impl Program {
                     }
                 }
             }
+        }
+        if let Some(t) = self.wf_tables {
+            p[t..t + WF_TABLES_LEN].copy_from_slice(&rwf_core::fastnoise::tables());
         }
         for (li, layer) in prepared.layers.iter().enumerate() {
             let lay = &self.layers[li];
@@ -693,6 +820,81 @@ fn pack_xform(p: &mut [f32], base: usize, xf: &PreparedXForm) {
             p[off + 1 + i] = *v as f32;
         }
         off += 1 + s.data.len();
+    }
+    if let Some(w) = &xf.weighting {
+        let b = base + wf_offset(xf);
+        let mut put = |o: usize, v: f64| p[b + o] = v as f32;
+        put(wfo::VAR_AMOUNT, w.var_amount_intensity);
+        put(wfo::COLOR_SCALE, w.color_scale);
+        put(wfo::JITTER, w.jitter);
+        match &w.field {
+            Field::Empty => put(wfo::TYPE, 0.0),
+            Field::Noise(n) => {
+                use rwf_core::fastnoise::{CellularDistance, CellularReturn, FractalType, NoiseType};
+                let t = match n.noise_type {
+                    NoiseType::Cellular => 1,
+                    NoiseType::Cubic => 2,
+                    NoiseType::CubicFractal => 3,
+                    NoiseType::Perlin => 4,
+                    NoiseType::PerlinFractal => 5,
+                    NoiseType::Simplex => 6,
+                    NoiseType::SimplexFractal => 7,
+                    NoiseType::Value => 8,
+                    NoiseType::ValueFractal => 9,
+                    NoiseType::WhiteNoise => 10,
+                };
+                put(wfo::TYPE, t as f64);
+                put(wfo::SEED, n.seed as f64);
+                put(wfo::FREQUENCY, n.frequency as f64);
+                put(wfo::OCTAVES, n.octaves as f64);
+                put(wfo::LACUNARITY, n.lacunarity as f64);
+                put(wfo::GAIN, n.gain as f64);
+                put(wfo::BOUNDING, n.fractal_bounding() as f64);
+                put(wfo::FRACTAL, match n.fractal_type {
+                    FractalType::Fbm => 0.0,
+                    FractalType::Billow => 1.0,
+                    FractalType::RigidMulti => 2.0,
+                });
+                put(wfo::CELL_DIST, match n.cellular_distance {
+                    CellularDistance::Euclidean => 0.0,
+                    CellularDistance::Manhattan => 1.0,
+                    CellularDistance::Natural => 2.0,
+                });
+                put(wfo::CELL_RET, match n.cellular_return {
+                    CellularReturn::CellValue => 0.0,
+                    CellularReturn::Distance => 1.0,
+                    CellularReturn::Distance2 => 2.0,
+                    CellularReturn::Distance2Add => 3.0,
+                    CellularReturn::Distance2Sub => 4.0,
+                    CellularReturn::Distance2Mul => 5.0,
+                    CellularReturn::Distance2Div => 6.0,
+                });
+            }
+            Field::Image { img, x_centre, y_centre, x_size, y_size } => {
+                put(wfo::TYPE, 11.0);
+                put(wfo::IMG, *x_centre);
+                put(wfo::IMG + 1, *y_centre);
+                put(wfo::IMG + 2, *x_size);
+                put(wfo::IMG + 3, *y_size);
+                put(wfo::IMG + 4, img.width as f64);
+                put(wfo::IMG + 5, img.height as f64);
+                // pixel start relative to the block (stays exact in f32)
+                let rel = wfo::STEPS + wfo::STEP_LEN * steps(xf).count();
+                put(wfo::PIXELS, rel as f64);
+                for (i, px) in img.pixels.iter().enumerate() {
+                    p[b + rel + i] = (px >> 16 & 255) as f32;
+                }
+            }
+        }
+        for (si, s) in steps(xf).enumerate() {
+            let o = b + wfo::STEPS + wfo::STEP_LEN * si;
+            if let Some(sw) = &s.weighting {
+                p[o] = sw.params.iter().find(|q| q.param.is_none()).map_or(0.0, |q| q.intensity) as f32;
+                for (n, q) in sw.params.iter().filter(|q| q.param.is_some()).enumerate() {
+                    p[o + 1 + n] = q.intensity as f32;
+                }
+            }
+        }
     }
 }
 
