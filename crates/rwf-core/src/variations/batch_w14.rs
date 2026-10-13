@@ -30,6 +30,7 @@ use super::complex::Complex;
 use super::glsl::{mat2, vec2};
 #[allow(unused_imports)]
 use crate::model::Affine;
+use std::f64::consts::PI;
 
 /// `Hexaplay3DFunc` / `Hexnix3DFunc` segment cycling: JWildfire draws a mode (60 degree steps for
 /// `rswtch <= 1`) per instance and redraws it after 6 calls in 60 degree mode or 3 calls in 120
@@ -5186,6 +5187,186 @@ if (sumsq == 0.0) {
 }
 if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
     },
+    VarDef {
+        name: "maurer_rose",
+        params: &[
+            ParamDef::new("kn", 2.0),
+            ParamDef::new("kd", 1.0),
+            ParamDef::new("c", 0.0),
+            ParamDef::new("line_offset_degrees", 71.0),
+            ParamDef::new("line_count", 360.0),
+            ParamDef::new("show_lines", 1.0),
+            ParamDef::new("show_points", 0.0),
+            ParamDef::new("show_curve", 0.05),
+            ParamDef::new("line_thickness", 0.5),
+            ParamDef::new("point_thickness", 3.0),
+            ParamDef::new("curve_thickness", 1.0),
+        ],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| maurer_rose_apply(d, ctx, a, v, amount),
+        prepare: Some(|p, _| {
+            let mut d = p.to_vec();
+            let step = 2.0 * PI * (p[3] / 360.0);
+            let show_sum = p[5] + p[6] + p[7];
+            let (lf, pf) = (p[5] / show_sum, p[6] / show_sum);
+            d.extend([p[0] / p[1], step, (p[4] * step) / (2.0 * PI), lf, lf + pf, lf + pf / 2.0, p[8] / 100.0, p[9] / 100.0, p[10] / 100.0]);
+            d
+        }),
+        wgsl: "fn maurer_rose_curve(k: f32, c: f32, theta: f32) -> vec2<f32> {
+  let r = cos(k * theta) + c;
+  return vec2<f32>(r * cos(theta), r * sin(theta));
+}
+@body
+let k = D(11);
+let step = D(12);
+let t = D(13) * glsl_atan2(a.y, a.x);
+let theta1 = floor(t / step) * step;
+let p1 = maurer_rose_curve(k, D(2), theta1);
+let p2 = maurer_rose_curve(k, D(2), theta1 + step);
+let diff = p2 - p1;
+let m = diff.y / diff.x;
+let line_length = length(diff);
+var o = vec2<f32>(0.0);
+var out = vec2<f32>(0.0);
+let r0 = rnd();
+if (r0 < D(14)) {
+  o.x = rnd() * line_length / sqrt(1.0 + m * m);
+  if (p2.x < p1.x) { o.x = -o.x; }
+  o.y = abs(m * o.x);
+  if (p2.y < p1.y) { o.y = -o.y; }
+  if (D(17) != 0.0) {
+    o.x += (rnd() - 0.5) * D(17);
+    o.y += (rnd() - 0.5) * D(17);
+  }
+  out = p1 + o;
+} else if (r0 <= D(15)) {
+  if (D(18) != 0.0) {
+    let ro = rnd() * D(18);
+    let ra = rnd() * 2.0 * PI;
+    o = vec2<f32>(ro * cos(ra), ro * sin(ra));
+  }
+  out = select(p2, p1, r0 <= D(16)) + o;
+} else {
+  out = maurer_rose_curve(k, D(2), t);
+  if (D(19) != 0.0) {
+    out.x += (rnd() - 0.5) * D(19);
+    out.y += (rnd() - 0.5) * D(19);
+  }
+}
+v.x += AMOUNT * out.x;
+v.y += AMOUNT * out.y;
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "mcarpet",
+        params: &[ParamDef::new("x", 1.0), ParamDef::new("y", 0.75), ParamDef::new("twist", 0.5), ParamDef::new("tilt", -0.25)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let t = (sqr(a.x) + sqr(a.y)) / 4.0 + 1.0;
+            let r = amount / t;
+            v.x += a.x * r * d[0];
+            v.y += a.y * r * d[1];
+            v.x += (1.0 - (d[2] * sqr(a.x)) + a.y) * amount;
+            v.y += d[3] * a.x * amount;
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "let r = AMOUNT / ((a.x * a.x + a.y * a.y) / 4.0 + 1.0);
+v.x += a.x * r * D(0);
+v.y += a.y * r * D(1);
+v.x += (1.0 - (D(2) * a.x * a.x) + a.y) * AMOUNT;
+v.y += D(3) * a.x * AMOUNT;
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "meander",
+        params: &[ParamDef::new("freq", 2.0), ParamDef::new("amplitude", 0.4)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            v.x += amount * (a.x + d[1] * (a.y * d[0] * PI).cos());
+            v.y += amount * (a.y + d[1] * (a.x * d[0] * PI).sin());
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "v.x += AMOUNT * (a.x + D(1) * cos(a.y * D(0) * PI));
+v.y += AMOUNT * (a.y + D(1) * sin(a.x * D(0) * PI));
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "meeple",
+        params: &[
+            ParamDef::new("scale", 2.5),
+            ParamDef::range("filled", 1.0, 0.0, 1.0),
+            ParamDef::new("headWidth", 1.0),
+            ParamDef::new("headHeight", 1.0),
+            ParamDef::new("armLength", 2.0),
+            ParamDef::new("armSpread", 1.0),
+            ParamDef::new("bodyWidth", 1.0),
+            ParamDef::new("legHeight", 1.0),
+            ParamDef::new("legSpread", 1.0),
+            ParamDef::new("legSeparationWidth", 0.1),
+            ParamDef::new("legSeparationHeight", 0.0),
+        ],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let scaled = ctx.random() * 13.0;
+            let seg = (scaled as usize).min(12);
+            let st = scaled - seg as f64;
+            let mut lx = d[11 + seg] + st * (d[12 + seg] - d[11 + seg]);
+            let ly = d[25 + seg] + st * (d[26 + seg] - d[25 + seg]);
+            if ctx.random() < 0.5 {
+                lx = -lx;
+            }
+            let r = if d[1] > 0.0 && d[1] > ctx.random() { ctx.random() } else { 1.0 };
+            v.x += r * lx * d[0] * amount;
+            v.y += r * ly * d[0] * amount;
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: Some(|p, _| meeple_prepare(p)),
+        wgsl: "let scaled = rnd() * 13.0;
+let seg = min(u32(scaled), 12u);
+let st = scaled - f32(seg);
+let k = base + 11u + seg;
+var lx = mix(prm[k], prm[k + 1u], st);
+let ly = mix(prm[k + 14u], prm[k + 15u], st);
+if (rnd() < 0.5) { lx = -lx; }
+var r = 1.0;
+if (D(1) > 0.0 && D(1) > rnd()) { r = rnd(); }
+v.x += r * lx * D(0) * AMOUNT;
+v.y += r * ly * D(0) * AMOUNT;
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
+    VarDef {
+        name: "membrane",
+        params: &[ParamDef::new("radius", 0.5), ParamDef::new("height", 0.3), ParamDef::new("stiff", 0.5)],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, a, v, amount| {
+            let radius = d[0].abs().max(0.01);
+            let stiff = d[2].abs().max(0.01);
+            let r = (a.x * a.x + a.y * a.y).sqrt();
+            let ring = r - radius;
+            let env = (-ring * ring / (radius * radius * stiff)).exp();
+            let scale = (r + d[1] * env) / r.max(0.001);
+            v.x = amount * a.x * scale;
+            v.y = amount * a.y * scale;
+            ctx.pass_z(a, v, amount);
+        },
+        prepare: None,
+        wgsl: "let radius = max(abs(D(0)), 0.01);
+let stiff = max(abs(D(2)), 0.01);
+let r = sqrt(a.x * a.x + a.y * a.y);
+let ring = r - radius;
+let env = exp(-ring * ring / (radius * radius * stiff));
+let scale = (r + D(1) * env) / max(r, 0.001);
+v.x = AMOUNT * a.x * scale;
+v.y = AMOUNT * a.y * scale;
+if (PRESERVE_Z) { v.z += AMOUNT * a.z; }",
+    },
 ];
 
 fn mandelbox2d_apply(d: &[f64], ctx: &mut Ctx, a: &Pt, v: &mut Pt, amount: f64) {
@@ -5200,7 +5381,7 @@ fn mandelbox2d_apply(d: &[f64], ctx: &mut Ctx, a: &Pt, v: &mut Pt, amount: f64) 
     let mut blended = a.color;
     for _ in 0..d[1] as i32 {
         if coloring == 2 {
-            let target = y.atan2(x) / (2.0 * std::f64::consts::PI) + 0.5;
+            let target = y.atan2(x) / (2.0 * PI) + 0.5;
             blended += (target - blended) * d[11];
         }
         match mode {
@@ -5256,7 +5437,7 @@ fn mandelbox2d_apply(d: &[f64], ctx: &mut Ctx, a: &Pt, v: &mut Pt, amount: f64) 
     v.x += x * amount;
     v.y += y * amount;
     if coloring == 1 {
-        v.color = y.atan2(x) / (2.0 * std::f64::consts::PI) + 0.5;
+        v.color = y.atan2(x) / (2.0 * PI) + 0.5;
     } else if coloring == 2 {
         v.color = blended;
     }
@@ -5329,4 +5510,85 @@ fn mandelbrot_apply(d: &[f64], ctx: &mut Ctx, v: &mut Pt, amount: f64) {
     v.z += z0;
     (st[0], st[1], st[2], st[3], st[4]) = (x0, y0, z0, rg.u as f64, rg.v as f64);
     ctx.states.insert(key, st);
+}
+
+/// `MaurerRoseFunc.transform`. JWildfire draws the position along a line with `Math.random()`;
+/// the port uses the render random generator.
+fn maurer_rose_apply(d: &[f64], ctx: &mut Ctx, a: &Pt, v: &mut Pt, amount: f64) {
+    let (k, c, step) = (d[11], d[2], d[12]);
+    let curve = |theta: f64| {
+        let r = (k * theta).cos() + c;
+        (r * theta.cos(), r * theta.sin())
+    };
+    let t = d[13] * a.y.atan2(a.x);
+    let theta1 = (t / step).floor() * step;
+    let (x1, y1) = curve(theta1);
+    let (x2, y2) = curve(theta1 + step);
+    let (xdiff, ydiff) = (x2 - x1, y2 - y1);
+    let m = ydiff / xdiff;
+    let line_length = (xdiff * xdiff + ydiff * ydiff).sqrt();
+    let (xout, yout);
+    let rnd = ctx.random();
+    if rnd < d[14] {
+        let dist = ctx.random() * line_length;
+        let mut xo = dist / (1.0 + m * m).sqrt();
+        if x2 < x1 {
+            xo = -xo;
+        }
+        let mut yo = (m * xo).abs();
+        if y2 < y1 {
+            yo = -yo;
+        }
+        if d[17] != 0.0 {
+            xo += (ctx.random() - 0.5) * d[17];
+            yo += (ctx.random() - 0.5) * d[17];
+        }
+        (xout, yout) = (x1 + xo, y1 + yo);
+    } else if rnd <= d[15] {
+        let (mut xo, mut yo) = (0.0, 0.0);
+        if d[18] != 0.0 {
+            let ro = ctx.random() * d[18];
+            let ra = ctx.random() * 2.0 * PI;
+            (xo, yo) = (ro * ra.cos(), ro * ra.sin());
+        }
+        (xout, yout) = if rnd <= d[16] { (x1 + xo, y1 + yo) } else { (x2 + xo, y2 + yo) };
+    } else {
+        let (cx, cy) = curve(t);
+        (xout, yout) = if d[19] != 0.0 { (cx + (ctx.random() - 0.5) * d[19], cy + (ctx.random() - 0.5) * d[19]) } else { (cx, cy) };
+    }
+    v.x += amount * xout;
+    v.y += amount * yout;
+    ctx.pass_z(a, v, amount);
+}
+
+/// `MeepleFunc`: the outline points (x at 11..25, y at 25..39) for the shape parameters.
+fn meeple_prepare(p: &[f64]) -> Vec<f64> {
+    const BX: [f64; 14] = [0.00, 0.15, 0.28, 0.35, 0.35, 0.40, 0.55, 0.55, 0.45, 0.40, 0.45, 0.40, 0.20, 0.00];
+    const BY: [f64; 14] = [-1.00, -0.99, -0.90, -0.75, -0.60, -0.50, -0.45, -0.25, -0.15, 0.10, 0.80, 0.98, 1.00, 0.85];
+    let mut d = p.to_vec();
+    d[1] = limit_value(p[1], 0.0, 1.0);
+    let (head_w, head_h, arm_len, arm_spread, body_w, leg_h, leg_spread, sep_w, sep_h) = (p[2], p[3], p[4], p[5], p[6], p[7], p[8], p[9], p[10]);
+    let sep_y = BY[9] - sep_h;
+    let (mut xs, mut ys) = (BX, BY);
+    for i in 0..14 {
+        if i <= 4 {
+            xs[i] *= head_w;
+            ys[i] *= head_h;
+        } else if i <= 8 {
+            xs[i] = BX[4] * body_w + (BX[i] - BX[4]) * arm_len;
+            ys[i] = BY[4] * head_h + (BY[i] - BY[4]) * arm_spread;
+        } else if i == 9 {
+            xs[i] *= body_w;
+            ys[i] = sep_y;
+        } else {
+            let off = BY[i] - BY[9];
+            ys[i] = if i == 13 { sep_y + off * leg_h } else { BY[9] + off * leg_h };
+            if i <= 12 {
+                xs[i] = BX[i] * leg_spread + sep_w;
+            }
+        }
+    }
+    d.extend(xs);
+    d.extend(ys);
+    d
 }
