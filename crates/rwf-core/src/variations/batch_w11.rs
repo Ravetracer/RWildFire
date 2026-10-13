@@ -25,7 +25,7 @@ use super::{Ctx, ParamDef, Pt, VarDef, VarKind, simple};
 use crate::math::*;
 #[allow(unused_imports)]
 use crate::model::Affine;
-use super::glsl::{Vec2, Vec3, dc_output, fract, glsl_app, glsl_atan2, mat3, glsl_dbl2int, glsl_mod, glsl_rot, length, mat2, mix, normalize, sign, smoothstep, vec2, vec3};
+use super::glsl::{Vec2, Vec3, dc_output, fract, glsl_app, glsl_atan2, mat3, glsl_dbl2int, glsl_kscope, glsl_mod, glsl_rot, length, mat2, mix, normalize, sign, smoothstep, vec2, vec3};
 use super::noise;
 
 /// `Cubic_3DFunc` / `CubicLattice3DFunc` node: sign of the lattice offset per axis
@@ -582,6 +582,50 @@ fn glsl_hyp_mirror(line: Vec2, point: Vec2) -> Vec2 {
     } else {
         vec2(point.x, -point.y + 2.0 * line.y + M_PI)
     }
+}
+
+/// `GLSLStarsFieldFunc` hashes and star layer.
+fn glsl_stars_hash11(p: f64) -> f64 {
+    let mut p = fract(p * 35.35);
+    p += p * (p + 45.85);
+    fract(p * 7858.58)
+}
+
+fn glsl_stars_hash21(p: Vec2) -> f64 {
+    let mut p = fract(p * vec2(451.45, 231.95));
+    p = p + super::glsl::dot(p, p + 78.78);
+    fract(p.x * p.y)
+}
+
+fn glsl_stars_hash22(p: Vec2) -> Vec2 {
+    let mut q = fract(vec3(p.x, p.y, p.x) * vec3(451.45, 231.95, 7878.5));
+    q = q + super::glsl::dot(q, q + 78.78);
+    fract(vec2(q.x, q.z) * q.y)
+}
+
+fn glsl_stars_layer(uv: Vec2, zdistance: f64) -> f64 {
+    let uv = uv * 5.0;
+    let i = super::glsl::floor(uv);
+    let f = fract(uv) * zdistance - 1.0;
+    let p = glsl_stars_hash22(i) * 0.3;
+    let d = length(f - p);
+    let mut c = smoothstep(0.1 + 0.8 * glsl_stars_hash21(i), 0.01, d);
+    c *= (1.0 / d) * 0.2;
+    c
+}
+
+/// `GLSLSquaresFunc.hit`
+fn glsl_squares_hit(d: &[f64], p: Vec2) -> bool {
+    let direction = if d[4] as i32 == 1 { 0.1 } else { -1.0 };
+    let mut c = p / 0.5f64.powf(glsl_mod(direction * d[2], 1.0));
+    for _ in 0..d[3] as i32 {
+        let sectors = super::glsl::floor(c * 3.0);
+        if sectors.x == 1.0 && sectors.y == 1.0 {
+            return false;
+        }
+        c = c * 3.0 - sectors;
+    }
+    true
 }
 
 pub static DEFS: &[VarDef] = &[
@@ -2230,5 +2274,650 @@ if (i32(D(1)) == 0) {
 }
 v.x += AMOUNT * (gi / D(0) - 0.5);
 v.y += AMOUNT * (gj / 1000000.0 - 0.5);",
+    },
+    VarDef {
+        name: "glsl_kaleidocomplex",
+        params: &[
+            ParamDef::int("Density Pixels", 1000000.0, 100.0, 10000000.0),
+            ParamDef::int("Seed", 10000.0, 0.0, 10000.0),
+            ParamDef::new("time", 0.0),
+            ParamDef::int("iMax", 12.0, 1.0, 50.0),
+            ParamDef::new("Color", 2.0),
+            ParamDef::range("Red Fac.", 1.0, 0.0, 5.0),
+            ParamDef::range("Green Fac.", 1.0, 0.0, 5.0),
+            ParamDef::range("Blue Fac.", 1.0, 0.0, 5.0),
+            ParamDef::int("Gradient", 0.0, 0.0, 1.0),
+        ],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, _, v, amount| {
+            let px = glsl_pixel(ctx, d[0]);
+            let (time, fc) = (d[2], d[4]);
+            let uv = vec2((px.0 + 0.5) / d[0] - 0.5, (px.1 + 0.5) / GLSL_RES_Y - 0.5);
+            let (mut zx, mut zy, mut zz, mut zw) = (uv.x.abs() / 0.125 * 1.0, uv.y.abs() / 0.125 * 1.0, 0.0f64, 0.0f64);
+            let mut col = [0.0f64; 3];
+            let mut ii = -1i32;
+            let mut r = 1.0;
+            let (st, ct) = (time.sin(), time.cos());
+            for _ in -1..d[3] as i32 {
+                r *= -1.0;
+                ii += 1;
+                let (tx, ty) = (zx * 1.0 - zy * 1.0, zx * 1.0 + zy * 1.0);
+                let (tx, ty) = (tx.abs() + (r - 10.5), ty.abs() + (r - 10.5));
+                zx = tx * st - ty * ct;
+                zy = tx * ct + ty * st;
+                zz = fc * (zx * zz - zy * zw);
+                zw = fc * (zy * zz - zx * zw);
+                let dist = (zx * zx + zy * zy, zz * zz + zw * zw);
+                if ii as f64 > 0.0 && ((zx * zx).sqrt() < 0.51 || (zy * zy).sqrt() < 0.51) {
+                    col[0] = (-(zx * zx * zy).abs()).exp();
+                    col[1] = (-(zy * zx * zy).abs()).exp();
+                    col[2] = (-java_min(zx, zy).abs()).exp();
+                    break;
+                }
+                let fi = ii as f64;
+                col[0] += fc * (-(-zx / fi + fi / zx).abs()).exp();
+                col[1] += fc * (-(-zy / fi + fi / zy).abs()).exp();
+                col[2] += fc * (-((-zx - zy) / fi + fi / (zx + zy)).abs()).exp();
+                if dist.0 > 10000000.0 || dist.1 > 100000000000.0 {
+                    break;
+                }
+            }
+            let color = vec3((col[0] * d[5]).cos(), (col[1] * d[6]).cos(), (col[2] * d[7]).cos());
+            glsl_out(v, amount, px, d[0], color, d[8], glsl_red_ratio);
+        },
+        prepare: Some(|p, _| {
+            let mut d = p.to_vec();
+            d[0] = glsl_density(p[0]);
+            d[3] = limit_value(p[3], 1.0, 50.0).trunc();
+            for i in 5..8 {
+                d[i] = limit_value(p[i], 0.0, 5.0);
+            }
+            d[8] = limit_value(p[8], 0.0, 1.0).trunc();
+            d
+        }),
+        wgsl: "let gi = floor(rnd() * D(0));
+let gj = floor(rnd() * 1000000.0);
+let fc = D(4);
+let uv = vec2<f32>((gi + 0.5) / D(0) - 0.5, (gj + 0.5) / 1000000.0 - 0.5);
+var z = vec4<f32>(abs(uv.x) / 0.125, abs(uv.y) / 0.125, 0.0, 0.0);
+var col = vec3<f32>(0.0);
+var ii = -1;
+var r = 1.0;
+let st = sin(D(2));
+let ct = cos(D(2));
+let imax = i32(D(3));
+for (var i = -1; i < imax; i++) {
+  r *= -1.0;
+  ii += 1;
+  let t = abs(vec2<f32>(z.x - z.y, z.x + z.y)) + (r - 10.5);
+  z.x = t.x * st - t.y * ct;
+  z.y = t.x * ct + t.y * st;
+  z.z = fc * (z.x * z.z - z.y * z.w);
+  z.w = fc * (z.y * z.z - z.x * z.w);
+  let d1 = dot(z.xy, z.xy);
+  let d2 = dot(z.zw, z.zw);
+  if (ii > 0 && (abs(z.x) < 0.51 || abs(z.y) < 0.51)) {
+    col = vec3<f32>(exp(-abs(z.x * z.x * z.y)), exp(-abs(z.y * z.x * z.y)), exp(-abs(min(z.x, z.y))));
+    break;
+  }
+  let fi = f32(ii);
+  col.x += fc * exp(-abs(-z.x / fi + fi / z.x));
+  col.y += fc * exp(-abs(-z.y / fi + fi / z.y));
+  col.z += fc * exp(-abs((-z.x - z.y) / fi + fi / (z.x + z.y)));
+  if (d1 > 10000000.0 || d2 > 100000000000.0) { break; }
+}
+let color = cos(col * vec3<f32>(D(5), D(6), D(7)));
+if (i32(D(8)) == 0) {
+  let t = glsl_dbl2int(color);
+  v.rgbc = 1.0; v.r = t.x; v.g = t.y; v.b = t.z;
+} else {
+  v.color = sin(color.x / (color.x + color.y + color.z));
+}
+v.x += AMOUNT * (gi / D(0) - 0.5);
+v.y += AMOUNT * (gj / 1000000.0 - 0.5);",
+    },
+    VarDef {
+        name: "glsl_kaleidoscopic",
+        params: &[
+            ParamDef::int("Density Pixels", 1000000.0, 100.0, 10000000.0),
+            ParamDef::int("Seed", 10000.0, 0.0, 100000.0),
+            ParamDef::new("time", 0.0),
+            ParamDef::int("Sides", 8.0, 2.0, 20.0),
+            ParamDef::range("zoom", 0.0, 0.0, 1.0),
+            ParamDef::range("P1", 0.0, 0.0, 1.0),
+            ParamDef::int("Radial", 0.0, 0.0, 1.0),
+            ParamDef::int("Gradient", 0.0, 0.0, 1.0),
+        ],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, _, v, amount| {
+            let px = glsl_pixel(ctx, d[0]);
+            let (time, zoom, p1) = (d[2], d[4], d[5]);
+            let ka = M_PI / d[3];
+            let mut uv = vec2(2.0 * (px.0 + 0.5) / d[0] - 1.0, 2.0 * (px.1 + 0.5) / GLSL_RES_Y - 1.0) * 12.0;
+            uv = uv * (0.1 + zoom);
+            if d[6] as i32 == 1 {
+                let angle = (glsl_mod(glsl_atan2(uv.y, uv.x), 2.0 * ka) - ka).abs() + 0.1 * time;
+                uv = vec2(angle.cos(), angle.sin()) * length(uv);
+            }
+            let mut p = Vec3::from_vec2(uv, zoom);
+            for _ in 0..44 {
+                let t1 = super::glsl::abs(p) / (p.x * p.x + p.y * p.y + p.z * p.z);
+                let t0 = t1 - vec3(1.0, 1.02, p1 * 0.4);
+                let t2 = vec3(1.3, 0.999, 0.678) * super::glsl::abs(t0);
+                p = vec3(t2.x, t2.z, t2.y);
+            }
+            glsl_out(v, amount, px, d[0], p, d[7], glsl_red_ratio);
+        },
+        prepare: Some(|p, _| {
+            let mut d = p.to_vec();
+            d[0] = glsl_density(p[0]);
+            d[3] = limit_value(p[3], 2.0, 20.0).trunc();
+            d[4] = limit_value(p[4], 0.0, 1.0);
+            d[5] = limit_value(p[5], 0.0, 1.0);
+            d[6] = limit_value(p[6], 0.0, 1.0).trunc();
+            d[7] = limit_value(p[7], 0.0, 1.0).trunc();
+            d
+        }),
+        wgsl: "let gi = floor(rnd() * D(0));
+let gj = floor(rnd() * 1000000.0);
+let ka = PI / D(3);
+var uv = vec2<f32>(2.0 * (gi + 0.5) / D(0) - 1.0, 2.0 * (gj + 0.5) / 1000000.0 - 1.0) * 12.0;
+uv = uv * (0.1 + D(4));
+if (i32(D(6)) == 1) {
+  let angle = abs(glsl_mod(glsl_atan2(uv.y, uv.x), 2.0 * ka) - ka) + 0.1 * D(2);
+  uv = vec2<f32>(cos(angle), sin(angle)) * length(uv);
+}
+var p = vec3<f32>(uv, D(4));
+for (var i = 0; i < 44; i++) {
+  let t2 = vec3<f32>(1.3, 0.999, 0.678) * abs(abs(p) / dot(p, p) - vec3<f32>(1.0, 1.02, D(5) * 0.4));
+  p = t2.xzy;
+}
+let color = p;
+if (i32(D(7)) == 0) {
+  let t = glsl_dbl2int(color);
+  v.rgbc = 1.0; v.r = t.x; v.g = t.y; v.b = t.z;
+} else {
+  v.color = sin(color.x / (color.x + color.y + color.z));
+}
+v.x += AMOUNT * (gi / D(0) - 0.5);
+v.y += AMOUNT * (gj / 1000000.0 - 0.5);",
+    },
+    VarDef {
+        name: "glsl_kaliset",
+        params: &[
+            ParamDef::int("Density Pixels", 1000000.0, 100.0, 10000000.0),
+            ParamDef::int("Seed", 10000.0, 0.0, 100000.0),
+            ParamDef::range("time", 200.0, 1.0, 1000.0),
+            ParamDef::int("N", 60.0, 1.0, 100.0),
+            ParamDef::range("ShiftX", -0.22, -5.0, 5.0),
+            ParamDef::range("ShiftY", -0.21, -5.0, 5.0),
+            ParamDef::int("Gradient", 0.0, 0.0, 1.0),
+        ],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, _, v, amount| {
+            let px = glsl_pixel(ctx, d[0]);
+            let time = d[2];
+            let mut w = vec2((px.0 + 0.5) / d[0] - 0.5, (px.1 + 0.5) / GLSL_RES_Y - 0.5) * 20.0;
+            let mut rsum = 0.0;
+            let pi2 = 3.6 * 2.0;
+            let c = (time / 603.0 * pi2).cos();
+            let s = (time / 407.4 * pi2).sin();
+            let zoom = time / 184.0 + 1.0;
+            for _ in 0..d[3] as i32 {
+                let mut rr = w.x * w.x + w.y * w.y;
+                if rr > 1.0 {
+                    rr = 1.0 / rr;
+                    w.x *= rr;
+                    w.y *= rr;
+                }
+                rsum *= 0.99;
+                rsum += rr;
+                w = vec2(c * w.x - s * w.y, s * w.x + c * w.y) * zoom + vec2(d[4], d[5]);
+            }
+            let col = rsum * 0.5;
+            glsl_out(v, amount, px, d[0], vec3(col.cos(), (col * 2.0).cos(), (col * 4.0).cos()), d[6], glsl_red_ratio);
+        },
+        prepare: Some(|p, _| {
+            let mut d = p.to_vec();
+            d[0] = glsl_density(p[0]);
+            d[2] = limit_value(p[2], 1.0, 1000.0);
+            d[3] = limit_value(p[3], 1.0, 100.0).trunc();
+            d[4] = limit_value(p[4], -5.0, 5.0);
+            d[5] = limit_value(p[5], -5.0, 5.0);
+            d[6] = limit_value(p[6], 0.0, 1.0).trunc();
+            d
+        }),
+        wgsl: "let gi = floor(rnd() * D(0));
+let gj = floor(rnd() * 1000000.0);
+let tm = D(2);
+var w = vec2<f32>((gi + 0.5) / D(0) - 0.5, (gj + 0.5) / 1000000.0 - 0.5) * 20.0;
+var rsum = 0.0;
+let c = cos(tm / 603.0 * 7.2);
+let s = sin(tm / 407.4 * 7.2);
+let zoom = tm / 184.0 + 1.0;
+let n = i32(D(3));
+for (var i = 0; i < n; i++) {
+  var rr = dot(w, w);
+  if (rr > 1.0) {
+    rr = 1.0 / rr;
+    w *= rr;
+  }
+  rsum = rsum * 0.99 + rr;
+  w = vec2<f32>(c * w.x - s * w.y, s * w.x + c * w.y) * zoom + vec2<f32>(D(4), D(5));
+}
+let col = rsum * 0.5;
+let color = cos(vec3<f32>(col, col * 2.0, col * 4.0));
+if (i32(D(6)) == 0) {
+  let t = glsl_dbl2int(color);
+  v.rgbc = 1.0; v.r = t.x; v.g = t.y; v.b = t.z;
+} else {
+  v.color = sin(color.x / (color.x + color.y + color.z));
+}
+v.x += AMOUNT * (gi / D(0) - 0.5);
+v.y += AMOUNT * (gj / 1000000.0 - 0.5);",
+    },
+    VarDef {
+        name: "glsl_kaliset2",
+        params: &[
+            ParamDef::int("Density Pixels", 1000000.0, 100.0, 10000000.0),
+            ParamDef::int("Seed", 5000.0, 0.0, 100000.0),
+            ParamDef::range("time", 85.5, 1.0, 1000.0),
+            ParamDef::int("N", 100.0, 1.0, 100.0),
+            ParamDef::range("radio", 1.0, 0.1, 10.0),
+            ParamDef::range("ShiftX", -0.356, -1.0, 1.0),
+            ParamDef::range("ShiftY", 0.686, -1.0, 1.0),
+            ParamDef::range("Red Fac.", 1.8, 0.0, 5.0),
+            ParamDef::range("Green Fac.", 1.9, 0.0, 5.0),
+            ParamDef::range("Blue Fac.", 2.2, 0.0, 5.0),
+            ParamDef::int("Gradient", 0.0, 0.0, 1.0),
+        ],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, _, v, amount| {
+            let px = glsl_pixel(ctx, d[0]);
+            let (time, n, rad2) = (d[2], d[3], d[4]);
+            let mut w = vec2((px.0 + 0.5) / d[0] - 0.5, (px.1 + 0.5) / GLSL_RES_Y - 0.5) * 20.0;
+            let mut rsum = 0.0;
+            let angle = 6.2831853070 * d[5];
+            let (c, s) = (angle.cos(), angle.sin());
+            let shift = vec2(0.0, 2.0 + 2.0 * (0.03 * time).sin());
+            let zoom = 2.0 + 5.0 * d[6];
+            for _ in 0..n as i32 {
+                let mut rr = w.x * w.x + w.y * w.y;
+                if rr > rad2 {
+                    rr = rad2 / rr;
+                    w.x *= rr;
+                    w.y *= rr;
+                }
+                rsum = java_max(rsum, rr);
+                w = vec2(c * w.x - s * w.y, s * w.x + c * w.y) * zoom + shift;
+            }
+            let col = rsum * rsum * (500.0 / n / rad2);
+            glsl_out(v, amount, px, d[0], vec3((col * d[7]).cos(), (col * d[8]).cos(), (col * d[9]).cos()), d[10], glsl_red_ratio);
+        },
+        prepare: Some(|p, _| {
+            let mut d = p.to_vec();
+            d[0] = glsl_density(p[0]);
+            d[2] = limit_value(p[2], 1.0, 1000.0);
+            d[3] = limit_value(p[3], 1.0, 100.0).trunc();
+            d[4] = limit_value(p[4], 0.1, 10.0);
+            d[5] = limit_value(p[5], -1.0, 1.0);
+            d[6] = limit_value(p[6], -1.0, 1.0);
+            for i in 7..10 {
+                d[i] = limit_value(p[i], 0.0, 5.0);
+            }
+            d[10] = limit_value(p[10], 0.0, 1.0).trunc();
+            d
+        }),
+        wgsl: "let gi = floor(rnd() * D(0));
+let gj = floor(rnd() * 1000000.0);
+let rad2 = D(4);
+var w = vec2<f32>((gi + 0.5) / D(0) - 0.5, (gj + 0.5) / 1000000.0 - 0.5) * 20.0;
+var rsum = 0.0;
+let angle = 6.2831853070 * D(5);
+let c = cos(angle);
+let s = sin(angle);
+let shift = vec2<f32>(0.0, 2.0 + 2.0 * sin(0.03 * D(2)));
+let zoom = 2.0 + 5.0 * D(6);
+let n = i32(D(3));
+for (var i = 0; i < n; i++) {
+  var rr = dot(w, w);
+  if (rr > rad2) {
+    rr = rad2 / rr;
+    w *= rr;
+  }
+  rsum = max(rsum, rr);
+  w = vec2<f32>(c * w.x - s * w.y, s * w.x + c * w.y) * zoom + shift;
+}
+let col = rsum * rsum * (500.0 / D(3) / rad2);
+let color = cos(col * vec3<f32>(D(7), D(8), D(9)));
+if (i32(D(10)) == 0) {
+  let t = glsl_dbl2int(color);
+  v.rgbc = 1.0; v.r = t.x; v.g = t.y; v.b = t.z;
+} else {
+  v.color = sin(color.x / (color.x + color.y + color.z));
+}
+v.x += AMOUNT * (gi / D(0) - 0.5);
+v.y += AMOUNT * (gj / 1000000.0 - 0.5);",
+    },
+    VarDef {
+        name: "glsl_mandala",
+        params: &[
+            ParamDef::int("Density Pixels", 1000000.0, 100.0, 10000000.0),
+            ParamDef::new("mX", 0.025),
+            ParamDef::new("mY", -0.001245675),
+            ParamDef::new("scale", 2.0),
+            ParamDef::new("sides", 12.0),
+            ParamDef::new("multiply", 1.5),
+            ParamDef::new("loops", 64.0),
+            ParamDef::int("iR", 0.0, 0.0, 1.0),
+            ParamDef::int("iG", 0.0, 0.0, 1.0),
+            ParamDef::int("iB", 1.0, 0.0, 1.0),
+            ParamDef::int("Gradient", 0.0, 0.0, 1.0),
+        ],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, _, v, amount| {
+            let px = glsl_pixel(ctx, d[0]);
+            let rcpi = 0.318309886183791;
+            let uv = vec2((5.5 - d[3]) * (2.0 * (px.0 + 0.5) / d[0] - 1.0), (5.5 - d[3]) * (2.0 * (px.1 + 0.5) / GLSL_RES_Y - 1.0));
+            let k = M_PI / d[4].floor();
+            let s = glsl_kscope(uv, k);
+            let t = glsl_kscope(s, k);
+            let w = super::glsl::dot(t, s);
+            let mut u = mix(s, t, w.cos());
+            if d[5] > 0.001 {
+                let t2 = glsl_mod(vec2(u.y, u.x), d[5].floor());
+                let t5 = vec2(u.y, u.x) + glsl_mod(t2, vec2(-u.x, -u.y));
+                u = vec2(t5.y, t5.x);
+            }
+            let mut p = Vec3::from_vec2(u, d[1] * w);
+            for l in 0..73 {
+                if l as f64 > d[6].floor() {
+                    break;
+                }
+                let t2 = super::glsl::abs(p) / super::glsl::dot(p, p) - vec3(1.0, 1.02, d[2] * rcpi);
+                let t4 = vec3(1.3, 0.999, 0.678) * super::glsl::abs(t2);
+                p = vec3(t4.x, t4.z, t4.y);
+            }
+            // vec3.r/g/b keep the values of construction time, before the inversions
+            let idx = p.x * p.y;
+            if d[7] as i32 == 1 {
+                p.x = 1.0 - p.x;
+            }
+            if d[8] as i32 == 1 {
+                p.y = 1.0 - p.y;
+            }
+            if d[9] as i32 == 1 {
+                p.z = 1.0 - p.z;
+            }
+            glsl_out(v, amount, px, d[0], p, d[10], |_| idx);
+        },
+        prepare: Some(|p, _| {
+            let mut d = p.to_vec();
+            d[0] = glsl_density(p[0]);
+            for i in 7..11 {
+                d[i] = limit_value(p[i], 0.0, 1.0).trunc();
+            }
+            d
+        }),
+        wgsl: "let gi = floor(rnd() * D(0));
+let gj = floor(rnd() * 1000000.0);
+let uv = (5.5 - D(3)) * vec2<f32>(2.0 * (gi + 0.5) / D(0) - 1.0, 2.0 * (gj + 0.5) / 1000000.0 - 1.0);
+let k = PI / floor(D(4));
+let s = glsl_kscope(uv, k);
+let t = glsl_kscope(s, k);
+let w = dot(t, s);
+var u = mix(s, t, cos(w));
+if (D(5) > 0.001) {
+  let t2 = glsl_mod2(u.yx, vec2<f32>(floor(D(5))));
+  let t5 = u.yx + glsl_mod2(t2, -u);
+  u = t5.yx;
+}
+var p = vec3<f32>(u, D(1) * w);
+for (var l = 0; l < 73; l++) {
+  if (f32(l) > floor(D(6))) { break; }
+  let t2 = abs(p) / dot(p, p) - vec3<f32>(1.0, 1.02, D(2) * 0.318309886183791);
+  p = (vec3<f32>(1.3, 0.999, 0.678) * abs(t2)).xzy;
+}
+let idx = p.x * p.y;
+if (i32(D(7)) == 1) { p.x = 1.0 - p.x; }
+if (i32(D(8)) == 1) { p.y = 1.0 - p.y; }
+if (i32(D(9)) == 1) { p.z = 1.0 - p.z; }
+let color = p;
+if (i32(D(10)) == 0) {
+  let t = glsl_dbl2int(color);
+  v.rgbc = 1.0; v.r = t.x; v.g = t.y; v.b = t.z;
+} else {
+  v.color = idx;
+}
+v.x += AMOUNT * (gi / D(0) - 0.5);
+v.y += AMOUNT * (gj / 1000000.0 - 0.5);"
+    },
+    VarDef {
+        name: "glsl_mandelbox2D",
+        params: &[
+            ParamDef::int("Density Pixels", 1000000.0, 100.0, 10000000.0),
+            ParamDef::int("seed", 10000.0, 0.0, 10000.0),
+            ParamDef::new("time", 0.0),
+            ParamDef::int("Gradient", 0.0, 0.0, 1.0),
+        ],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, _, v, amount| {
+            let px = glsl_pixel(ctx, d[0]);
+            let (x, y) = (px.0 + 0.5, px.1 + 0.5);
+            let mut ip = vec2(7.0 * (x + x - d[0]) / d[0], 7.0 * (y + y - GLSL_RES_Y) / GLSL_RES_Y);
+            let (ox, oy, oz) = (ip.x, ip.y, -5.0 * (d[2] * 0.1).cos());
+            let mut dd = 1.0;
+            for _ in 0..20 {
+                ip = super::glsl::clamp(ip, -1.0, 1.0) * 2.0 - ip;
+                let oa = length(ip);
+                let b = if oa < 0.5 { 4.0 } else if oa < 1.0 { 1.0 / oa } else { 1.0 };
+                ip = ip * (oz * b) + vec2(ox, oy);
+                dd = b * dd * oz.abs() + 1.0;
+            }
+            let dd = (length(ip) / dd).powf(0.1) * 5.0;
+            let color = vec3(dd.cos(), (10.0 * dd + 1.0).sin(), (3.0 * dd + 1.0).cos()) * 0.5 + 0.5;
+            glsl_out(v, amount, px, d[0], color, d[3], |c| c.x * c.y);
+        },
+        prepare: Some(|p, _| {
+            let mut d = p.to_vec();
+            d[0] = glsl_density(p[0]);
+            d[3] = limit_value(p[3], 0.0, 1.0).trunc();
+            d
+        }),
+        wgsl: "let gi = floor(rnd() * D(0));
+let gj = floor(rnd() * 1000000.0);
+let x = gi + 0.5;
+let y = gj + 0.5;
+var ip = vec2<f32>(7.0 * (x + x - D(0)) / D(0), 7.0 * (y + y - 1000000.0) / 1000000.0);
+let o = ip;
+let oz = -5.0 * cos(D(2) * 0.1);
+var dd = 1.0;
+for (var i = 0; i < 20; i++) {
+  ip = clamp(ip, vec2<f32>(-1.0), vec2<f32>(1.0)) * 2.0 - ip;
+  let oa = length(ip);
+  var b = 1.0;
+  if (oa < 0.5) { b = 4.0; } else if (oa < 1.0) { b = 1.0 / oa; }
+  ip = ip * (oz * b) + o;
+  dd = b * dd * abs(oz) + 1.0;
+}
+let e = java_pow(length(ip) / dd, 0.1) * 5.0;
+let color = vec3<f32>(cos(e), sin(10.0 * e + 1.0), cos(3.0 * e + 1.0)) * 0.5 + 0.5;
+if (i32(D(3)) == 0) {
+  let t = glsl_dbl2int(color);
+  v.rgbc = 1.0; v.r = t.x; v.g = t.y; v.b = t.z;
+} else {
+  v.color = color.x * color.y;
+}
+v.x += AMOUNT * (gi / D(0) - 0.5);
+v.y += AMOUNT * (gj / 1000000.0 - 0.5);"
+    },
+    VarDef {
+        name: "glsl_squares",
+        params: &[
+            ParamDef::int("Density Pixels", 1000000.0, 100.0, 10000000.0),
+            ParamDef::int("Seed", 5000.0, 0.0, 100000.0),
+            ParamDef::range("time", 85.5, 0.0, 1000.0),
+            ParamDef::int("N", 3.0, 1.0, 20.0),
+            ParamDef::int("Direction", 1.0, 0.0, 1.0),
+            ParamDef::range("Red Fac.", 1.8, 0.0, 5.0),
+            ParamDef::range("Green Fac.", 1.9, 0.0, 5.0),
+            ParamDef::range("Blue Fac.", 2.2, 0.0, 5.0),
+            ParamDef::int("Gradient", 0.0, 0.0, 1.0),
+        ],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, _, v, amount| {
+            let px = glsl_pixel(ctx, d[0]);
+            let time = d[2];
+            let c0 = glsl_mod(vec2(((px.0 + 0.5) / d[0] - 0.5).abs(), ((px.1 + 0.5) / GLSL_RES_Y - 0.5).abs()), 1.0);
+            let mut color = vec3(time.cos(), time.tan(), time.sin());
+            for i in 0..4 {
+                if glsl_squares_hit(d, Vec2::splat(i as f64 * 0.1) + c0) {
+                    color = Vec3::splat(1.0) - color;
+                }
+            }
+            let color = vec3((color.x * d[5]).cos(), (color.y * d[6]).cos(), (color.z * d[7]).cos());
+            glsl_out(v, amount, px, d[0], color, d[8], glsl_red_ratio);
+        },
+        prepare: Some(|p, _| {
+            let mut d = p.to_vec();
+            d[0] = glsl_density(p[0]);
+            d[2] = limit_value(p[2], 0.0, 1000.0);
+            d[3] = limit_value(p[3], 1.0, 20.0).trunc();
+            d[4] = limit_value(p[4], 0.0, 1.0).trunc();
+            for i in 5..8 {
+                d[i] = limit_value(p[i], 0.0, 5.0);
+            }
+            d[8] = limit_value(p[8], 0.0, 1.0).trunc();
+            d
+        }),
+        wgsl: "fn glsl_squares_hit(base: u32, p: vec2<f32>) -> bool {
+  var direction = -1.0;
+  if (i32(prm[base + 4u]) == 1) { direction = 0.1; }
+  var c = p / java_pow(0.5, glsl_mod(direction * prm[base + 2u], 1.0));
+  let n = i32(prm[base + 3u]);
+  for (var i = 0; i < n; i++) {
+    let sectors = floor(c * 3.0);
+    if (sectors.x == 1.0 && sectors.y == 1.0) { return false; }
+    c = c * 3.0 - sectors;
+  }
+  return true;
+}
+@body
+let gi = floor(rnd() * D(0));
+let gj = floor(rnd() * 1000000.0);
+let tm = D(2);
+let c0 = glsl_mod2(abs(vec2<f32>((gi + 0.5) / D(0) - 0.5, (gj + 0.5) / 1000000.0 - 0.5)), vec2<f32>(1.0));
+var col = vec3<f32>(cos(tm), tan(tm), sin(tm));
+for (var i = 0; i < 4; i++) {
+  if (glsl_squares_hit(base, vec2<f32>(f32(i) * 0.1) + c0)) { col = vec3<f32>(1.0) - col; }
+}
+let color = cos(col * vec3<f32>(D(5), D(6), D(7)));
+if (i32(D(8)) == 0) {
+  let t = glsl_dbl2int(color);
+  v.rgbc = 1.0; v.r = t.x; v.g = t.y; v.b = t.z;
+} else {
+  v.color = sin(color.x / (color.x + color.y + color.z));
+}
+v.x += AMOUNT * (gi / D(0) - 0.5);
+v.y += AMOUNT * (gj / 1000000.0 - 0.5);"
+    },
+    VarDef {
+        name: "glsl_starsfield",
+        params: &[
+            ParamDef::int("Density Pixels", 1000000.0, 100.0, 10000000.0),
+            ParamDef::int("Seed", 10000.0, 0.0, 100000.0),
+            ParamDef::new("time", 0.0),
+            ParamDef::range("Z distance", 2.0, 2.0, 150.0),
+            // JWildfire starts at 2.0 but clamps every set value (e.g. when loading a flame) to 0..1
+            ParamDef::range("Glow", 1.0, 0.0, 1.0),
+            ParamDef::int("Gradient", 0.0, 0.0, 1.0),
+        ],
+        kind: VarKind::Normal,
+        is_3d: false,
+        apply: |d, ctx, _, v, amount| {
+            let px = glsl_pixel(ctx, d[0]);
+            let time = d[2];
+            let rotate = |a: f64| mat2(a.cos(), a.sin(), -a.sin(), a.cos());
+            let mut uv = vec2((px.0 + 0.5) / d[0] - 0.5, (px.1 + 0.5) / GLSL_RES_Y - 0.5);
+            let mut col = Vec3::splat(0.0);
+            uv = uv * rotate(time);
+            uv = uv + vec2(time.cos(), time.sin()) * 2.0;
+            let mut i = 0.0;
+            while i < 1.0 {
+                uv = uv * rotate(glsl_stars_hash11(i) * 6.28);
+                let t = fract(i - time);
+                let s = smoothstep(0.0, 1.0, t);
+                let f = smoothstep(0.0, 1.0, t) * smoothstep(1.0, 0.0, t);
+                let k = glsl_stars_hash22(vec2(i, i * 5.0)) * 0.1;
+                let l = glsl_stars_layer((uv - k) * s, d[3]);
+                col = col + mix(Vec3::splat(0.0), Vec3::splat(1.0), l) * f;
+                i += 0.1;
+            }
+            col = col + Vec3::splat(d[4] * glsl_stars_hash21(uv + time));
+            glsl_out(v, amount, px, d[0], col, d[5], glsl_red_ratio);
+        },
+        prepare: Some(|p, _| {
+            let mut d = p.to_vec();
+            d[0] = glsl_density(p[0]);
+            d[3] = limit_value(p[3], 2.0, 150.0);
+            d[4] = limit_value(p[4], 0.0, 1.0);
+            d[5] = limit_value(p[5], 0.0, 1.0).trunc();
+            d
+        }),
+        wgsl: "fn glsl_starsfield_hash21(p_in: vec2<f32>) -> f32 {
+  var p = fract(p_in * vec2<f32>(451.45, 231.95));
+  p = p + dot(p, p + 78.78);
+  return fract(p.x * p.y);
+}
+fn glsl_starsfield_hash22(p: vec2<f32>) -> vec2<f32> {
+  var q = fract(p.xyx * vec3<f32>(451.45, 231.95, 7878.5));
+  q = q + dot(q, q + 78.78);
+  return fract(q.xz * q.y);
+}
+fn glsl_starsfield_rot(a: f32) -> mat2x2<f32> {
+  return mat2x2<f32>(cos(a), sin(a), -sin(a), cos(a));
+}
+@body
+let gi = floor(rnd() * D(0));
+let gj = floor(rnd() * 1000000.0);
+let tm = D(2);
+var uv = vec2<f32>((gi + 0.5) / D(0) - 0.5, (gj + 0.5) / 1000000.0 - 0.5);
+var col = vec3<f32>(0.0);
+uv = uv * glsl_starsfield_rot(tm);
+uv = uv + vec2<f32>(cos(tm), sin(tm)) * 2.0;
+// Java steps i by 0.1 in double precision: 11 layers (the last at 0.9999999999999999)
+for (var n = 0; n < 11; n++) {
+  let i = min(f32(n) * 0.1, 0.99999994);
+  var h = fract(i * 35.35);
+  h += h * (h + 45.85);
+  uv = uv * glsl_starsfield_rot(fract(h * 7858.58) * 6.28);
+  let t = fract(i - tm);
+  let s = glsl_smoothstep(0.0, 1.0, t);
+  let f = glsl_smoothstep(0.0, 1.0, t) * glsl_smoothstep(1.0, 0.0, t);
+  let k = glsl_starsfield_hash22(vec2<f32>(i, i * 5.0)) * 0.1;
+  // layer
+  let lu = (uv - k) * s * 5.0;
+  let li = floor(lu);
+  let lf = fract(lu) * D(3) - 1.0;
+  let ld = length(lf - glsl_starsfield_hash22(li) * 0.3);
+  let l = glsl_smoothstep(0.1 + 0.8 * glsl_starsfield_hash21(li), 0.01, ld) * (1.0 / ld) * 0.2;
+  col += vec3<f32>(l) * f;
+}
+let color = col + vec3<f32>(D(4) * glsl_starsfield_hash21(uv + tm));
+if (i32(D(5)) == 0) {
+  let t = glsl_dbl2int(color);
+  v.rgbc = 1.0; v.r = t.x; v.g = t.y; v.b = t.z;
+} else {
+  v.color = sin(color.x / (color.x + color.y + color.z));
+}
+v.x += AMOUNT * (gi / D(0) - 0.5);
+v.y += AMOUNT * (gj / 1000000.0 - 0.5);"
     },
 ];
