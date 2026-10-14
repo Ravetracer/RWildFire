@@ -90,6 +90,8 @@ pub struct Program {
     pub shadow_map_size: usize,
     /// Start of the weighting field tables in `prm` (if any xform has a weighting field).
     pub wf_tables: Option<usize>,
+    /// Classic rendering records depths into a z-buffer (binding 6, see [`ZBUFFER_WGSL`]).
+    pub zbuffer: bool,
 }
 
 /// Floats per shadow map in the solid `prm` block.
@@ -437,11 +439,12 @@ fn emit_xform(out: &mut String, fname: &str, xf: &PreparedXForm, base: usize, la
 
 impl Program {
     pub fn new(flame: &Flame, prepared: &PreparedFlame) -> Self {
-        Self::new_scaled(flame, prepared, 1.0)
+        Self::new_scaled(flame, prepared, 1.0, false)
     }
 
     /// `ppu_scale` = output size relative to the flame size (scales the shadow map size).
-    pub fn new_scaled(flame: &Flame, prepared: &PreparedFlame, ppu_scale: f64) -> Self {
+    /// `zbuffer`: record depths (solid rendering always has a z-buffer).
+    pub fn new_scaled(flame: &Flame, prepared: &PreparedFlame, ppu_scale: f64, zbuffer: bool) -> Self {
         let mut sig = String::new();
         let mut unsupported: Vec<String> = prepared.missing_variations.clone();
         let mut used_vars: BTreeMap<&'static str, &'static VarDef> = BTreeMap::new();
@@ -467,6 +470,10 @@ impl Program {
         let shadow_map_size = if map_count > 0 { rwf_core::render::solid::shadow_map_size(flame, ppu_scale) } else { 0 };
         if solid {
             let _ = write!(sig, "solid{map_count}x{shadow_map_size}|");
+        }
+        let zbuffer = zbuffer && !solid;
+        if zbuffer {
+            sig.push_str("zb|");
         }
         if flame.post_blur_radius > 0 {
             let _ = write!(sig, "pb{}/{}/{}|", flame.post_blur_radius, flame.post_blur_fade, flame.post_blur_falloff);
@@ -626,13 +633,22 @@ impl Program {
             param_len += map_count as usize * SOLID_LIGHT_STRIDE;
             solid_base = Some(base);
             w.push_str(&solid_plot_wgsl(base, map_count, shadow_map_size, dof.is_some()));
-        } else if dof.is_some() {
-            w.push_str(&PROJECT_FN.replace(
-                "        x = cx / zr;\n        y = cy / zr;",
-                "        let dd = dof_distance(vec3<f32>(cx, cy, cz));\n        if (dd >= 0.0) { let bp = dof_apply(cx, cy, dd); x = bp.x / zr; y = bp.y / zr; } else { x = cx / zr; y = cy / zr; }",
-            ));
         } else {
-            w.push_str(PROJECT_FN);
+            let mut project = PROJECT_FN.to_string();
+            if dof.is_some() {
+                project = project.replace(
+                    "        x = cx / zr;\n        y = cy / zr;",
+                    "        let dd = dof_distance(vec3<f32>(cx, cy, cz));\n        if (dd >= 0.0) { let bp = dof_apply(cx, cy, dd); x = bp.x / zr; y = bp.y / zr; } else { x = cx / zr; y = cy / zr; }",
+                );
+            }
+            if zbuffer {
+                w.push_str(ZBUFFER_WGSL);
+                project = project
+                    .replace("    var intensity = 1.0;\n", "    var intensity = 1.0;\n    var cam_z = 0.0;\n")
+                    .replace("        if (zr < EPSILON) { return; }\n", "        if (zr < EPSILON) { return; }\n        cam_z = cz;\n")
+                    .replace("    splat(ix, iy, col_in * intensity);", "    zbuf_add(ix, iy, cam_z * U.bws, col_in * intensity);\n    splat(ix, iy, col_in * intensity);");
+            }
+            w.push_str(&project);
         }
         if solid {
             // Post blur does not apply to the z-buffer.
@@ -674,7 +690,7 @@ impl Program {
         }
         w.push_str(ITER_MAIN_TAIL);
 
-        Self { signature: sig, wgsl: w, layer_count: layers.len(), layers, param_len, next_len, unsupported, dof_base, solid_base, shadow_maps, shadow_map_size, wf_tables }
+        Self { signature: sig, wgsl: w, layer_count: layers.len(), layers, param_len, next_len, unsupported, dof_base, solid_base, shadow_maps, shadow_map_size, wf_tables, zbuffer }
     }
 
     /// Packs all numeric values into the `prm` buffer layout of this program.
@@ -1050,6 +1066,18 @@ fn hist_add(ix: i32, iy: i32, col: vec3<f32>) {
     atomicAdd(&hist[idx + 1u], i32(col.x * U.color_scale));
     atomicAdd(&hist[idx + 2u], i32(col.y * U.color_scale));
     atomicAdd(&hist[idx + 3u], i32(col.z * U.color_scale));
+}
+"#;
+
+/// Z-buffer of classic rendering (`RasterFloatIntWithZBuffer`): the maximum camera depth of
+/// bright samples per cell, as an order preserving key (0 = empty).
+const ZBUFFER_WGSL: &str = r#"
+@group(0) @binding(6) var<storage, read_write> zbuf: array<atomic<u32>>;
+fn zkey(f: f32) -> u32 { let b = bitcast<u32>(f); if ((b & 0x80000000u) != 0u) { return ~b; } return b | 0x80000000u; }
+fn zbuf_add(ix: i32, iy: i32, z: f32, col: vec3<f32>) {
+    if (0.299 * col.x + 0.588 * col.y + 0.113 * col.z > 8.0) {
+        atomicMax(&zbuf[u32(iy) * U.raster_w + u32(ix)], zkey(z));
+    }
 }
 "#;
 

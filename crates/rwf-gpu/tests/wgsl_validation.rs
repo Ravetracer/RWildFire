@@ -87,3 +87,20 @@ fn weighting_field_programs_are_valid() {
         assert_eq!(p.len(), prog.param_len.max(1));
     }
 }
+
+#[test]
+fn zbuffer_programs_are_valid() {
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../testdata/TINA0001.flame");
+    let mut flame = rwf_core::io::read_flames_from_file(std::path::Path::new(path)).unwrap().remove(0);
+    flame.cam_pitch = 0.7;
+    for (dof, post_blur) in [(0.0, 0), (0.3, 0), (0.0, 2)] {
+        flame.cam_dof = dof;
+        flame.post_blur_radius = post_blur;
+        let prepared = PreparedFlame::new(&flame);
+        let prog = Program::new_scaled(&flame, &prepared, 1.0, true);
+        assert!(prog.zbuffer && prog.wgsl.contains("zbuf_add(ix, iy, cam_z * U.bws"), "z-buffer hook missing");
+        if let Err(err) = validate_wgsl(&prog.wgsl) {
+            panic!("z-buffer dof {dof} post blur {post_blur}: {err}");
+        }
+    }
+}

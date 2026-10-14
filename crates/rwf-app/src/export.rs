@@ -39,14 +39,7 @@ enum Job {
 
 struct Running {
     job: Job,
-    path: PathBuf,
-    width: u32,
-    height: u32,
-    with_alpha: bool,
-    format: ImageFormat,
-    jpeg_quality: u8,
-    zbuffer: bool,
-    flame: Flame,
+    save: SaveJob,
     started: Instant,
     target_density: f64,
 }
@@ -133,7 +126,28 @@ fn save_cpu(r: &CpuRender, run: &SaveJob) -> Result<(), String> {
     Ok(())
 }
 
-/// What the save thread needs from [`Running`].
+/// Saves a finished GPU render: image in the chosen format plus the optional z-buffer.
+fn save_gpu(r: &mut GpuRenderer, run: &SaveJob) -> Result<(), String> {
+    let (w, h) = (run.width, run.height);
+    if run.format.is_hdr() {
+        let rgb = r.read_hdr().ok_or("readback failed")?;
+        rwf_core::output::write_float_rgb(&run.path, run.format, w, h, &rgb)?;
+    } else {
+        r.tonemap();
+        let mut img = r.read_image().ok_or("readback failed")?;
+        denoise(&run.flame, &mut img, w, h, true)?;
+        rwf_core::output::write_rgba8(&run.path, run.format, w, h, &img, run.jpeg_quality)?;
+    }
+    if run.zbuffer
+        && let Some(z) = r.read_zbuffer()
+    {
+        rwf_core::output::write_gray16_png(&run.flame.zbuffer_filename.path_for(&run.path), w, h, &z)?;
+    }
+    Ok(())
+}
+
+/// Output settings of a running export.
+#[derive(Clone)]
 struct SaveJob {
     path: PathBuf,
     width: u32,
@@ -173,12 +187,11 @@ impl ExportDialog {
         let alpha = self.transparent && self.image_format == ImageFormat::Png;
         let mut f = flame.clone();
         f.bg_transparency = alpha;
-        // Float images and depths come from the CPU histogram.
-        let cpu_only = self.image_format.is_hdr() || self.zbuffer;
         let job = match (self.backend, gpu) {
-            (Backend::Gpu, Some(ctx)) if !cpu_only => {
+            (Backend::Gpu, Some(ctx)) => {
                 let mut r = GpuRenderer::new(ctx);
                 r.set_with_alpha(alpha);
+                r.set_zbuffer(self.zbuffer);
                 r.set_flame(&f, self.width, self.height);
                 if let Some(e) = r.last_error() {
                     self.status = Some(format!("GPU error: {e}"));
@@ -199,14 +212,16 @@ impl ExportDialog {
         };
         self.running = Some(Running {
             job,
-            path,
-            width: self.width,
-            height: self.height,
-            with_alpha: alpha,
-            format: self.image_format,
-            jpeg_quality: self.jpeg_quality,
-            zbuffer: self.zbuffer,
-            flame: f,
+            save: SaveJob {
+                path,
+                width: self.width,
+                height: self.height,
+                with_alpha: alpha,
+                format: self.image_format,
+                jpeg_quality: self.jpeg_quality,
+                zbuffer: self.zbuffer,
+                flame: f,
+            },
             started: Instant::now(),
             target_density: self.quality,
         });
@@ -224,11 +239,7 @@ impl ExportDialog {
                     renderer.wait_idle();
                     return (renderer.samples() as f64 / *target as f64) as f32;
                 }
-                renderer.tonemap();
-                let result = renderer.read_image().ok_or_else(|| "readback failed".to_string()).and_then(|mut img| {
-                    denoise(&run.flame, &mut img, run.width, run.height, true)?;
-                    rwf_core::output::write_rgba8(&run.path, run.format, run.width, run.height, &img, run.jpeg_quality)
-                });
+                let result = save_gpu(renderer, &run.save);
                 self.finish(result);
                 1.0
             }
@@ -246,16 +257,7 @@ impl ExportDialog {
                 }
                 let r = render.take().expect("cpu render");
                 let (tx, rx) = channel();
-                let job = SaveJob {
-                    path: run.path.clone(),
-                    width: run.width,
-                    height: run.height,
-                    with_alpha: run.with_alpha,
-                    format: run.format,
-                    jpeg_quality: run.jpeg_quality,
-                    zbuffer: run.zbuffer,
-                    flame: run.flame.clone(),
-                };
+                let job = run.save.clone();
                 std::thread::spawn(move || {
                     let _ = tx.send(save_cpu(&r, &job));
                 });
@@ -268,7 +270,7 @@ impl ExportDialog {
     fn finish(&mut self, result: Result<(), String>) {
         if let Some(run) = self.running.take() {
             self.status = Some(match result {
-                Ok(()) => format!("Saved {} ({:.1}s)", run.path.display(), run.started.elapsed().as_secs_f64()),
+                Ok(()) => format!("Saved {} ({:.1}s)", run.save.path.display(), run.started.elapsed().as_secs_f64()),
                 Err(e) => format!("Export failed: {e}"),
             });
         }
@@ -397,11 +399,6 @@ impl ExportDialog {
                             flame.zbuffer_filename.path_for(std::path::Path::new(&format!("image.{}", self.image_format.extension()))).display()
                         ));
                         ui.end_row();
-                        if (self.image_format.is_hdr() || self.zbuffer) && self.backend == Backend::Gpu && gpu.is_some() {
-                            ui.label("");
-                            ui.label(RichText::new("HDR and z-buffer are rendered on the CPU").small().color(theme::TEXT_MUTED));
-                            ui.end_row();
-                        }
                     } else {
                         let last = flame.animation.frame_count.saturating_sub(1);
                         ui.label(RichText::new("Frames").color(theme::TEXT_MUTED));

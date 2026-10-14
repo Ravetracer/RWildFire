@@ -215,11 +215,8 @@ fn hsl_to_rgb(hsl: vec3<f32>) -> vec3<f32> {
     }
 }
 
-@compute @workgroup_size(16, 16)
-fn tonemap(@builtin(global_invocation_id) gid: vec3<u32>) {
-    if (gid.x >= T.image_w || gid.y >= T.image_h) { return; }
-    let px = i32(gid.x);
-    let py = i32(gid.y);
+// Log-density filtered (intensity, r, g, b) of one output pixel.
+fn filtered(px: i32, py: i32) -> vec4<f32> {
     let os = i32(T.os);
     var col = vec3<f32>(0.0);
     var intensity = 0.0;
@@ -272,26 +269,43 @@ fn tonemap(@builtin(global_invocation_id) gid: vec3<u32>) {
             }
         }
     }
+    return vec4<f32>(intensity, col);
+}
 
+// Gamma curve of the intensity (alpha before scaling to 0..255).
+fn gamma_alpha(intensity: f32) -> f32 {
+    if (intensity <= T.gamma_threshold) {
+        let frac = intensity / T.gamma_threshold;
+        return (1.0 - frac) * intensity * T.scl_gamma + frac * pow(intensity, T.gamma);
+    }
+    return pow(intensity, T.gamma);
+}
+
+fn vibrancy(alpha: f32, intensity: f32, col: vec3<f32>) -> vec3<f32> {
+    var raw = (T.vib_int * alpha / intensity) * col;
+    if (T.inv_vib_int > 0.0) {
+        raw += T.inv_vib_int * pow(max(col, vec3<f32>(0.0)), vec3<f32>(T.gamma));
+    }
+    return raw;
+}
+
+@compute @workgroup_size(16, 16)
+fn tonemap(@builtin(global_invocation_id) gid: vec3<u32>) {
+    if (gid.x >= T.image_w || gid.y >= T.image_h) { return; }
+    let px = i32(gid.x);
+    let py = i32(gid.y);
+    let fp = filtered(px, py);
+    let intensity = fp.x;
+    let col = fp.yzw;
     let bg = background(gid.x, gid.y);
     var rgb: vec3<f32>;
     var alpha_out: f32;
     if (intensity > 0.0) {
-        var alpha: f32;
-        if (intensity <= T.gamma_threshold) {
-            let frac = intensity / T.gamma_threshold;
-            alpha = (1.0 - frac) * intensity * T.scl_gamma + frac * pow(intensity, T.gamma);
-        } else {
-            alpha = pow(intensity, T.gamma);
-        }
-        let log_scl = T.vib_int * alpha / intensity;
+        let alpha = gamma_alpha(intensity);
         let alpha_int = clamp(floor(alpha * 255.0 * T.alpha_scale + 0.5), 0.0, 255.0);
         let inv_alpha = 255.0 - alpha_int;
         alpha_out = select(255.0, alpha_int, T.with_alpha != 0u);
-        var raw = log_scl * col;
-        if (T.inv_vib_int > 0.0) {
-            raw += T.inv_vib_int * pow(max(col, vec3<f32>(0.0)), vec3<f32>(T.gamma));
-        }
+        let raw = vibrancy(alpha, intensity, col);
         rgb = clamp(floor(raw + 0.5) + floor(inv_alpha * bg / 256.0), vec3<f32>(0.0), vec3<f32>(255.0));
     } else {
         rgb = clamp(bg, vec3<f32>(0.0), vec3<f32>(255.0));
@@ -303,6 +317,27 @@ fn tonemap(@builtin(global_invocation_id) gid: vec3<u32>) {
         rgb = vec3<f32>(round_color(hsl_to_rgb(hsl).x * 255.0), round_color(hsl_to_rgb(hsl).y * 255.0), round_color(hsl_to_rgb(hsl).z * 255.0));
     }
     textureStore(out_tex, vec2<i32>(px, py), vec4<f32>(rgb / 255.0, alpha_out / 255.0));
+}
+
+// Linear float RGB (1.0 = 8-bit full scale) without quantization (`transformPointHDR`).
+@group(0) @binding(6) var<storage, read_write> hdr_out: array<f32>;
+
+@compute @workgroup_size(16, 16)
+fn tonemap_hdr(@builtin(global_invocation_id) gid: vec3<u32>) {
+    if (gid.x >= T.image_w || gid.y >= T.image_h) { return; }
+    let fp = filtered(i32(gid.x), i32(gid.y));
+    let intensity = fp.x;
+    let bg = background(gid.x, gid.y);
+    var rgb = bg / 255.0;
+    if (intensity > 0.0) {
+        let alpha = gamma_alpha(intensity);
+        let inv_alpha = 255.0 - clamp(alpha * 255.0, 0.0, 255.0);
+        rgb = max(vibrancy(alpha, intensity, fp.yzw) + inv_alpha * bg / 255.0, vec3<f32>(0.0)) / 255.0;
+    }
+    let i = (gid.y * T.image_w + gid.x) * 3u;
+    hdr_out[i] = rgb.x;
+    hdr_out[i + 1u] = rgb.y;
+    hdr_out[i + 2u] = rgb.z;
 }
 
 // ---- density estimation (port of DeCalculator) ----

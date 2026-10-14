@@ -128,6 +128,7 @@ struct Passes {
     accel: wgpu::ComputePipeline,
     vis: wgpu::ComputePipeline,
     shade: wgpu::ComputePipeline,
+    shade_hdr: wgpu::ComputePipeline,
     output: wgpu::ComputePipeline,
     dof_splat: wgpu::ComputePipeline,
     dof_resolve: wgpu::ComputePipeline,
@@ -185,6 +186,7 @@ impl SolidGpu {
                 accel: mk("sld_shadow_accel"),
                 vis: mk("sld_shadow_vis"),
                 shade: mk("sld_shade"),
+                shade_hdr: mk("sld_shade_hdr"),
                 output: mk("sld_output"),
                 dof_splat: mk("sld_dof_splat"),
                 dof_resolve: mk("sld_dof_resolve"),
@@ -234,7 +236,8 @@ impl SolidGpu {
         }
     }
 
-    /// Runs all passes and writes the final image into `output`.
+    /// Runs all passes and writes the final image into `output`, or, with `hdr_out`, linear
+    /// float RGB (three `f32` per pixel, no post DOF) into that buffer.
     /// `backdrop`: background xform colors (three per pixel), if any.
     #[allow(clippy::too_many_arguments)]
     pub fn render(
@@ -246,6 +249,7 @@ impl SolidGpu {
         output: &wgpu::TextureView,
         with_alpha: bool,
         backdrop: Option<&[[i32; 3]]>,
+        hdr_out: Option<&wgpu::Buffer>,
     ) {
         if self.buffers.is_none() {
             return;
@@ -463,6 +467,7 @@ impl SolidGpu {
                 11 => b.dofpix.as_entire_binding(),
                 12 => b.dofacc.as_entire_binding(),
                 13 => wgpu::BindingResource::TextureView(output),
+                15 => hdr_out.expect("hdr buffer").as_entire_binding(),
                 _ => refl_buf.as_entire_binding(),
             }
         };
@@ -489,13 +494,17 @@ impl SolidGpu {
             run(&mut enc, &p.accel, &[0, 1, 2, 3, 7, 9], (rg.0, rg.1, nl));
             run(&mut enc, &p.vis, &[0, 7, 8, 9], (rg.0, rg.1, nl));
         }
-        run(&mut enc, &p.shade, &[0, 2, 4, 6, 8, 9, 10, 11, 14], ig);
-        if dof_on {
-            enc.clear_buffer(&b.dofacc, 0, None);
-            run(&mut enc, &p.dof_splat, &[0, 9, 10, 11, 12], ig);
-            run(&mut enc, &p.dof_resolve, &[0, 10, 12, 13], ig);
+        if hdr_out.is_some() {
+            run(&mut enc, &p.shade_hdr, &[0, 2, 4, 6, 8, 9, 14, 15], ig);
         } else {
-            run(&mut enc, &p.output, &[0, 10, 13], ig);
+            run(&mut enc, &p.shade, &[0, 2, 4, 6, 8, 9, 10, 11, 14], ig);
+            if dof_on {
+                enc.clear_buffer(&b.dofacc, 0, None);
+                run(&mut enc, &p.dof_splat, &[0, 9, 10, 11, 12], ig);
+                run(&mut enc, &p.dof_resolve, &[0, 10, 12, 13], ig);
+            } else {
+                run(&mut enc, &p.output, &[0, 10, 13], ig);
+            }
         }
         queue.submit(Some(enc.finish()));
     }

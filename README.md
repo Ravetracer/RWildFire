@@ -7,7 +7,7 @@ A fractal flame editor in Rust, ported from [JWildfire](https://github.com/tharg
 ```sh
 cargo run --release -p rwf-app                      # editor
 cargo run --release -p rwf-app -- some.flame        # open a file
-cargo run --release -p rwf-cli -- render in.flame -o out.png -w 1920 -h 1080 -q 1000 --gpu
+cargo run --release -p rwf-cli -- render in.flame -o out.png -w 1920 -h 1080 -q 1000 --gpu   # also .jpg, .hdr, .exr; --zbuffer adds a 16-bit depth PNG
 cargo run --release -p rwf-cli -- random out_dir 8  # random flames (.flame + .png)
 cargo run --release -p rwf-cli -- render-anim in.flame -o out.mp4 --gpu   # animation (mp4/mov/webm via ffmpeg, or a folder for PNGs)
 ```
@@ -72,12 +72,11 @@ Each variation is a `VarDef` with a CPU function and a WGSL snippet that read th
 
 ## Status / roadmap
 
-Done: core editor, file compatibility, CPU and GPU renderer, 1010 variations (incl. prepost, image and mesh resources, formula plots and curves, SVG and text, sub-flames), gradient editing, random generators, mutations, PNG export, density estimation, DOF, layers, animation and video export, adaptive filter, post blur, AI denoiser, solid rendering, xform weighting fields, channel mixer, background xforms.
+Done: core editor, file compatibility, CPU and GPU renderer, 1010 variations (incl. prepost, image and mesh resources, formula plots and curves, SVG and text, sub-flames), gradient editing, random generators, mutations, PNG export, density estimation, DOF, layers, animation and video export, adaptive filter, post blur, AI denoiser, solid rendering, xform weighting fields, channel mixer, background xforms, JPEG/HDR/OpenEXR and z-buffer output (CPU and GPU).
 
 Planned, by priority:
 
 1. Rendering and output
-   - More output formats: JPEG, HDR/EXR, Z-buffer
    - Interactive renderer: long progressive renders with pause, resume and saved render state
    - Batch renderer (render queue)
    - Quilt renderer (very large images rendered in tiles)

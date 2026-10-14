@@ -397,32 +397,11 @@ impl CpuRender {
     pub fn zbuffer_image(&self) -> Option<Vec<u16>> {
         let v = &self.shared.packets[0].view;
         let solid = self.shared.solid.as_ref().map(|acc| acc.lock().expect("solid accum").z.clone());
-        let read = |x: u32, y: u32| -> Option<f32> {
-            if x >= v.raster_width || y >= v.raster_height {
-                return None;
-            }
-            match (&solid, &self.shared.zbuffer) {
-                (Some(z), _) => Some(z[(y * v.raster_width + x) as usize]).filter(|z| *z != solid::ZMIN),
-                (None, Some(zb)) => zb.get(x, y),
-                (None, None) => None,
-            }
-        };
-        if solid.is_none() && self.shared.zbuffer.is_none() {
-            return None;
+        match (&solid, &self.shared.zbuffer) {
+            (Some(z), _) => Some(zbuffer_image(&self.flame, v, |x, y| Some(z[(y * v.raster_width + x) as usize]).filter(|z| *z != solid::ZMIN))),
+            (None, Some(zb)) => Some(zbuffer_image(&self.flame, v, |x, y| zb.get(x, y))),
+            (None, None) => None,
         }
-        Some(zbuffer_gray(&self.flame, v.image_width, v.image_height, |x, y| {
-            let os = v.oversample;
-            let (mut sum, mut n) = (0.0, 0);
-            for px in 0..os {
-                for py in 0..os {
-                    if let Some(z) = read(x * os + px + v.border, y * os + py + v.border) {
-                        sum += z as f64;
-                        n += 1;
-                    }
-                }
-            }
-            (n > 0).then(|| sum / n as f64)
-        }))
     }
 
     /// Solid rendering: normals, AO, shadows, shading and (optionally) post DOF of the current
@@ -450,9 +429,25 @@ impl Drop for CpuRender {
     }
 }
 
-/// Maps averaged pixel depths to 16-bit gray levels (`RenderZBufferThread`).
-fn zbuffer_gray(flame: &Flame, w: u32, h: u32, depth: impl Fn(u32, u32) -> Option<f64> + Sync) -> Vec<u16> {
+/// 16-bit gray depth image from the raster depths `depth(x, y)` (`None` = empty cell): averaged
+/// over the oversampling cells (`transformZPoint`), mapped by the flame's z-buffer scale, shift
+/// and bias (`RenderZBufferThread`).
+pub fn zbuffer_image(flame: &Flame, v: &View, depth: impl Fn(u32, u32) -> Option<f32> + Sync) -> Vec<u16> {
     use rayon::prelude::*;
+    let (w, h, os) = (v.image_width, v.image_height, v.oversample);
+    let read = |x: u32, y: u32| if x < v.raster_width && y < v.raster_height { depth(x, y) } else { None };
+    let depth = |x: u32, y: u32| {
+        let (mut sum, mut n) = (0.0, 0);
+        for px in 0..os {
+            for py in 0..os {
+                if let Some(z) = read(x * os + px + v.border, y * os + py + v.border) {
+                    sum += z as f64;
+                    n += 1;
+                }
+            }
+        }
+        (n > 0).then(|| sum / n as f64)
+    };
     let z_scale = flame.zbuffer_scale * 0.001;
     let z_bias = if flame.zbuffer_bias <= 0.0 {
         0

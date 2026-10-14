@@ -486,14 +486,14 @@ fn unpack(v: u32) -> vec4<f32> {
     return vec4<f32>(f32(v & 255u), f32((v >> 8u) & 255u), f32((v >> 16u) & 255u), f32(v >> 24u));
 }
 
-@compute @workgroup_size(16, 16)
-fn sld_shade(@builtin(global_invocation_id) gid: vec3<u32>) {
-    if (gid.x >= S.image_w || gid.y >= S.image_h) { return; }
+// Filtered shading of one output pixel: color, coverage intensity and DOF distance.
+struct Shade { col: vec3<f32>, intensity: f32, dof: f32 }
+
+fn shade_pixel(gid: vec3<u32>, bg: vec3<f32>) -> Shade {
     let os = i32(S.os);
     let b = i32(S.border);
     let px = i32(gid.x);
     let py = i32(gid.y);
-    let bg = background(gid.x, gid.y);
     var col = vec3<f32>(0.0);
     var intensity = 0.0;
     var dof = 0.0;
@@ -536,6 +536,17 @@ fn sld_shade(@builtin(global_invocation_id) gid: vec3<u32>) {
             intensity = f32(count) / f32(os * os);
         }
     }
+    return Shade(col, intensity, dof);
+}
+
+@compute @workgroup_size(16, 16)
+fn sld_shade(@builtin(global_invocation_id) gid: vec3<u32>) {
+    if (gid.x >= S.image_w || gid.y >= S.image_h) { return; }
+    let bg = background(gid.x, gid.y);
+    let sh = shade_pixel(gid, bg);
+    let col = sh.col;
+    let intensity = sh.intensity;
+    let dof = sh.dof;
     var rgb: vec3<f32>;
     var alpha: f32;
     if (intensity > 0.0) {
@@ -555,6 +566,25 @@ fn sld_shade(@builtin(global_invocation_id) gid: vec3<u32>) {
     let pi = gid.y * S.image_w + gid.x;
     shaded[pi] = pack(vec4<f32>(rgb, alpha));
     dofpix[pi] = dof;
+}
+
+// Linear float RGB without quantization (`transformPointHDR`); no post DOF.
+@group(0) @binding(15) var<storage, read_write> hdr_out: array<f32>;
+
+@compute @workgroup_size(16, 16)
+fn sld_shade_hdr(@builtin(global_invocation_id) gid: vec3<u32>) {
+    if (gid.x >= S.image_w || gid.y >= S.image_h) { return; }
+    let bg = background(gid.x, gid.y);
+    let sh = shade_pixel(gid, bg);
+    var rgb = bg / 255.0;
+    if (sh.intensity > 0.0) {
+        let inv = 255.0 - clamp(pow(sh.intensity, 1.0 + S.gamma) * 255.0 * S.alpha_scale, 0.0, 255.0);
+        rgb = max(sh.col + inv * bg / 255.0, vec3<f32>(0.0)) / 255.0;
+    }
+    let i = (gid.y * S.image_w + gid.x) * 3u;
+    hdr_out[i] = rgb.x;
+    hdr_out[i + 1u] = rgb.y;
+    hdr_out[i + 2u] = rgb.z;
 }
 
 @compute @workgroup_size(16, 16)

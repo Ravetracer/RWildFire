@@ -209,6 +209,8 @@ struct Buffers {
     hist: wgpu::Buffer,
     accum: wgpu::Buffer,
     de: wgpu::Buffer,
+    /// Depth keys of classic rendering (only if the z-buffer is enabled).
+    zbuf: Option<wgpu::Buffer>,
     output: wgpu::Texture,
     output_view: wgpu::TextureView,
 }
@@ -217,6 +219,7 @@ pub struct GpuRenderer {
     ctx: GpuContext,
     resolve_pipeline: wgpu::ComputePipeline,
     tonemap_pipeline: wgpu::ComputePipeline,
+    tonemap_hdr_pipeline: wgpu::ComputePipeline,
     de_pipeline: wgpu::ComputePipeline,
     de_uniforms: wgpu::Buffer,
     pipelines: Option<Pipelines>,
@@ -248,6 +251,8 @@ pub struct GpuRenderer {
     /// Number of flame states accumulated into the histogram (motion blur packets).
     packets: u32,
     solid: crate::solid::SolidGpu,
+    /// Record depths for [`GpuRenderer::read_zbuffer`].
+    zbuffer: bool,
 }
 
 fn storage_buffer(device: &wgpu::Device, label: &str, size: u64) -> wgpu::Buffer {
@@ -305,6 +310,7 @@ impl GpuRenderer {
         };
         let resolve_pipeline = mk("resolve");
         let tonemap_pipeline = mk("tonemap");
+        let tonemap_hdr_pipeline = mk("tonemap_hdr");
         let de_pipeline = mk("density_estimate");
         let thread_count = 64 * 1024;
         Self {
@@ -318,6 +324,7 @@ impl GpuRenderer {
             de_uniforms: uniform_buffer(device, "de-uniforms", std::mem::size_of::<DeUniforms>() as u64),
             resolve_pipeline,
             tonemap_pipeline,
+            tonemap_hdr_pipeline,
             de_pipeline,
             pipelines: None,
             buffers: None,
@@ -338,6 +345,7 @@ impl GpuRenderer {
             output_generation: 0,
             packets: 1,
             solid: crate::solid::SolidGpu::new(),
+            zbuffer: false,
             ctx,
         }
     }
@@ -388,6 +396,15 @@ impl GpuRenderer {
 
     /// Sets the flame to render at the given output size. Restarts accumulation when anything
     /// relevant changed; recompiles the kernel only on structural changes.
+    /// Enables the z-buffer of classic rendering (solid rendering always has one); applies to
+    /// the next [`GpuRenderer::set_flame`].
+    pub fn set_zbuffer(&mut self, on: bool) {
+        if self.zbuffer != on {
+            self.zbuffer = on;
+            self.flame = None;
+        }
+    }
+
     pub fn set_flame(&mut self, flame: &Flame, width: u32, height: u32) {
         self.update_flame(flame, width, height, true);
     }
@@ -422,7 +439,7 @@ impl GpuRenderer {
         let prepared = PreparedFlame::new(flame);
         let filter_size = flame.filter_kernel.filter_size(flame.spatial_filter_radius, flame.spatial_oversampling.max(1));
         let view = View::new(flame, width, height, filter_size);
-        let program = Program::new_scaled(flame, &prepared, view.ppu_scale);
+        let program = Program::new_scaled(flame, &prepared, view.ppu_scale, self.zbuffer);
 
         // Pipeline
         if self.pipelines.as_ref().map(|p| p.signature.as_str()) != Some(program.signature.as_str()) {
@@ -449,7 +466,7 @@ impl GpuRenderer {
         }
 
         // Raster/output buffers
-        let need_new = !self.buffers.as_ref().is_some_and(|b| {
+        let mut need_new = !self.buffers.as_ref().is_some_and(|b| {
             b.raster_w == view.raster_width && b.raster_h == view.raster_height && b.image_w == width && b.image_h == height
         });
         if need_new {
@@ -474,9 +491,18 @@ impl GpuRenderer {
                 hist: storage_buffer(device, "hist", cells * 16),
                 accum: storage_buffer(device, "accum", cells * 16),
                 de: storage_buffer(device, "de", cells * 16),
+                zbuf: None,
                 output,
                 output_view,
             });
+        }
+        if let Some(b) = self.buffers.as_mut() {
+            if !program.zbuffer {
+                b.zbuf = None;
+            } else if b.zbuf.is_none() {
+                b.zbuf = Some(storage_buffer(device, "zbuf", b.raster_w as u64 * b.raster_h as u64 * 4));
+                need_new = true;
+            }
         }
 
         // Solid rendering buffers and shadow map placement
@@ -654,6 +680,9 @@ impl GpuRenderer {
             let mut enc = self.ctx.device.create_command_encoder(&Default::default());
             enc.clear_buffer(&b.hist, 0, None);
             enc.clear_buffer(&b.accum, 0, None);
+            if let Some(z) = &b.zbuf {
+                enc.clear_buffer(z, 0, None);
+            }
             self.solid.clear(&mut enc);
             self.ctx.queue.submit(Some(enc.finish()));
         }
@@ -692,7 +721,7 @@ impl GpuRenderer {
         }
         let device = self.ctx.device.clone();
         let iterate = pipes.iterate.clone();
-        let (hist, accum) = (bufs.hist.clone(), bufs.accum.clone());
+        let (hist, accum, zbuf) = (bufs.hist.clone(), bufs.accum.clone(), bufs.zbuf.clone());
         let (prm, nxt, cmap) = (prm.clone(), nxt.clone(), cmap.clone());
         let cells = bufs.raster_w as u64 * bufs.raster_h as u64;
         if self.needs_state_reset {
@@ -718,7 +747,12 @@ impl GpuRenderer {
                     entries.push(wgpu::BindGroupEntry { binding: 8, resource: sb.smap.as_entire_binding() });
                 }
             }
-            _ => entries.push(wgpu::BindGroupEntry { binding: 5, resource: hist.as_entire_binding() }),
+            _ => {
+                entries.push(wgpu::BindGroupEntry { binding: 5, resource: hist.as_entire_binding() });
+                if let Some(z) = zbuf.as_ref().filter(|_| program.zbuffer) {
+                    entries.push(wgpu::BindGroupEntry { binding: 6, resource: z.as_entire_binding() });
+                }
+            }
         }
         let iter_bg = device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("iterate-bg"), layout: &iterate.get_bind_group_layout(0), entries: &entries });
         let resolve_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -780,6 +814,61 @@ impl GpuRenderer {
 
     /// Writes the current image into the output texture.
     pub fn tonemap(&mut self) {
+        self.tonemap_into(None);
+    }
+
+    /// Tonemaps into linear float RGB (`transformPointHDR`, 1.0 = 8-bit full scale, three
+    /// values per pixel) and reads it back. Solid renders skip the post DOF.
+    pub fn read_hdr(&mut self) -> Option<Vec<f32>> {
+        let (w, h) = self.output_size()?;
+        let size = w as u64 * h as u64 * 12;
+        let buf = storage_buffer(&self.ctx.device, "hdr-out", size);
+        self.tonemap_into(Some(&buf));
+        let bytes = self.read_buffer(&buf, size)?;
+        Some(bytemuck::pod_collect_to_vec(&bytes))
+    }
+
+    /// 16-bit gray depth image mapped by the flame's z-buffer settings (`None` unless the
+    /// z-buffer was enabled with [`GpuRenderer::set_zbuffer`] or the flame is rendered solid).
+    pub fn read_zbuffer(&self) -> Option<Vec<u16>> {
+        let (flame, view, bufs) = (self.flame.as_ref()?, self.view.as_ref()?, self.buffers.as_ref()?);
+        let zbuf = match &self.solid.buffers {
+            Some(sb) if flame.solid.enabled => &sb.zbuf,
+            _ => bufs.zbuf.as_ref()?,
+        };
+        let bytes = self.read_buffer(zbuf, bufs.raster_w as u64 * bufs.raster_h as u64 * 4)?;
+        let keys: Vec<u32> = bytemuck::pod_collect_to_vec(&bytes);
+        // Inverse of the shaders' `zkey`; 0 marks an empty cell.
+        let decode = |k: u32| match k {
+            0 => None,
+            k if k & 0x8000_0000 != 0 => Some(f32::from_bits(k & 0x7fff_ffff)),
+            k => Some(f32::from_bits(!k)),
+        };
+        Some(rwf_core::render::cpu::zbuffer_image(flame, view, |x, y| decode(keys[(y * bufs.raster_w + x) as usize])))
+    }
+
+    /// Copies a storage buffer into host memory (blocking).
+    fn read_buffer(&self, buf: &wgpu::Buffer, size: u64) -> Option<Vec<u8>> {
+        let device = &self.ctx.device;
+        let staging = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("readback"),
+            size,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let mut enc = device.create_command_encoder(&Default::default());
+        enc.copy_buffer_to_buffer(buf, 0, &staging, 0, size);
+        self.ctx.queue.submit(Some(enc.finish()));
+        let slice = staging.slice(..);
+        slice.map_async(wgpu::MapMode::Read, |_| {});
+        let _ = device.poll(wgpu::PollType::wait_indefinitely());
+        let data = slice.get_mapped_range().ok()?.to_vec();
+        staging.unmap();
+        Some(data)
+    }
+
+    /// Tonemaps into the output texture, or with `hdr` into that float buffer.
+    fn tonemap_into(&mut self, hdr: Option<&wgpu::Buffer>) {
         let with_backdrop = self.update_backdrop();
         let (Some(flame), Some(view), Some(bufs), Some(filter)) = (&self.flame, &self.view, &self.buffers, &self.filter) else {
             return;
@@ -787,7 +876,7 @@ impl GpuRenderer {
         if flame.solid.enabled {
             let (flame, view, output) = (flame.clone(), view.clone(), bufs.output_view.clone());
             let backdrop = self.backdrop.as_ref().filter(|_| with_backdrop).map(|b| b.3.as_slice());
-            self.solid.render(&self.ctx.device, &self.ctx.queue, &flame, &view, &output, self.with_alpha, backdrop);
+            self.solid.render(&self.ctx.device, &self.ctx.queue, &flame, &view, &output, self.with_alpha, backdrop, hdr);
             return;
         }
         let Some(mut tone) = self.tone_base else {
@@ -853,14 +942,19 @@ impl GpuRenderer {
             }
             None => &bufs.accum,
         };
+        let pipeline = if hdr.is_some() { &self.tonemap_hdr_pipeline } else { &self.tonemap_pipeline };
+        let target = match hdr {
+            Some(b) => wgpu::BindGroupEntry { binding: 6, resource: b.as_entire_binding() },
+            None => wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&bufs.output_view) },
+        };
         let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("tonemap-bg"),
-            layout: &self.tonemap_pipeline.get_bind_group_layout(0),
+            layout: &pipeline.get_bind_group_layout(0),
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: self.tone_uniforms.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: source.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 2, resource: filter.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&bufs.output_view) },
+                target,
                 wgpu::BindGroupEntry { binding: 4, resource: self.mixer_lut.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 5, resource: self.backdrop_buf.as_entire_binding() },
             ],
@@ -868,7 +962,7 @@ impl GpuRenderer {
 
         {
             let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("tonemap"), timestamp_writes: None });
-            pass.set_pipeline(&self.tonemap_pipeline);
+            pass.set_pipeline(pipeline);
             pass.set_bind_group(0, &bg, &[]);
             pass.dispatch_workgroups(bufs.image_w.div_ceil(16), bufs.image_h.div_ceil(16), 1);
         }
@@ -920,6 +1014,15 @@ impl GpuRenderer {
 impl GpuRenderer {
     /// Renders one animation frame (incl. motion blur packets) to RGBA8, blocking.
     pub fn render_frame(&mut self, flame: &Flame, frame: f64, w: u32, h: u32, quality: f64) -> Result<Vec<u8>, String> {
+        self.accumulate_frame(flame, frame, w, h, quality)?;
+        self.tonemap();
+        self.read_image().ok_or_else(|| "readback failed".to_string())
+    }
+
+    /// Iterates one animation frame (incl. motion blur packets) up to `quality`, blocking;
+    /// read the result with [`GpuRenderer::tonemap`] + [`GpuRenderer::read_image`],
+    /// [`GpuRenderer::read_hdr`] or [`GpuRenderer::read_zbuffer`].
+    pub fn accumulate_frame(&mut self, flame: &Flame, frame: f64, w: u32, h: u32, quality: f64) -> Result<(), String> {
         let packets = rwf_core::render::frame_packets(flame, frame);
         for (i, f) in packets.iter().enumerate() {
             if i == 0 {
@@ -938,8 +1041,7 @@ impl GpuRenderer {
                 self.wait_idle();
             }
         }
-        self.tonemap();
-        self.read_image().ok_or_else(|| "readback failed".to_string())
+        Ok(())
     }
 }
 

@@ -217,16 +217,31 @@ fn main() {
         eprintln!("unsupported output format: {} (png, jpg, hdr, exr)", args.output.display());
         std::process::exit(1);
     };
-    let mut gpu = args.gpu;
-    if gpu && (format.is_hdr() || args.zbuffer) {
-        eprintln!("note: HDR/EXR and z-buffer output are rendered on the CPU");
-        gpu = false;
-    }
+    let gpu = args.gpu;
     let t0 = Instant::now();
     let mut zbuffer = None;
     let mut hdr = None;
     let rgba = if gpu {
-        match rwf_gpu::render_blocking(flame, w, h, quality, flame.bg_transparency) {
+        let result = (|| -> Result<Vec<u8>, String> {
+            let mut r = rwf_gpu::GpuRenderer::new(rwf_gpu::GpuContext::new_headless()?);
+            r.set_with_alpha(flame.bg_transparency);
+            r.set_zbuffer(args.zbuffer);
+            r.set_flame(flame, w, h);
+            if !r.unsupported_variations().is_empty() {
+                eprintln!("warning: variations without GPU support ignored: {}", r.unsupported_variations().join(", "));
+            }
+            r.accumulate_frame(flame, 0.0, w, h, quality)?;
+            if args.zbuffer {
+                zbuffer = r.read_zbuffer();
+            }
+            if format.is_hdr() {
+                hdr = Some(r.read_hdr().ok_or("HDR readback failed")?);
+                return Ok(Vec::new());
+            }
+            r.tonemap();
+            r.read_image().ok_or_else(|| "readback failed".to_string())
+        })();
+        match result {
             Ok(img) => img,
             Err(e) => {
                 eprintln!("GPU render failed: {e}");
