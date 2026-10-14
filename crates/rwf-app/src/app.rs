@@ -60,6 +60,8 @@ pub struct RwfApp {
     render_tab: RenderTab,
     generator: Generator,
     rng: Rng,
+    /// A random flame being generated on a background thread.
+    randomizing: Option<std::sync::mpsc::Receiver<Flame>>,
     toast: Option<(String, Instant)>,
     last_title: String,
 }
@@ -86,6 +88,7 @@ impl RwfApp {
             render_tab: RenderTab::Interactive,
             generator: Generator::Classic,
             rng,
+            randomizing: None,
             toast: None,
             last_title: String::new(),
         };
@@ -158,9 +161,15 @@ impl RwfApp {
             Action::Undo => self.doc.undo(),
             Action::Redo => self.doc.redo(),
             Action::Randomize => {
-                let f = generate(self.generator, &mut self.rng);
-                self.doc.replace(f);
-                self.doc.path = None;
+                // Some generators render several previews (seconds): keep the UI responsive.
+                if self.randomizing.is_none() {
+                    let (tx, rx) = std::sync::mpsc::channel();
+                    let (generator, seed) = (self.generator, self.rng.next_u64());
+                    std::thread::spawn(move || {
+                        let _ = tx.send(generate(generator, &mut Rng::new(seed)));
+                    });
+                    self.randomizing = Some(rx);
+                }
             }
             Action::ToggleTimeline => self.timeline.open = !self.timeline.open,
             Action::ToggleRender => {
@@ -247,6 +256,18 @@ impl eframe::App for RwfApp {
         self.batch.poll(&ctx);
         self.quilt.poll(&ctx);
 
+        if let Some(rx) = &self.randomizing {
+            match rx.try_recv() {
+                Ok(f) => {
+                    self.randomizing = None;
+                    self.doc.replace(f);
+                    self.doc.path = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => ctx.request_repaint_after(std::time::Duration::from_millis(50)),
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => self.randomizing = None,
+            }
+        }
+
         let mut action = self.shortcuts(&ctx);
         self.timeline.update(&ctx, &mut self.doc);
 
@@ -261,6 +282,7 @@ impl eframe::App for RwfApp {
                 timeline_open: self.timeline.open,
                 render_open: self.render.open,
                 render_busy: self.batch.is_running() || self.quilt.is_running(),
+                randomizing: self.randomizing.is_some(),
             };
             if let Some(a) = topbar::show(ui, &info, &mut self.generator) {
                 action = Some(a);

@@ -49,6 +49,8 @@ pub struct TopBarInfo<'a> {
     pub render_open: bool,
     /// A batch render is running.
     pub render_busy: bool,
+    /// A random flame is being generated.
+    pub randomizing: bool,
 }
 
 pub fn show(ui: &mut Ui, info: &TopBarInfo, generator: &mut Generator) -> Option<Action> {
@@ -103,12 +105,15 @@ pub fn show(ui: &mut Ui, info: &TopBarInfo, generator: &mut Generator) -> Option
         });
 
         ui.separator();
-        egui::ComboBox::from_id_salt("generator").width(110.0).selected_text(generator.label()).show_ui(ui, |ui| {
+        egui::ComboBox::from_id_salt("generator").width(150.0).height(560.0).selected_text(generator.label()).show_ui(ui, |ui| {
             for g in Generator::ALL {
                 ui.selectable_value(generator, *g, g.label());
             }
         });
-        if ui.add(egui::Button::new(RichText::new(format!("{}  Random flame", icons::DICE)).strong()).fill(theme::ACCENT_DIM)).on_hover_text("New random flame (Space)").clicked() {
+        if info.randomizing {
+            ui.add_enabled(false, egui::Button::new(RichText::new(format!("{}  Generating…", icons::DICE)).strong()).fill(theme::ACCENT_DIM));
+            ui.spinner();
+        } else if ui.add(egui::Button::new(RichText::new(format!("{}  Random flame", icons::DICE)).strong()).fill(theme::ACCENT_DIM)).on_hover_text("New random flame (Space)").clicked() {
             action = Some(Action::Randomize);
         }
         let mut open = info.explorer_open;
