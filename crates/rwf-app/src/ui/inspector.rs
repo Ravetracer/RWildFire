@@ -358,6 +358,25 @@ fn camera_tab(ui: &mut Ui, doc: &mut Document) {
     });
 }
 
+/// The post denoiser settings of a flame.
+pub fn denoiser_settings(ui: &mut Ui, id: &str, f: &mut rwf_core::Flame) {
+    grid(ui, id, |ui| {
+        widgets::label(ui, "AI denoiser");
+        egui::ComboBox::from_id_salt(format!("{id}-kind")).selected_text(f.ai_post_denoiser.label()).show_ui(ui, |ui| {
+            for d in Denoiser::ALL {
+                ui.selectable_value(&mut f.ai_post_denoiser, *d, d.label());
+            }
+        });
+        ui.end_row();
+        if f.ai_post_denoiser != Denoiser::None {
+            slider(ui, "Blend", &mut f.post_denoiser_blend, 0.0..=1.0).on_hover_text("Mixes the original image back in (0 = fully denoised)");
+            widgets::label(ui, "");
+            ui.checkbox(&mut f.post_denoiser_only_for_cpu, "Only for CPU renders");
+            ui.end_row();
+        }
+    });
+}
+
 fn look_tab(ui: &mut Ui, doc: &mut Document, st: &mut InspectorState) {
     {
         let f = &mut doc.flame;
@@ -539,21 +558,8 @@ fn render_tab(ui: &mut Ui, doc: &mut Document, preview: &mut Preview, canvas: &m
     let f = &mut doc.flame;
 
     theme::section_label(ui, "Denoiser");
-    grid(ui, "denoiser", |ui| {
-        widgets::label(ui, "AI denoiser");
-        egui::ComboBox::from_id_salt("denoiser").selected_text(f.ai_post_denoiser.label()).show_ui(ui, |ui| {
-            for d in Denoiser::ALL {
-                ui.selectable_value(&mut f.ai_post_denoiser, *d, d.label());
-            }
-        });
-        ui.end_row();
-        if f.ai_post_denoiser != Denoiser::None {
-            slider(ui, "Blend", &mut f.post_denoiser_blend, 0.0..=1.0).on_hover_text("Mixes the original image back in (0 = fully denoised)");
-            widgets::label(ui, "");
-            ui.checkbox(&mut f.post_denoiser_only_for_cpu, "Only for CPU renders");
-            ui.end_row();
-        }
-    });
+    ui.label(RichText::new("Applied to saved images and videos; the canvas shows it with \"Denoised\".").small().color(theme::TEXT_MUTED));
+    denoiser_settings(ui, "denoiser", f);
     if f.ai_post_denoiser != Denoiser::None {
         match denoise::backend() {
             Ok(b) => {

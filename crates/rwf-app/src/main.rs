@@ -25,6 +25,7 @@ mod batch_view;
 mod canvas;
 mod curve_editor;
 mod dance_view;
+mod denoise_view;
 mod doc;
 mod export;
 mod explorer;

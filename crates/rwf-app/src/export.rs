@@ -34,7 +34,7 @@ use crate::theme;
 
 enum Job {
     Gpu { renderer: Box<GpuRenderer>, target: u64 },
-    Cpu { render: Option<CpuRender>, saving: Option<Receiver<Result<(), String>>> },
+    Cpu { render: Option<CpuRender>, saving: Option<Receiver<Result<String, String>>> },
 }
 
 struct Running {
@@ -103,47 +103,54 @@ impl Default for ExportDialog {
     }
 }
 
-/// Runs the flame's AI post denoiser, if any (`apply_post_denoiser`).
-pub(crate) fn denoise(flame: &Flame, img: &mut [u8], w: u32, h: u32, gpu: bool) -> Result<(), String> {
-    rwf_core::render::denoise::apply_post_denoiser(flame, img, w, h, gpu).map(|_| ()).map_err(|e| format!("denoiser: {e}"))
+/// Status note for HDR files, which are not denoised.
+const HDR_NOTE: &str = "not denoised: HDR images are saved as rendered";
+
+/// Runs the flame's AI post denoiser, if any (`apply_post_denoiser`), and tells what it did.
+pub(crate) fn denoise(flame: &Flame, img: &mut [u8], w: u32, h: u32, gpu: bool) -> Result<rwf_core::render::denoise::DenoiseOutcome, String> {
+    rwf_core::render::denoise::apply_post_denoiser(flame, img, w, h, gpu).map_err(|e| format!("denoiser: {e}"))
 }
 
 /// Saves a finished CPU render: image in the chosen format plus the optional z-buffer.
-fn save_cpu(r: &CpuRender, run: &SaveJob) -> Result<(), String> {
+fn save_cpu(r: &CpuRender, run: &SaveJob) -> Result<String, String> {
     let (w, h) = (run.width, run.height);
-    if run.format.is_hdr() {
+    let note = if run.format.is_hdr() {
         rwf_core::output::write_float_rgb(&run.path, run.format, w, h, &r.image_hdr())?;
+        HDR_NOTE.to_string()
     } else {
         let mut img = r.image(run.with_alpha);
-        denoise(&run.flame, &mut img, w, h, false)?;
+        let outcome = denoise(&run.flame, &mut img, w, h, false)?;
         rwf_core::output::write_rgba8(&run.path, run.format, w, h, &img, run.jpeg_quality)?;
-    }
+        outcome.describe()
+    };
     if run.zbuffer
         && let Some(z) = r.zbuffer_image()
     {
         rwf_core::output::write_gray16_png(&run.flame.zbuffer_filename.path_for(&run.path), w, h, &z)?;
     }
-    Ok(())
+    Ok(note)
 }
 
 /// Saves a finished GPU render: image in the chosen format plus the optional z-buffer.
-fn save_gpu(r: &mut GpuRenderer, run: &SaveJob) -> Result<(), String> {
+fn save_gpu(r: &mut GpuRenderer, run: &SaveJob) -> Result<String, String> {
     let (w, h) = (run.width, run.height);
-    if run.format.is_hdr() {
+    let note = if run.format.is_hdr() {
         let rgb = r.read_hdr().ok_or("readback failed")?;
         rwf_core::output::write_float_rgb(&run.path, run.format, w, h, &rgb)?;
+        HDR_NOTE.to_string()
     } else {
         r.tonemap();
         let mut img = r.read_image().ok_or("readback failed")?;
-        denoise(&run.flame, &mut img, w, h, true)?;
+        let outcome = denoise(&run.flame, &mut img, w, h, true)?;
         rwf_core::output::write_rgba8(&run.path, run.format, w, h, &img, run.jpeg_quality)?;
-    }
+        outcome.describe()
+    };
     if run.zbuffer
         && let Some(z) = r.read_zbuffer()
     {
         rwf_core::output::write_gray16_png(&run.flame.zbuffer_filename.path_for(&run.path), w, h, &z)?;
     }
-    Ok(())
+    Ok(note)
 }
 
 /// Output settings of a running export.
@@ -267,10 +274,10 @@ impl ExportDialog {
         }
     }
 
-    fn finish(&mut self, result: Result<(), String>) {
+    fn finish(&mut self, result: Result<String, String>) {
         if let Some(run) = self.running.take() {
             self.status = Some(match result {
-                Ok(()) => format!("Saved {} ({:.1}s)", run.save.path.display(), run.started.elapsed().as_secs_f64()),
+                Ok(note) => format!("Saved {} ({:.1}s) — {note}", run.save.path.display(), run.started.elapsed().as_secs_f64()),
                 Err(e) => format!("Export failed: {e}"),
             });
         }
@@ -291,6 +298,7 @@ impl ExportDialog {
         std::thread::spawn(move || {
             let result = (|| -> Result<String, String> {
                 let mut sink = rwf_core::video::VideoSink::new(&path, format, w, h, flame.animation.fps).map_err(|e| e.to_string())?;
+                let mut note = String::new();
                 // Own headless device so the editor stays responsive.
                 let mut gpu_r = if gpu { Some(GpuRenderer::new(GpuContext::new_headless()?)) } else { None };
                 for (i, frame) in (from..=to).enumerate() {
@@ -307,12 +315,12 @@ impl ExportDialog {
                                 .image(false)
                         }
                     };
-                    denoise(&flame, &mut img, w, h, gpu_r.is_some())?;
+                    note = denoise(&flame, &mut img, w, h, gpu_r.is_some())?.describe();
                     sink.write_frame(i as u32, &img).map_err(|e| e.to_string())?;
                     d2.fetch_add(1, Ordering::Relaxed);
                 }
                 sink.finish().map_err(|e| e.to_string())?;
-                Ok(path.display().to_string())
+                Ok(format!("{} — {note}", path.display()))
             })();
             let _ = tx.send(result);
         });

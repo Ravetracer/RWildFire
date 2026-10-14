@@ -61,7 +61,7 @@ enum Pending {
 
 /// A file operation running on a background thread.
 enum Busy {
-    SaveImage(Receiver<Result<PathBuf, String>>),
+    SaveImage(Receiver<Result<(PathBuf, String), String>>),
     SaveState(Receiver<Result<PathBuf, String>>),
     LoadState(PathBuf, Receiver<Result<RenderState, String>>),
 }
@@ -105,6 +105,11 @@ pub struct InteractiveRenderer {
     pending: Option<Pending>,
     busy: Option<Busy>,
     status: Option<String>,
+    /// Shows the image through the flame's post denoiser.
+    show_denoised: bool,
+    denoised: crate::denoise_view::DenoisedView,
+    /// Bumped whenever the shown image is refreshed.
+    image_rev: u64,
 }
 
 impl Default for InteractiveRenderer {
@@ -137,6 +142,9 @@ impl Default for InteractiveRenderer {
             pending: None,
             busy: None,
             status: None,
+            show_denoised: false,
+            denoised: Default::default(),
+            image_rev: 0,
         }
     }
 }
@@ -274,11 +282,29 @@ impl InteractiveRenderer {
         let now = Instant::now();
         if self.needs_refresh || (running && now >= self.next_refresh) {
             r.tonemap();
+            self.image_rev += 1;
             if running && !self.needs_refresh {
                 self.refresh_interval = (self.refresh_interval + REFRESH_STEP).min(MAX_REFRESH);
             }
             self.next_refresh = now + self.refresh_interval;
             self.needs_refresh = false;
+        }
+    }
+
+    /// Denoises the shown image in the background while "Show denoised" is on.
+    fn update_denoised(&mut self, ctx: &egui::Context) {
+        self.denoised.poll(ctx);
+        if !self.show_denoised {
+            self.denoised.clear();
+            return;
+        }
+        let (Some(r), Some(flame)) = (self.renderer.as_mut(), self.flame.as_ref()) else { return };
+        let key = crate::denoise_view::key(self.image_rev, flame, true);
+        let interval = if self.state == State::Running { Duration::from_secs(3) } else { Duration::ZERO };
+        if self.denoised.wants(key, interval)
+            && let (Some(img), Some((w, h))) = (r.read_image(), r.output_size())
+        {
+            self.denoised.start(key, flame, img, w, h, true);
         }
     }
 
@@ -306,6 +332,7 @@ impl InteractiveRenderer {
         let ctx = ui.ctx().clone();
         self.poll_busy(&gpu);
         self.step(&ctx);
+        self.update_denoised(&ctx);
         let mut to_editor = None;
         egui::Panel::right("ir-panel")
             .resizable(true)
@@ -453,6 +480,23 @@ impl InteractiveRenderer {
             }
         }
 
+        if let Some(f) = self.flame.as_mut() {
+            theme::section_label(ui, "Denoiser");
+            ui.label(RichText::new("Applied when the image is saved; these settings belong to this render.").small().color(theme::TEXT_MUTED));
+            crate::ui::inspector::denoiser_settings(ui, "ir-denoiser", f);
+            ui.checkbox(&mut self.show_denoised, "Show denoised").on_hover_text("Shows the image as it will be saved (refreshed every few seconds while rendering)");
+            match rwf_core::render::denoise::skip_reason(f, true) {
+                Some(why) => {
+                    ui.label(RichText::new(format!("Saving will not denoise: {why}.")).small().color(theme::WARN));
+                }
+                None => {
+                    if let Err(e) = rwf_core::render::denoise::backend() {
+                        ui.label(RichText::new(e).small().color(theme::WARN));
+                    }
+                }
+            }
+        }
+
         theme::section_label(ui, "Save image");
         ui.add_enabled_ui(!idle && !busy, |ui| {
             grid(ui, "ir-save", |ui| {
@@ -571,7 +615,15 @@ impl InteractiveRenderer {
         let pan = if self.zoom.is_some() { self.pan } else { egui::Vec2::ZERO };
         let img_rect = Rect::from_center_size(rect.center() + pan, size * scale);
         painter.rect_filled(img_rect, 0.0, Color32::BLACK);
-        painter.image(tex, img_rect, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+        match self.denoised.texture().filter(|_| self.show_denoised) {
+            Some(dt) => crate::denoise_view::paint_image(&painter, dt, img_rect),
+            None => {
+                painter.image(tex, img_rect, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+            }
+        }
+        if self.show_denoised {
+            self.denoised.paint_status(&painter, rect.left_top() + vec2(10.0, 10.0));
+        }
         let zoom_text = if self.zoom.is_some() { format!("{:.0} %", scale * 100.0) } else { format!("Fit ({:.0} %)", scale * 100.0) };
         painter.text(
             rect.left_bottom() + vec2(10.0, -10.0),
@@ -642,18 +694,22 @@ impl InteractiveRenderer {
         let (w, h) = self.render_size;
         let (tx, rx) = channel();
         std::thread::spawn(move || {
-            let result = (|| -> Result<PathBuf, String> {
-                match pixels {
-                    Pixels::Hdr(rgb) => rwf_core::output::write_float_rgb(&path, format, w, h, &rgb)?,
-                    Pixels::Rgba(mut img) => {
-                        crate::export::denoise(&flame, &mut img, w, h, true)?;
-                        rwf_core::output::write_rgba8(&path, format, w, h, &img, jpeg_quality)?;
+            let result = (|| -> Result<(PathBuf, String), String> {
+                let note = match pixels {
+                    Pixels::Hdr(rgb) => {
+                        rwf_core::output::write_float_rgb(&path, format, w, h, &rgb)?;
+                        "not denoised: HDR images are saved as rendered".to_string()
                     }
-                }
+                    Pixels::Rgba(mut img) => {
+                        let outcome = crate::export::denoise(&flame, &mut img, w, h, true)?;
+                        rwf_core::output::write_rgba8(&path, format, w, h, &img, jpeg_quality)?;
+                        outcome.describe()
+                    }
+                };
                 if let Some(z) = zbuf {
                     rwf_core::output::write_gray16_png(&flame.zbuffer_filename.path_for(&path), w, h, &z)?;
                 }
-                Ok(path)
+                Ok((path, note))
             })();
             let _ = tx.send(result);
         });
@@ -690,7 +746,11 @@ impl InteractiveRenderer {
         let Some(busy) = self.busy.take() else { return };
         let saving_state = matches!(busy, Busy::SaveState(_));
         let done = match &busy {
-            Busy::SaveImage(rx) | Busy::SaveState(rx) => rx.try_recv().ok().map(|r| match r {
+            Busy::SaveImage(rx) => rx.try_recv().ok().map(|r| match r {
+                Ok((p, note)) => Ok(format!("Saved {} — {note}", p.display())),
+                Err(e) => Err(format!("Save failed: {e}")),
+            }),
+            Busy::SaveState(rx) => rx.try_recv().ok().map(|r| match r {
                 Ok(p) => Ok(format!("Saved {}", p.display())),
                 Err(e) => Err(format!("Save failed: {e}")),
             }),

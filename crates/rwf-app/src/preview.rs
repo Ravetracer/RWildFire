@@ -124,6 +124,22 @@ impl Preview {
         }
     }
 
+    /// The current preview image (RGBA8) with its size, and whether it was rendered on the GPU.
+    pub fn read_image(&self) -> Option<(Vec<u8>, u32, u32, bool)> {
+        match self.backend {
+            Backend::Gpu if self.gpu.is_some() => {
+                let g = self.gpu.as_ref()?;
+                let (w, h) = g.output_size()?;
+                Some((g.read_image()?, w, h, true))
+            }
+            _ => {
+                let r = self.cpu.as_ref()?;
+                let v = r.view();
+                Some((r.image(false), v.image_width, v.image_height, false))
+            }
+        }
+    }
+
     pub fn is_converged(&self) -> bool {
         self.density() >= self.target_quality
     }

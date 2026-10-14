@@ -58,6 +58,12 @@ struct Drag {
 
 pub struct CanvasState {
     pub show_handles: bool,
+    /// Shows the finished preview through the flame's post denoiser.
+    pub show_denoised: bool,
+    denoised: crate::denoise_view::DenoisedView,
+    /// The flame and preview size the denoised image belongs to, and its revision.
+    denoised_for: Option<(Flame, (u32, u32))>,
+    denoised_rev: u64,
     /// Small orbit globe in the top-right corner of the canvas.
     pub show_camera_gizmo: bool,
     /// Fraction of the canvas resolution used for rendering (performance knob).
@@ -67,7 +73,7 @@ pub struct CanvasState {
 
 impl Default for CanvasState {
     fn default() -> Self {
-        Self { show_handles: true, show_camera_gizmo: true, resolution_scale: 1.0, drag: None }
+        Self { show_handles: true, show_denoised: false, denoised: Default::default(), denoised_for: None, denoised_rev: 0, show_camera_gizmo: true, resolution_scale: 1.0, drag: None }
     }
 }
 
@@ -203,7 +209,10 @@ pub fn show(ui: &mut egui::Ui, frame: &eframe::Frame, doc: &mut Document, state:
 
     // Render & draw the image.
     let image = preview.update(ui.ctx(), frame, &doc.flame, (iw, ih));
-    if let Some(img) = &image {
+    let denoised = update_denoised(ui.ctx(), doc, state, preview, image.as_ref().map(|i| i.size));
+    if let Some(tex) = denoised {
+        crate::denoise_view::paint_image(&painter, tex, img_rect);
+    } else if let Some(img) = &image {
         painter.image(img.texture, img_rect, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
     }
     painter.rect_stroke(img_rect, CornerRadius::ZERO, Stroke::new(1.0, theme::BORDER), StrokeKind::Outside);
@@ -376,6 +385,31 @@ pub fn show(ui: &mut egui::Ui, frame: &eframe::Frame, doc: &mut Document, state:
     overlay(ui, avail, doc, state, preview);
 }
 
+/// Runs the denoiser on the finished preview while "Denoised" is on; returns the denoised
+/// image when it belongs to the current flame.
+fn update_denoised(ctx: &egui::Context, doc: &Document, state: &mut CanvasState, preview: &Preview, size: Option<(u32, u32)>) -> Option<egui::TextureId> {
+    state.denoised.poll(ctx);
+    if !state.show_denoised {
+        state.denoised.clear();
+        state.denoised_for = None;
+        return None;
+    }
+    let size = size?;
+    if state.denoised_for.as_ref().is_none_or(|(f, s)| *s != size || *f != doc.flame) {
+        state.denoised_for = Some((doc.flame.clone(), size));
+        state.denoised_rev += 1;
+    }
+    let gpu = preview.backend == crate::preview::Backend::Gpu && preview.gpu_available();
+    let key = crate::denoise_view::key(state.denoised_rev, &doc.flame, gpu);
+    if preview.is_converged()
+        && state.denoised.wants(key, std::time::Duration::ZERO)
+        && let Some((img, w, h, on_gpu)) = preview.read_image()
+    {
+        state.denoised.start(key, &doc.flame, img, w, h, on_gpu);
+    }
+    state.denoised.is_current(key).then(|| state.denoised.texture()).flatten()
+}
+
 fn overlay(ui: &mut egui::Ui, avail: Rect, doc: &mut Document, state: &mut CanvasState, preview: &Preview) {
     // Floating toolbar (top-left of the canvas).
     let tb = Rect::from_min_size(avail.min + vec2(12.0, 10.0), vec2(avail.width() - 24.0, 30.0));
@@ -388,6 +422,8 @@ fn overlay(ui: &mut egui::Ui, avail: Rect, doc: &mut Document, state: &mut Canva
             ui.selectable_value(&mut doc.edit_post, true, "Post").on_hover_text("Edit the post-affine transform");
         });
         ui.toggle_value(&mut state.show_camera_gizmo, format!("{} Camera", icons::GLOBE)).on_hover_text("Show the camera orbit globe on the canvas");
+        ui.toggle_value(&mut state.show_denoised, format!("{} Denoised", icons::SPARKLE))
+            .on_hover_text("Show the finished preview through the flame's AI denoiser, as saved images get it");
         ui.separator();
         if ui.button(format!("{} Fit", icons::FIT)).on_hover_text("Center and fit the flame (F)").clicked() {
             let mut f = doc.flame.clone();
@@ -399,6 +435,20 @@ fn overlay(ui: &mut egui::Ui, avail: Rect, doc: &mut Document, state: &mut Canva
 
     if state.show_camera_gizmo {
         crate::ui::camera_gizmo::overlay_globe(ui, pos2(avail.max.x - 104.0, avail.min.y + 46.0), &mut doc.flame);
+    }
+
+    if state.show_denoised {
+        let pos = avail.min + vec2(12.0, 46.0);
+        if preview.is_converged() {
+            state.denoised.paint_status(&ui.painter_at(avail), pos);
+        } else {
+            let painter = ui.painter_at(avail);
+            let text = format!("Denoised view: waits for the preview to reach quality {:.0}", preview.target_quality);
+            let galley = painter.layout_no_wrap(text, FontId::proportional(11.5), theme::TEXT_MUTED);
+            let r = Rect::from_min_size(pos, galley.size() + vec2(16.0, 8.0));
+            painter.rect_filled(r, 6, theme::PANEL.gamma_multiply(0.92));
+            painter.galley(r.min + vec2(8.0, 4.0), galley, theme::TEXT_MUTED);
+        }
     }
 
     // Status chip (bottom-left).

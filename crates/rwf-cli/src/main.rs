@@ -616,8 +616,8 @@ fn main() {
     let mut rgba = rgba;
     if hdr.is_none() {
         match rwf_core::render::denoise::apply_post_denoiser(flame, &mut rgba, w, h, gpu) {
-            Ok(true) => eprintln!("denoised ({})", flame.ai_post_denoiser.label()),
-            Ok(false) => {}
+            Ok(o) if o.denoised() || flame.ai_post_denoiser != rwf_core::render::denoise::Denoiser::None => eprintln!("{}", o.describe()),
+            Ok(_) => {}
             Err(e) => eprintln!("warning: denoiser failed: {e}"),
         }
     }

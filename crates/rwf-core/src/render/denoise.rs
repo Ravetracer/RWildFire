@@ -76,23 +76,66 @@ pub fn find_tool() -> Option<PathBuf> {
     std::env::split_paths(&std::env::var_os("PATH")?).map(|d| d.join(exe)).find(|p| p.is_file())
 }
 
-/// Applies the flame's post denoiser to a finished RGBA8 image (`FlameRenderer.renderFlame`).
-/// Returns `Ok(false)` if the flame has no denoiser, it is disabled for GPU renders, the blend
-/// leaves the image unchanged, or no denoiser tool is installed.
-pub fn apply_post_denoiser(flame: &Flame, rgba: &mut [u8], width: u32, height: u32, gpu_render: bool) -> Result<bool, String> {
-    if flame.ai_post_denoiser == Denoiser::None || (gpu_render && flame.post_denoiser_only_for_cpu) || flame.post_denoiser_blend >= 1.0 {
-        return Ok(false);
+/// What [`apply_post_denoiser`] did.
+#[derive(Clone, Debug, PartialEq)]
+pub enum DenoiseOutcome {
+    /// Denoised; how (e.g. "OIDN on NVIDIA GPU").
+    Denoised(String),
+    /// Left unchanged, and why.
+    Skipped(String),
+}
+
+impl DenoiseOutcome {
+    pub fn denoised(&self) -> bool {
+        matches!(self, DenoiseOutcome::Denoised(_))
+    }
+
+    /// "denoised with …" / "not denoised: …".
+    pub fn describe(&self) -> String {
+        match self {
+            DenoiseOutcome::Denoised(how) => format!("denoised with {how}"),
+            DenoiseOutcome::Skipped(why) => format!("not denoised: {why}"),
+        }
+    }
+}
+
+/// Why the flame's post denoiser would not run for a render (`None`: it runs, if a denoiser
+/// is installed).
+pub fn skip_reason(flame: &Flame, gpu_render: bool) -> Option<&'static str> {
+    if flame.ai_post_denoiser == Denoiser::None {
+        Some("the flame's denoiser is off")
+    } else if gpu_render && flame.post_denoiser_only_for_cpu {
+        Some("\"Only for CPU renders\" is ticked and this is a GPU render")
+    } else if flame.post_denoiser_blend >= 1.0 {
+        Some("Blend is 1 (only the original image)")
+    } else {
+        None
+    }
+}
+
+/// Applies the flame's post denoiser to a finished RGBA8 image (`FlameRenderer.renderFlame`)
+/// and tells what happened: skipped if the flame has no denoiser, it is disabled for GPU
+/// renders, the blend leaves the image unchanged, or no denoiser is installed.
+pub fn apply_post_denoiser(flame: &Flame, rgba: &mut [u8], width: u32, height: u32, gpu_render: bool) -> Result<DenoiseOutcome, String> {
+    if let Some(why) = skip_reason(flame, gpu_render) {
+        return Ok(DenoiseOutcome::Skipped(why.into()));
     }
     let prefer = if flame.ai_post_denoiser == Denoiser::Optix { DeviceType::Cuda } else { DeviceType::Default };
-    if oidn::library().is_ok() {
-        denoise_with_library(rgba, width, height, flame.post_denoiser_blend, prefer)?;
-        return Ok(true);
+    let library = oidn::library();
+    if library.is_ok() {
+        let used = denoise_with_library(rgba, width, height, flame.post_denoiser_blend, prefer)?;
+        let mut how = format!("OIDN on {}", used.label());
+        if prefer == DeviceType::Cuda && used != DeviceType::Cuda {
+            how.push_str(" (no usable NVIDIA GPU)");
+        }
+        return Ok(DenoiseOutcome::Denoised(how));
     }
     let Some(tool) = find_tool() else {
-        return Ok(false);
+        let why = library.err().unwrap_or_default();
+        return Ok(DenoiseOutcome::Skipped(format!("Open Image Denoise not found ({why})")));
     };
     denoise(&tool, rgba, width, height, flame.post_denoiser_blend)?;
-    Ok(true)
+    Ok(DenoiseOutcome::Denoised("the oidnDenoise tool".into()))
 }
 
 /// What denoises images: the OIDN library, the `oidnDenoise` tool, or `Err` with a hint.
