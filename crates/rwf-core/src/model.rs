@@ -672,7 +672,8 @@ impl Default for Flame {
             zbuffer_filename: ZBufferFilename::PostDepth,
             ai_post_denoiser: crate::render::denoise::Denoiser::None,
             post_denoiser_blend: 0.11111,
-            post_denoiser_only_for_cpu: true,
+            // JWildfire defaults to true; RWildFire renders mostly on the GPU.
+            post_denoiser_only_for_cpu: false,
             solid: crate::solid::SolidSettings::default(),
             mixer: crate::mixer::ChannelMixer::default(),
             antialias_amount: 0.25,
