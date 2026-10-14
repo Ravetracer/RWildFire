@@ -23,7 +23,7 @@
 use std::f64::consts::PI;
 use std::sync::OnceLock;
 
-use super::State;
+use super::{State, mutations};
 use super::gens_b::{add_prio, affine, base};
 use super::java::{self, Plane, add, local_translate, pick, rand_int, randomize_colors, rotate, scale, set, set_xaos, xform};
 use crate::model::Flame;
@@ -164,7 +164,7 @@ pub fn duality(st: &mut State) -> Flame {
     let mutations = |layer: &mut crate::model::Layer, r: &mut crate::rng::Rng| {
         for p in [0.25, 0.50, 0.75] {
             if r.random() > p {
-                java::random_param_mutation(layer, 1.0, r);
+                mutations::random_param_mutation(layer, 1.0, r);
             }
         }
     };
@@ -238,7 +238,7 @@ pub fn galaxies(st: &mut State) -> Flame {
         add(&mut xf, amount, name);
         layer.xforms.push(xf);
         if r.random() > 0.5 {
-            java::set_random_flame_property(layer, 1.0, r);
+            mutations::set_random_flame_property(layer, 1.0, r);
         }
     }
     {
@@ -251,7 +251,7 @@ pub fn galaxies(st: &mut State) -> Flame {
         layer.xforms.push(xf);
     }
     if r.random() > 0.5 {
-        java::local_gamma_mutation(layer, r);
+        mutations::local_gamma_mutation(layer, r);
     }
     flame
 }
@@ -944,7 +944,7 @@ pub fn tile_ball(st: &mut State) -> Flame {
         let steps = (r.random() * n as f64).round() as usize;
         for _ in 0..steps {
             let amount = 0.1 + r.random();
-            java::mutate_variation(v, amount, r);
+            mutations::mutate_variation(v, amount, r);
         }
     };
     for (amount, last) in [((0.2, 0.6), true), ((0.1, 0.3), false)] {

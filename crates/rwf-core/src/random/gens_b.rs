@@ -59,7 +59,7 @@ pub(super) fn add_prio(xf: &mut XForm, amount: f64, name: &str, priority: i32) {
 /// a random 3D camera.
 fn affine3d_wrapper(st: &mut State, select: fn(&mut Rng) -> Generator, pre: fn(&mut Flame), post: fn(&mut Flame, &mut Rng)) -> Flame {
     let g = *st.sub.get_or_insert_with(|| select(st.rng));
-    let mut flame = g.prepare(&mut State { rng: &mut *st.rng, sub: None });
+    let mut flame = g.prepare(&mut State { rng: &mut *st.rng, sub: None, simple: false });
     pre(&mut flame);
     let r = &mut *st.rng;
     flame.cam_roll = 0.0;

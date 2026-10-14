@@ -24,7 +24,9 @@ mod coverage;
 mod gens_a;
 mod gens_b;
 mod gens_c;
+mod gens_d;
 pub mod java;
+pub mod mutations;
 
 use crate::gradient::Gradient;
 use crate::model::{Flame, Layer, PostSymmetryType, VariationInstance, XForm};
@@ -38,7 +40,24 @@ pub struct State<'a> {
     pub rng: &'a mut Rng,
     /// Generator chosen once per sample by "(All)" and the 3D wrappers.
     pub(crate) sub: Option<Generator>,
+    /// "(All)" chooses among the simple generators only (no layers, sub-flames, solid).
+    pub(crate) simple: bool,
 }
+
+/// Coverage a sample must reach and the number of attempts (`RandomBatchQuality`).
+#[derive(Clone, Copy, Debug)]
+pub struct Quality {
+    pub min_coverage: f64,
+    pub max_samples: usize,
+}
+
+impl Quality {
+    pub const LOW: Quality = Quality { min_coverage: 0.32, max_samples: 8 };
+    pub const NORMAL: Quality = Quality { min_coverage: 0.42, max_samples: 16 };
+}
+
+/// The solid rendering generators (base generators of several wrappers).
+pub(crate) const SOLID_GENERATORS: &[Generator] = &[];
 
 macro_rules! generators {
     ($($variant:ident => $label:literal),* $(,)?) => {
@@ -67,11 +86,14 @@ generators! {
     Brokat => "Brokat",
     Brokat3D => "Brokat3D",
     Bubbles => "Bubbles",
+    BlackAndWhite => "Black&White",
+    Bokeh => "Bokeh",
     Bubbles3D => "Bubbles3D",
     ExperimentalBubbles3D => "Bubbles3D (experimental)",
     Cross => "Cross",
     Duality => "Duality",
     EDisc => "EDisc",
+    FlameWithBackground => "Flame with Background",
     FilledFlowers3D => "Flowers3D (filled)",
     Flowers3D => "Flowers3D (stunning)",
     Galaxies => "Galaxies",
@@ -82,11 +104,13 @@ generators! {
     JulianDisc => "JulianDisc",
     JulianRings => "JulianRings",
     Julians => "Julians",
+    Layers => "Layers",
     Linear => "Linear only",
     Machine => "Machine",
     Mandelbrot => "Mandelbrot",
     Orchids => "Orchids",
     Outlines => "Outlines",
+    Painterly => "Painterly",
     Phoenix => "Phoenix",
     Raster => "Raster",
     Rays => "Rays",
@@ -99,6 +123,7 @@ generators! {
     Spirals => "Spirals",
     Spirals3D => "Spirals3D",
     Splits => "Splits",
+    SubFlame => "SubFlame",
     Synth => "Synth",
     Tentacle => "Tentacle",
     TileBall => "Tile Ball",
@@ -117,20 +142,27 @@ impl Generator {
         matches!(self, Generator::Classic | Generator::Symmetric)
     }
 
-    /// The generators "(All)" chooses from.
-    fn all_candidates() -> Vec<Generator> {
-        Generator::ALL.iter().copied().filter(|g| *g != Generator::All && !g.is_own()).collect()
+    /// The generators "(All)" chooses from (JWildfire's GPU list: no sub-flames; the simple
+    /// list also without layers and solid rendering).
+    fn all_candidates(simple: bool) -> Vec<Generator> {
+        Generator::ALL
+            .iter()
+            .copied()
+            .filter(|g| *g != Generator::All && !g.is_own() && *g != Generator::SubFlame)
+            .filter(|g| !simple || (*g != Generator::Layers && !SOLID_GENERATORS.contains(g)))
+            .collect()
     }
 
     /// `prepareFlame`.
     fn prepare(self, st: &mut State) -> Flame {
         match self {
             Generator::All => {
+                let simple = st.simple;
                 let g = *st.sub.get_or_insert_with(|| {
-                    let c = Generator::all_candidates();
+                    let c = Generator::all_candidates(simple);
                     c[st.rng.random_int(c.len())]
                 });
-                let mut sub = State { rng: &mut *st.rng, sub: None };
+                let mut sub = State { rng: &mut *st.rng, sub: None, simple: false };
                 let mut f = g.prepare(&mut sub);
                 f.name = g.label().to_string();
                 f
@@ -177,6 +209,12 @@ impl Generator {
             Generator::TileBall => gens_c::tile_ball(st),
             Generator::Underwater => gens_c::underwater(st),
             Generator::Xenomorph => gens_c::xenomorph(st),
+            Generator::BlackAndWhite => gens_d::black_and_white(st),
+            Generator::Bokeh => gens_d::bokeh(st),
+            Generator::FlameWithBackground => gens_d::flame_with_background(st),
+            Generator::Layers => gens_d::layers(st),
+            Generator::Painterly => gens_d::painterly(st),
+            Generator::SubFlame => gens_d::sub_flame(st),
         }
     }
 
@@ -202,13 +240,51 @@ impl Generator {
             | Generator::Raster
             | Generator::SimpleTiling
             | Generator::Splits
-            | Generator::Tentacle => true,
+            | Generator::Tentacle
+            | Generator::BlackAndWhite
+            | Generator::Bokeh
+            | Generator::FlameWithBackground
+            | Generator::Painterly
+            | Generator::SubFlame => true,
             _ => false,
         }
     }
 
     /// `postProcessFlameBeforeRendering` (after the random gradient was applied).
-    fn post_process(self, _st: &mut State, _flame: &mut Flame) {}
+    fn post_process(self, st: &mut State, flame: &mut Flame) {
+        match self {
+            Generator::All => {
+                if let Some(g) = st.sub {
+                    g.post_process(st, flame);
+                }
+            }
+            Generator::BlackAndWhite => gens_d::black_and_white_post(st, flame),
+            Generator::Bokeh => mutations::bokeh_mutation(flame, 1.0, st.rng),
+            Generator::Painterly => {
+                for layer in &mut flame.layers {
+                    mutations::painterly_mutation(layer, st.rng);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// `postProcessFlameAfterRendering` (after the coverage check).
+    fn post_process_after(self, st: &mut State, flame: &mut Flame) {
+        match self {
+            Generator::All => {
+                if let Some(g) = st.sub {
+                    g.post_process_after(st, flame);
+                }
+            }
+            Generator::FlameWithBackground => {
+                if let Some(layer) = flame.layers.first_mut() {
+                    mutations::random_background_mutation(layer, 1.0, st.rng);
+                }
+            }
+            _ => {}
+        }
+    }
 
     /// `getMaxCoverage`.
     fn max_coverage(self) -> f64 {
@@ -216,10 +292,6 @@ impl Generator {
     }
 }
 
-/// Minimum coverage of an accepted sample and the number of attempts
-/// (`RandomBatchQuality.NORMAL`).
-const MIN_COVERAGE: f64 = 0.42;
-const MAX_SAMPLES: usize = 16;
 
 /// Variations that tend to produce nice results in random flames.
 const NICE: &[&str] = &[
@@ -339,9 +411,16 @@ pub fn generate(generator: Generator, rng: &mut Rng) -> Flame {
     if generator.is_own() {
         return generate_own(generator, rng);
     }
-    let mut st = State { rng, sub: None };
+    sample(generator, rng, Quality::NORMAL, false, true)
+}
+
+/// One sample of a generator (`RandomFlameGeneratorSampler.createSample`). `simple`: "(All)"
+/// uses the simple generators only; `finish`: name it and bring it to the 720 pixel frame
+/// (not for flames that become part of another one).
+pub(crate) fn sample(generator: Generator, rng: &mut Rng, quality: Quality, simple: bool, finish: bool) -> Flame {
+    let mut st = State { rng, sub: None, simple };
     let mut best: Option<(f64, Flame)> = None;
-    for _ in 0..MAX_SAMPLES {
+    for _ in 0..quality.max_samples {
         let mut flame = generator.prepare(&mut st);
         for layer in &mut flame.layers {
             layer.gradient = Gradient::random(st.rng);
@@ -350,17 +429,22 @@ pub fn generate(generator: Generator, rng: &mut Rng) -> Flame {
         if st.rng.random() > 0.666 {
             let strength = 0.125 + st.rng.random() * 0.25;
             if let Some(layer) = flame.layers.first_mut() {
-                java::random_param_mutation(layer, strength, st.rng);
+                mutations::random_param_mutation(layer, strength, st.rng);
             }
         }
-        if flame.name.is_empty() {
-            flame.name = generator.label().to_string();
-        }
-        java::to_widescreen(&mut flame);
-        flame.bg_transparency = false;
         let use_filter = generator.use_filter(&mut st);
-        let c = coverage::coverage(&flame, use_filter);
-        if c >= MIN_COVERAGE && c < generator.max_coverage() {
+        let mut preview = flame.clone();
+        java::to_widescreen(&mut preview);
+        let c = coverage::coverage(&preview, use_filter);
+        generator.post_process_after(&mut st, &mut flame);
+        if finish {
+            if flame.name.is_empty() {
+                flame.name = generator.label().to_string();
+            }
+            java::to_widescreen(&mut flame);
+            flame.bg_transparency = false;
+        }
+        if c >= quality.min_coverage && c < generator.max_coverage() {
             return flame;
         }
         if best.as_ref().is_none_or(|(b, _)| c > *b) {
@@ -479,7 +563,7 @@ mod tests {
         for &g in Generator::ALL {
             for seed in 0..3 {
                 let mut rng = Rng::new(seed * 7919 + 1);
-                let mut st = State { rng: &mut rng, sub: None };
+                let mut st = State { rng: &mut rng, sub: None, simple: false };
                 let flame = g.prepare(&mut st);
                 assert!(flame.layers.iter().any(|l| !l.xforms.is_empty()), "{} produced no transforms", g.label());
                 for l in &flame.layers {
