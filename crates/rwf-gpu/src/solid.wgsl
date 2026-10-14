@@ -36,6 +36,8 @@ struct SolidU {
     bokeh_act: f32, bokeh_rmax: f32, img_diag: f32, bokeh_support: f32,
     light_off: u32, mat_off: u32, filt_off: u32, aob_off: u32,
     smooth_off: u32, bokeh_off: u32, bg_off: u32, _p2: u32,
+    // Background region: offset x, y and size of the full image (quilt tiles).
+    region: vec4<u32>,
 }
 
 const ZMIN: f32 = -3.4028235e38;
@@ -407,23 +409,26 @@ fn add_cell(i: u32, scale: f32, bg: vec3<f32>, acc: ptr<function, vec3<f32>>) ->
 }
 
 fn background(px: u32, py: u32) -> vec3<f32> {
-    let w = S.image_w;
-    let h = S.image_h;
     if (S.bg_kind == 0u) { return S.bg_single.xyz; }
     if (S.bg_kind == 3u) {
-        let i = S.bg_off + (py * w + px) * 3u;
+        let i = S.bg_off + (py * S.image_w + px) * 3u;
         return vec3<f32>(f32(bitcast<i32>(refl[i])), f32(bitcast<i32>(refl[i + 1u])), f32(bitcast<i32>(refl[i + 2u])));
     }
+    // Gradients span the full image.
+    let w = S.region.z;
+    let h = S.region.w;
+    let gx = px + S.region.x;
+    let gy = py + S.region.y;
     if (S.bg_kind == 1u) {
-        let fx = f32(px) / f32(max(w, 2u) - 1u);
-        let fy = f32(py) / f32(max(h, 2u) - 1u);
+        let fx = f32(gx) / f32(max(w, 2u) - 1u);
+        let fy = f32(gy) / f32(max(h, 2u) - 1u);
         let c = mix(mix(S.bg_ul.xyz, S.bg_ur.xyz, fx), mix(S.bg_ll.xyz, S.bg_lr.xyz, fx), fy);
         return floor(c + 0.5);
     }
     let w2 = f32(max(i32(w) / 2 - 1, 1));
     let h2 = f32(max(i32(h) / 2 - 1, 1));
-    let x = f32(px);
-    let y = f32(py);
+    let x = f32(gx);
+    let y = f32(gy);
     var fx: f32; var fy: f32;
     var qul: vec3<f32>; var qur: vec3<f32>; var qll: vec3<f32>; var qlr: vec3<f32>;
     let ul = S.bg_ul.xyz; let ur = S.bg_ur.xyz; let ll = S.bg_ll.xyz; let lr = S.bg_lr.xyz; let cc = S.bg_cc.xyz;

@@ -11,6 +11,7 @@ cargo run --release -p rwf-cli -- render in.flame -o out.png -w 1920 -h 1080 -q 
 cargo run --release -p rwf-cli -- random out_dir 8  # random flames (.flame + .png)
 cargo run --release -p rwf-cli -- render-anim in.flame -o out.mp4 --gpu   # animation (mp4/mov/webm via ffmpeg, or a folder for PNGs)
 cargo run --release -p rwf-cli -- batch --size 3840 -q 2000 -o out_dir flames/   # all flames of files/folders (GPU); --size flame|N|WxH, -f png|jpg|hdr|exr, --animations mp4
+cargo run --release -p rwf-cli -- quilt in.flame -o big.png -w 30720 -q 1000   # very large images in tiles (--tiles 8x5 to choose the grid)
 ```
 
 ## Workspace
@@ -73,20 +74,18 @@ Each variation is a `VarDef` with a CPU function and a WGSL snippet that read th
 
 ## Status / roadmap
 
-Done: core editor, file compatibility, CPU and GPU renderer, 1010 variations (incl. prepost, image and mesh resources, formula plots and curves, SVG and text, sub-flames), gradient editing, random generators, mutations, PNG export, density estimation, DOF, layers, animation and video export, adaptive filter, post blur, AI denoiser, solid rendering, xform weighting fields, channel mixer, background xforms, JPEG/HDR/OpenEXR and z-buffer output (CPU and GPU), interactive renderer (long progressive GPU renders with pause, resume and saved render state), batch renderer (render queue in the app and `rwf-cli batch`).
+Done: core editor, file compatibility, CPU and GPU renderer, 1010 variations (incl. prepost, image and mesh resources, formula plots and curves, SVG and text, sub-flames), gradient editing, random generators, mutations, PNG export, density estimation, DOF, layers, animation and video export, adaptive filter, post blur, AI denoiser, solid rendering, xform weighting fields, channel mixer, background xforms, JPEG/HDR/OpenEXR and z-buffer output (CPU and GPU), interactive renderer (long progressive GPU renders with pause, resume and saved render state), batch renderer (render queue in the app and `rwf-cli batch`), quilt renderer (images larger than the GPU can render at once, in seamless tiles; app and `rwf-cli quilt`).
 
 Planned, by priority:
 
-1. Rendering and output
-   - Quilt renderer (very large images rendered in tiles)
-2. Creative tools
+1. Creative tools
    - More random flame generators (JWildfire has about 60: 3D, solid, bokeh, layers, sub-flames, tilings, ...)
    - More MutaGen mutations (gradient, bokeh, weighting field, painterly, add transform, ...)
    - Random symmetry and random weighting field generators
    - Motion curve / envelope editor, incl. audio (MP3) envelopes
    - Easy movie maker (movies from a sequence of morphing flames)
    - Mesh generator (flame to sliced 3D mesh, OBJ export)
-3. Optional / later
+2. Optional / later
    - Variations not ported yet: `lsystem_js`, `lsystem3D_js`, `iflames_wf`, `taprats`, `wangtiles`
    - Dancing flames (realtime, audio-reactive)
    - Scripting (e.g. Lua or Rhai in place of JWildfire's Java scripts)

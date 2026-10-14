@@ -41,6 +41,7 @@ use crate::ui::transforms::{self, TransformsState};
 enum RenderTab {
     Interactive,
     Batch,
+    Quilt,
 }
 
 pub struct RwfApp {
@@ -55,6 +56,7 @@ pub struct RwfApp {
     export: ExportDialog,
     render: crate::render_view::InteractiveRenderer,
     batch: crate::batch_view::BatchView,
+    quilt: crate::quilt_view::QuiltView,
     render_tab: RenderTab,
     generator: Generator,
     rng: Rng,
@@ -80,6 +82,7 @@ impl RwfApp {
             export: ExportDialog::default(),
             render: Default::default(),
             batch: Default::default(),
+            quilt: Default::default(),
             render_tab: RenderTab::Interactive,
             generator: Generator::Classic,
             rng,
@@ -242,6 +245,7 @@ impl eframe::App for RwfApp {
             self.open_path(p);
         }
         self.batch.poll(&ctx);
+        self.quilt.poll(&ctx);
 
         let mut action = self.shortcuts(&ctx);
         self.timeline.update(&ctx, &mut self.doc);
@@ -256,7 +260,7 @@ impl eframe::App for RwfApp {
                 explorer_open: self.explorer_open,
                 timeline_open: self.timeline.open,
                 render_open: self.render.open,
-                render_busy: self.batch.is_running(),
+                render_busy: self.batch.is_running() || self.quilt.is_running(),
             };
             if let Some(a) = topbar::show(ui, &info, &mut self.generator) {
                 action = Some(a);
@@ -270,6 +274,8 @@ impl eframe::App for RwfApp {
                     ui.selectable_value(&mut self.render_tab, RenderTab::Interactive, "Interactive").on_hover_text("One flame, progressive, with pause and resume");
                     let batch = if self.batch.is_running() { "Batch •" } else { "Batch" };
                     ui.selectable_value(&mut self.render_tab, RenderTab::Batch, batch).on_hover_text("Render a queue of flames to files");
+                    let quilt = if self.quilt.is_running() { "Quilt •" } else { "Quilt" };
+                    ui.selectable_value(&mut self.render_tab, RenderTab::Quilt, quilt).on_hover_text("Very large images, rendered tile by tile");
                 });
             });
             match self.render_tab {
@@ -281,6 +287,10 @@ impl eframe::App for RwfApp {
                     }
                 }
                 RenderTab::Batch => self.batch.show(ui, &self.doc, self.preview.gpu_available()),
+                RenderTab::Quilt => {
+                    self.quilt.sync_flame(&self.doc);
+                    self.quilt.show(ui, &self.doc, self.preview.gpu_available());
+                }
             }
         }
 

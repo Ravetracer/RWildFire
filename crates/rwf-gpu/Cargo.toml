@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 bytemuck = { version = "1.25.2", features = ["derive"] }
 flate2 = "1"
+png = "0.18"
 rwf-core = { version = "0.1.0", path = "../rwf-core" }
 naga = { version = "30.0.1", features = ["wgsl-in"] }
 pollster = "1.0.1"

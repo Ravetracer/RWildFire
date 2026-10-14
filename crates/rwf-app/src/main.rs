@@ -28,6 +28,7 @@ mod explorer;
 mod gradients;
 mod icons;
 mod preview;
+mod quilt_view;
 mod render_view;
 mod theme;
 mod timeline;

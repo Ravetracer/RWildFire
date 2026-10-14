@@ -97,6 +97,8 @@ struct SolidUniforms {
     bokeh_off: u32,
     bg_off: u32,
     _p2: u32,
+    /// Background region: offset and size of the full image (quilt tiles).
+    region: [u32; 4],
 }
 
 /// Buffers shared with the iteration kernel (bindings 6..8 there).
@@ -250,6 +252,7 @@ impl SolidGpu {
         with_alpha: bool,
         backdrop: Option<&[[i32; 3]]>,
         hdr_out: Option<&wgpu::Buffer>,
+        region: [u32; 4],
     ) {
         if self.buffers.is_none() {
             return;
@@ -369,7 +372,8 @@ impl SolidGpu {
         let sp_buf = upload(device, queue, &mut self.sp, "sld-params", bytemuck::cast_slice(&sp));
         let refl_buf = upload(device, queue, &mut self.refl, "sld-refl", bytemuck::cast_slice(&refl));
 
-        let pixel_diag = ((iw as f64).powi(2) + (ih as f64).powi(2)).sqrt();
+        // The bokeh scales with the full image (quilt tiles: not the tile).
+        let pixel_diag = ((region[2] as f64).powi(2) + (region[3] as f64).powi(2)).sqrt();
         let dof_on = flame.cam_dof > EPSILON;
         self.seed = self.seed.wrapping_add(1);
         let u = SolidUniforms {
@@ -437,6 +441,7 @@ impl SolidGpu {
             bokeh_off,
             bg_off,
             _p2: 0,
+            region,
         };
         let ubuf = self.uniforms.get_or_insert_with(|| {
             device.create_buffer(&wgpu::BufferDescriptor {

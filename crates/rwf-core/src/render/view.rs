@@ -116,6 +116,23 @@ impl View {
         }
     }
 
+    /// The part of this view that shows the `w` × `h` image pixels starting at `(x0, y0)`
+    /// (may lie partly outside the image): same scale and rotation, so tiles rendered with
+    /// windows of one view fit together exactly (quilt rendering).
+    pub fn window(&self, x0: i32, y0: i32, w: u32, h: u32) -> View {
+        let mut v = self.clone();
+        let os = self.oversample;
+        v.image_width = w;
+        v.image_height = h;
+        v.raster_width = os * w + 2 * self.border;
+        v.raster_height = os * h + 2 * self.border;
+        v.rc_x -= (x0 as f64 * os as f64) / self.bws;
+        v.rc_y -= (y0 as f64 * os as f64) / self.bhs;
+        v.cam_w = v.raster_width as f64 / self.bws;
+        v.cam_h = v.raster_height as f64 / self.bhs;
+        v
+    }
+
     /// Projects a world point; returns `(px, py, intensity, z)` in raster units (not rounded),
     /// `z` is the camera depth scaled like x (0 without 3D projection).
     #[inline]
@@ -210,6 +227,28 @@ impl View {
             (self.bws * px - self.border as f64) / self.oversample as f64,
             (self.bhs * py - self.border as f64) / self.oversample as f64,
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn window_maps_like_the_full_view() {
+        let mut flame = Flame { width: 800, height: 600, pixels_per_unit: 120.0, cam_roll: 17.0, spatial_oversampling: 2, ..Flame::default() };
+        flame.centre_x = 0.3;
+        let full = View::new(&flame, 1600, 1200, 7);
+        let tile = full.window(400, 300, 512, 256);
+        let mut ctx = crate::variations::Ctx::new(1, false);
+        for (ix, iy) in [(410.0, 310.0), (600.5, 400.25), (900.0, 550.0)] {
+            let (x, y) = full.image_to_world(ix, iy);
+            let (fx, fy, ..) = full.project(x, y, 0.0, &mut ctx).unwrap();
+            let (tx, ty, ..) = tile.project(x, y, 0.0, &mut ctx).unwrap();
+            assert!((fx - tx - 800.0).abs() < 1e-6 && (fy - ty - 600.0).abs() < 1e-6, "{fx} {tx} {fy} {ty}");
+        }
+        // Outside the window: not projected.
+        assert!(tile.project(-3.0, -3.0, 0.0, &mut ctx).is_none());
     }
 }
 

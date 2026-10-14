@@ -131,8 +131,16 @@ pub struct Backdrop<'a> {
 
 impl<'a> Backdrop<'a> {
     pub fn new(flame: &'a Flame, width: u32, height: u32) -> Self {
-        let colors = flame.has_bg_xforms().then(|| render_bg_xforms(flame, width, height));
+        let colors = flame.has_bg_xforms().then(|| render_bg_xforms(flame, (width, height), (0, 0, width, height)));
         Self { flame, width, height, colors }
+    }
+
+    /// The colors of the `w` × `h` pixels at `(x0, y0)` of a `full_w` × `full_h` image (a
+    /// quilt tile). Only precomputes with background xforms; [`Backdrop::get`] is then
+    /// relative to the region.
+    pub fn new_region(flame: &'a Flame, full: (u32, u32), region: (u32, u32, u32, u32)) -> Self {
+        let colors = flame.has_bg_xforms().then(|| render_bg_xforms(flame, full, region));
+        Self { flame, width: region.2, height: region.3, colors }
     }
 
     #[inline]
@@ -149,7 +157,10 @@ impl<'a> Backdrop<'a> {
     }
 }
 
-fn render_bg_xforms(flame: &Flame, w: u32, h: u32) -> Vec<[i32; 3]> {
+/// Colors of the region `(x0, y0, rw, rh)` of a `full` sized image.
+fn render_bg_xforms(flame: &Flame, full: (u32, u32), region: (u32, u32, u32, u32)) -> Vec<[i32; 3]> {
+    let (w, h) = full;
+    let (x0, y0, rw, rh) = region;
     let mut missing = Vec::new();
     let layers: Vec<BgLayer> = flame
         .layers
@@ -173,11 +184,13 @@ fn render_bg_xforms(flame: &Flame, w: u32, h: u32) -> Vec<[i32; 3]> {
 
     let img_size = ((w as f64) * (w as f64) + (h as f64) * (h as f64)).sqrt() * 0.5;
     let coord_scale = 1.41 / flame.cam_zoom;
-    let mut out = vec![[0i32; 3]; (w * h) as usize];
-    out.par_chunks_mut(w as usize).enumerate().for_each(|(py, row)| {
+    let mut out = vec![[0i32; 3]; rw as usize * rh as usize];
+    out.par_chunks_mut(rw as usize).enumerate().for_each(|(ry, row)| {
+        let py = ry + y0 as usize;
         let mut ctx = Ctx::new(0x6B67_7866 ^ py as u64, flame.preserve_z);
         let y = (py as f64 - (h as f64 - 1.0) * 0.5) / img_size * coord_scale;
-        for (px, dst) in row.iter_mut().enumerate() {
+        for (rx, dst) in row.iter_mut().enumerate() {
+            let px = rx + x0 as usize;
             let x = (px as f64 - (w as f64 - 1.0) * 0.5) / img_size * coord_scale;
             let mut c = background_color(flame, px as u32, py as u32, w, h);
             for layer in &layers {

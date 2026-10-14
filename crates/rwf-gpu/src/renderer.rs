@@ -152,6 +152,28 @@ struct ToneUniforms {
     /// Channel mixer: 0 off, 1 brightness, 2 RGB, 3 full.
     mix_mode: u32,
     _q2: u32,
+    /// Background region: offset and size of the full image (quilt tiles).
+    region: [u32; 4],
+}
+
+/// A part of a larger image (quilt rendering): the renderer then shows the `width` × `height`
+/// pixels at `(x, y)` of the full image, with the full image's geometry, background and
+/// brightness. The tile must lie inside the full image.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Tile {
+    pub full_width: u32,
+    pub full_height: u32,
+    pub x: u32,
+    pub y: u32,
+}
+
+/// Background xform colors with the flame, image size and tile they were computed for.
+struct CachedBackdrop {
+    flame: Flame,
+    width: u32,
+    height: u32,
+    tile: Option<Tile>,
+    colors: Vec<[i32; 3]>,
 }
 
 /// A wgpu device + queue pair.
@@ -231,8 +253,7 @@ pub struct GpuRenderer {
     mixer_lut: wgpu::Buffer,
     /// Background colors of the background xforms (three `i32` per pixel).
     backdrop_buf: wgpu::Buffer,
-    /// Flame and image size the backdrop was computed for, plus the colors.
-    backdrop: Option<(Flame, u32, u32, Vec<[i32; 3]>)>,
+    backdrop: Option<CachedBackdrop>,
     prm: Option<wgpu::Buffer>,
     nxt: Option<wgpu::Buffer>,
     cmap: Option<wgpu::Buffer>,
@@ -241,6 +262,9 @@ pub struct GpuRenderer {
     thread_count: u32,
     flame: Option<Flame>,
     view: Option<View>,
+    /// With a tile: the view of the full image (normalizes density and brightness).
+    full_view: Option<View>,
+    tile: Option<Tile>,
     program: Option<Program>,
     samples: u64,
     needs_state_reset: bool,
@@ -336,6 +360,8 @@ impl GpuRenderer {
             thread_count,
             flame: None,
             view: None,
+            full_view: None,
+            tile: None,
             program: None,
             samples: 0,
             needs_state_reset: true,
@@ -359,8 +385,10 @@ impl GpuRenderer {
         self.samples
     }
 
+    /// Samples per raster cell; with a tile relative to the full image, so a tile reaches the
+    /// quality of a full render when it has as many samples as that render.
     pub fn density(&self) -> f64 {
-        match &self.view {
+        match self.full_view.as_ref().or(self.view.as_ref()) {
             Some(v) => self.samples as f64 / (v.raster_width as f64 * v.raster_height as f64) * v.oversample as f64 / self.packets as f64,
             None => 0.0,
         }
@@ -406,6 +434,20 @@ impl GpuRenderer {
         }
     }
 
+    /// Renders only a tile of a larger image (`None`: the whole image); applies to the next
+    /// [`GpuRenderer::set_flame`], whose size is then the tile size.
+    pub fn set_tile(&mut self, tile: Option<Tile>) {
+        if self.tile != tile {
+            self.tile = tile;
+            self.flame = None;
+        }
+    }
+
+    /// The view of the full image (the tile's image with [`GpuRenderer::set_tile`]).
+    pub fn full_view(&self) -> Option<&View> {
+        self.full_view.as_ref().or(self.view.as_ref())
+    }
+
     pub fn set_flame(&mut self, flame: &Flame, width: u32, height: u32) {
         self.update_flame(flame, width, height, true);
     }
@@ -439,7 +481,13 @@ impl GpuRenderer {
         let device = &self.ctx.device;
         let prepared = PreparedFlame::new(flame);
         let filter_size = flame.filter_kernel.filter_size(flame.spatial_filter_radius, flame.spatial_oversampling.max(1));
-        let view = View::new(flame, width, height, filter_size);
+        let (view, full_view) = match self.tile {
+            Some(t) => {
+                let full = View::new(flame, t.full_width, t.full_height, filter_size);
+                (full.window(t.x as i32, t.y as i32, width, height), Some(full))
+            }
+            None => (View::new(flame, width, height, filter_size), None),
+        };
         let program = Program::new_scaled(flame, &prepared, view.ppu_scale, self.zbuffer);
 
         // Pipeline
@@ -512,7 +560,9 @@ impl GpuRenderer {
             self.solid.frames.clear();
         } else {
             let maps = program.shadow_maps.iter().flatten().count();
-            self.solid.frames = if maps > 0 { rwf_core::render::cpu::solid_shadow_frames(flame, width, height) } else { Vec::new() };
+            // Shadow maps are placed for the full image, so all tiles share them.
+            let (sw, sh) = self.tile.map_or((width, height), |t| (t.full_width, t.full_height));
+            self.solid.frames = if maps > 0 { rwf_core::render::cpu::solid_shadow_frames(flame, sw, sh) } else { Vec::new() };
             self.solid.ensure_buffers(device, view.raster_width, view.raster_height, width, height, flame.solid.lights.len(), maps, program.shadow_map_size);
         }
 
@@ -651,14 +701,24 @@ impl GpuRenderer {
             prim_radius: primary.radius as f32,
             mix_mode: 0,
             _q2: 0,
+            region: self.region(width, height),
         };
         self.tone_base = Some(tone);
 
         self.flame = Some(flame.clone());
         self.view = Some(view);
+        self.full_view = full_view;
         self.program = Some(program);
         if reset || need_new {
             self.reset_accumulation();
+        }
+    }
+
+    /// Offset and full size for the background (the whole image without a tile).
+    fn region(&self, width: u32, height: u32) -> [u32; 4] {
+        match self.tile {
+            Some(t) => [t.x, t.y, t.full_width, t.full_height],
+            None => [0, 0, width, height],
         }
     }
 
@@ -800,16 +860,21 @@ impl GpuRenderer {
             return false;
         }
         let (w, h) = (bufs.image_w, bufs.image_h);
-        if self.backdrop.as_ref().is_some_and(|(f, bw, bh, _)| *bw == w && *bh == h && rwf_core::render::background::same_backdrop(f, flame)) {
+        let tile = self.tile;
+        if self.backdrop.as_ref().is_some_and(|b| b.width == w && b.height == h && b.tile == tile && rwf_core::render::background::same_backdrop(&b.flame, flame)) {
             return true;
         }
-        let colors = rwf_core::render::background::Backdrop::new(flame, w, h).colors().map(<[_]>::to_vec).unwrap_or_default();
+        let backdrop = match tile {
+            Some(t) => rwf_core::render::background::Backdrop::new_region(flame, (t.full_width, t.full_height), (t.x, t.y, w, h)),
+            None => rwf_core::render::background::Backdrop::new(flame, w, h),
+        };
+        let colors = backdrop.colors().map(<[_]>::to_vec).unwrap_or_default();
         let bytes: &[u8] = bytemuck::cast_slice(&colors);
         if self.backdrop_buf.size() < bytes.len() as u64 {
             self.backdrop_buf = storage_buffer(&self.ctx.device, "backdrop", bytes.len() as u64);
         }
         self.ctx.queue.write_buffer(&self.backdrop_buf, 0, bytes);
-        self.backdrop = Some((flame.clone(), w, h, colors));
+        self.backdrop = Some(CachedBackdrop { flame: flame.clone(), width: w, height: h, tile, colors });
         true
     }
 
@@ -876,14 +941,17 @@ impl GpuRenderer {
         };
         if flame.solid.enabled {
             let (flame, view, output) = (flame.clone(), view.clone(), bufs.output_view.clone());
-            let backdrop = self.backdrop.as_ref().filter(|_| with_backdrop).map(|b| b.3.as_slice());
-            self.solid.render(&self.ctx.device, &self.ctx.queue, &flame, &view, &output, self.with_alpha, backdrop, hdr);
+            let backdrop = self.backdrop.as_ref().filter(|_| with_backdrop).map(|b| b.colors.as_slice());
+            let region = self.region(view.image_width, view.image_height);
+            self.solid.render(&self.ctx.device, &self.ctx.queue, &flame, &view, &output, self.with_alpha, backdrop, hdr, region);
             return;
         }
         let Some(mut tone) = self.tone_base else {
             return;
         };
-        let tp = ToneParams::new(flame, view.image_width, view.image_height, view.ppu, self.density());
+        // Brightness of the full image (tiles: the area and density of the whole image).
+        let norm = self.full_view.as_ref().unwrap_or(view);
+        let tp = ToneParams::new(flame, norm.image_width, norm.image_height, view.ppu, self.density());
         tone.k1 = tp.k1 as f32;
         tone.k2 = tp.k2 as f32;
         tone.bg_glow = tp.bg_glow as f32;

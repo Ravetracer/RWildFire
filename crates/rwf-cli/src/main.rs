@@ -40,7 +40,7 @@ struct Args {
 
 fn usage() -> ! {
     eprintln!(
-        "usage: rwf-cli render <file.flame> [-o out.png|.jpg|.hdr|.exr] [-w width] [-h height] [-q quality] [-i flame-index] [--gpu] [-t threads] [--zbuffer] [--jpeg-quality 1-100]\n       rwf-cli batch [options] <files or folders...>   (rwf-cli batch for the options)"
+        "usage: rwf-cli render <file.flame> [-o out.png|.jpg|.hdr|.exr] [-w width] [-h height] [-q quality] [-i flame-index] [--gpu] [-t threads] [--zbuffer] [--jpeg-quality 1-100]\n       rwf-cli batch [options] <files or folders...>   (rwf-cli batch for the options)\n       rwf-cli quilt <file.flame> -o out.png -w width [-h height] [-q quality] [--tiles COLSxROWS]"
     );
     std::process::exit(2);
 }
@@ -267,7 +267,70 @@ fn batch_cmd() {
     }
 }
 
+/// `rwf-cli quilt <file.flame> -o out.png -w W [-h H] [-q Q] [--tiles CxR] [-i index]`:
+/// renders an image larger than the GPU can render at once, tile by tile.
+fn quilt_cmd() {
+    let quilt_usage = || -> ! {
+        eprintln!("usage: rwf-cli quilt <file.flame> -o out.png -w width [-h height] [-q quality] [--tiles COLSxROWS] [-i flame-index]");
+        std::process::exit(2);
+    };
+    let (mut input, mut output, mut w, mut h, mut q, mut tiles, mut index) = (None, None, None, None, None, None, 0usize);
+    let mut it = std::env::args().skip(2);
+    while let Some(a) = it.next() {
+        let mut val = || it.next().unwrap_or_else(|| quilt_usage());
+        match a.as_str() {
+            "-o" => output = Some(PathBuf::from(val())),
+            "-w" => w = val().parse::<u32>().ok(),
+            "-h" => h = val().parse::<u32>().ok(),
+            "-q" => q = val().parse::<f64>().ok(),
+            "-i" => index = val().parse().unwrap_or(0),
+            "--tiles" => tiles = val().split_once('x').and_then(|(c, r)| Some((c.parse::<u32>().ok()?, r.parse::<u32>().ok()?))),
+            _ if a.starts_with('-') => quilt_usage(),
+            _ => input = Some(PathBuf::from(a)),
+        }
+    }
+    let (Some(input), Some(output), Some(w)) = (input, output, w) else { quilt_usage() };
+    let flame = read_flames_from_file(&input).ok().and_then(|f| f.into_iter().nth(index)).unwrap_or_else(|| {
+        eprintln!("could not read flame {} of {}", index + 1, input.display());
+        std::process::exit(1);
+    });
+    let h = h.unwrap_or_else(|| (w as f64 * flame.height as f64 / flame.width.max(1) as f64).round() as u32);
+    let (cols, rows) = tiles.unwrap_or_else(|| rwf_gpu::quilt::suggest_tiles(w, h, rwf_gpu::quilt::DEFAULT_TILE_SIZE));
+    let quality = q.unwrap_or(flame.sample_density);
+    let job = rwf_gpu::quilt::QuiltJob { flame, width: w, height: h, cols, rows, quality, output };
+    let mut r = rwf_gpu::GpuRenderer::new(rwf_gpu::GpuContext::new_headless().unwrap_or_else(|e| {
+        eprintln!("{e}");
+        std::process::exit(1);
+    }));
+    eprintln!("{w}x{h} in {cols}x{rows} tiles, quality {quality}");
+    let t0 = Instant::now();
+    let mut last = Instant::now();
+    let result = rwf_gpu::quilt::render_quilt(&mut r, &job, &mut |e, _| {
+        match e {
+            rwf_gpu::quilt::QuiltEvent::Progress { tile, tiles, fraction } if last.elapsed().as_secs_f64() >= 2.0 => {
+                eprintln!("tile {}/{tiles}: {:.0}%", tile + 1, fraction * 100.0);
+                last = Instant::now();
+            }
+            rwf_gpu::quilt::QuiltEvent::TileDone { rect, .. } => eprintln!("tile r{} c{} done", rect.row, rect.col),
+            rwf_gpu::quilt::QuiltEvent::Merging => eprintln!("merging"),
+            _ => {}
+        }
+        true
+    });
+    match result {
+        Ok(p) => eprintln!("rendered in {:.1}s -> {}", t0.elapsed().as_secs_f64(), p.display()),
+        Err(e) => {
+            eprintln!("quilt failed: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
 fn main() {
+    if std::env::args().nth(1).as_deref() == Some("quilt") {
+        quilt_cmd();
+        return;
+    }
     if std::env::args().nth(1).as_deref() == Some("batch") {
         batch_cmd();
         return;

@@ -54,6 +54,8 @@ struct ToneU {
     low_size: u32, soft_size: u32, detail_size: u32, low_half: i32,
     soft_half: i32, detail_half: i32, low_radius: f32, soft_radius: f32,
     detail_radius: f32, prim_radius: f32, mix_mode: u32, _q2: u32,
+    // Background region: offset x, y and size of the full image (quilt tiles).
+    region: vec4<u32>,
 }
 
 // A filter matrix in `filt` plus its adaptive indicator color.
@@ -145,23 +147,26 @@ fn choose_filter(px: i32, py: i32) -> Filt {
 fn round_color(v: f32) -> f32 { return clamp(floor(v + 0.5), 0.0, 255.0); }
 
 fn background(px: u32, py: u32) -> vec3<f32> {
-    let w = T.image_w;
-    let h = T.image_h;
     if (T.bg_kind == 0u) { return T.bg_single.xyz; }
     if (T.bg_kind == 3u) {
-        let i = (py * w + px) * 3u;
+        let i = (py * T.image_w + px) * 3u;
         return vec3<f32>(f32(backdrop[i]), f32(backdrop[i + 1u]), f32(backdrop[i + 2u]));
     }
+    // Gradients span the full image.
+    let w = T.region.z;
+    let h = T.region.w;
+    let gx = px + T.region.x;
+    let gy = py + T.region.y;
     if (T.bg_kind == 1u) {
-        let fx = f32(px) / f32(max(w, 2u) - 1u);
-        let fy = f32(py) / f32(max(h, 2u) - 1u);
+        let fx = f32(gx) / f32(max(w, 2u) - 1u);
+        let fy = f32(gy) / f32(max(h, 2u) - 1u);
         let c = mix(mix(T.bg_ul.xyz, T.bg_ur.xyz, fx), mix(T.bg_ll.xyz, T.bg_lr.xyz, fx), fy);
         return floor(c + 0.5);
     }
     let w2 = f32(max(i32(w) / 2 - 1, 1));
     let h2 = f32(max(i32(h) / 2 - 1, 1));
-    let x = f32(px);
-    let y = f32(py);
+    let x = f32(gx);
+    let y = f32(gy);
     var fx: f32; var fy: f32;
     var qul: vec3<f32>; var qur: vec3<f32>; var qll: vec3<f32>; var qlr: vec3<f32>;
     let ul = T.bg_ul.xyz; let ur = T.bg_ur.xyz; let ll = T.bg_ll.xyz; let lr = T.bg_lr.xyz; let cc = T.bg_cc.xyz;

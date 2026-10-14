@@ -2356,6 +2356,7 @@ dependencies = [
  "bytemuck",
  "flate2",
  "naga",
+ "png",
  "pollster 1.0.1",
  "rwf-core",
  "wgpu",

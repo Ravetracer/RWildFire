@@ -21,9 +21,10 @@
 
 pub mod batch;
 pub mod codegen;
+pub mod quilt;
 pub mod renderer;
 mod solid;
 pub mod state;
 
-pub use renderer::{GpuContext, GpuRenderer, render_blocking};
+pub use renderer::{GpuContext, GpuRenderer, Tile, render_blocking};
 pub use state::RenderState;
