@@ -23,6 +23,7 @@
 mod coverage;
 mod gens_a;
 mod gens_b;
+mod gens_c;
 pub mod java;
 
 use crate::gradient::Gradient;
@@ -68,7 +69,13 @@ generators! {
     Bubbles => "Bubbles",
     Bubbles3D => "Bubbles3D",
     ExperimentalBubbles3D => "Bubbles3D (experimental)",
+    Cross => "Cross",
+    Duality => "Duality",
     EDisc => "EDisc",
+    FilledFlowers3D => "Flowers3D (filled)",
+    Flowers3D => "Flowers3D (stunning)",
+    Galaxies => "Galaxies",
+    Ghosts => "Ghosts",
     Gnarl => "Gnarl",
     Gnarl3D => "Gnarl3D",
     ExperimentalGnarl => "Gnarl (experimental)",
@@ -76,14 +83,27 @@ generators! {
     JulianRings => "JulianRings",
     Julians => "Julians",
     Linear => "Linear only",
+    Machine => "Machine",
+    Mandelbrot => "Mandelbrot",
+    Orchids => "Orchids",
+    Outlines => "Outlines",
+    Phoenix => "Phoenix",
+    Raster => "Raster",
+    Rays => "Rays",
     Sierpinsky => "Sierpinsky",
     ExperimentalSimple => "Simple (experimental)",
     Simple => "Simple (stunning)",
+    SimpleTiling => "Simple tiling",
     Spherical => "Spherical",
     Spherical3D => "Spherical3D",
     Spirals => "Spirals",
     Spirals3D => "Spirals3D",
+    Splits => "Splits",
     Synth => "Synth",
+    Tentacle => "Tentacle",
+    TileBall => "Tile Ball",
+    Underwater => "Underwater",
+    Xenomorph => "Xenomorph",
 }
 
 impl Generator {
@@ -138,6 +158,25 @@ impl Generator {
             Generator::Spirals => gens_b::spirals(st),
             Generator::Spirals3D => gens_b::spirals3d(st),
             Generator::Synth => gens_b::synth(st),
+            Generator::Cross => gens_c::cross(st),
+            Generator::Duality => gens_c::duality(st),
+            Generator::FilledFlowers3D => gens_c::filled_flowers3d(st),
+            Generator::Flowers3D => gens_c::flowers3d(st),
+            Generator::Galaxies => gens_c::galaxies(st),
+            Generator::Ghosts => gens_c::ghosts(st),
+            Generator::Machine => gens_c::machine(st),
+            Generator::Mandelbrot => gens_c::mandelbrot(st),
+            Generator::Orchids => gens_c::orchids(st),
+            Generator::Outlines => gens_c::outlines(st),
+            Generator::Phoenix => gens_c::phoenix(st),
+            Generator::Raster => gens_c::raster(st),
+            Generator::Rays => gens_c::rays(st),
+            Generator::SimpleTiling => gens_c::simple_tiling(st),
+            Generator::Splits => gens_c::splits(st),
+            Generator::Tentacle => gens_c::tentacle(st),
+            Generator::TileBall => gens_c::tile_ball(st),
+            Generator::Underwater => gens_c::underwater(st),
+            Generator::Xenomorph => gens_c::xenomorph(st),
         }
     }
 
@@ -146,13 +185,24 @@ impl Generator {
         match self {
             Generator::All => st.sub.is_some_and(|g| g.use_filter(st)),
             Generator::Affine3D => st.rng.random() > 0.42,
+            Generator::Rays => st.rng.random() > 0.5,
             Generator::Bubbles
             | Generator::Bubbles3D
             | Generator::ExperimentalBubbles3D
             | Generator::ExperimentalSimple
             | Generator::Simple
             | Generator::EDisc
-            | Generator::Synth => true,
+            | Generator::Synth
+            | Generator::Duality
+            | Generator::FilledFlowers3D
+            | Generator::Flowers3D
+            | Generator::Machine
+            | Generator::Mandelbrot
+            | Generator::Orchids
+            | Generator::Raster
+            | Generator::SimpleTiling
+            | Generator::Splits
+            | Generator::Tentacle => true,
             _ => false,
         }
     }
@@ -297,6 +347,12 @@ pub fn generate(generator: Generator, rng: &mut Rng) -> Flame {
             layer.gradient = Gradient::random(st.rng);
         }
         generator.post_process(&mut st, &mut flame);
+        if st.rng.random() > 0.666 {
+            let strength = 0.125 + st.rng.random() * 0.25;
+            if let Some(layer) = flame.layers.first_mut() {
+                java::random_param_mutation(layer, strength, st.rng);
+            }
+        }
         if flame.name.is_empty() {
             flame.name = generator.label().to_string();
         }

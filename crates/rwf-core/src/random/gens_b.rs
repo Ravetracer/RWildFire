@@ -30,16 +30,16 @@ use crate::model::{Affine, BgColorType, ColorType, DrawMode, Flame, VariationIns
 use crate::rng::Rng;
 
 /// Affine coefficients in JWildfire's `setCoeff00 .. setCoeff21` order.
-fn affine(c00: f64, c01: f64, c10: f64, c11: f64, c20: f64, c21: f64) -> Affine {
+pub(super) fn affine(c00: f64, c01: f64, c10: f64, c11: f64, c20: f64, c21: f64) -> Affine {
     Affine { c00, c01, c10, c11, c20, c21 }
 }
 
 /// `Tools.FTOI`: rounds half away from zero.
-fn ftoi(v: f64) -> i32 {
+pub(super) fn ftoi(v: f64) -> i32 {
     v.round() as i32
 }
 
-fn base(ppu: f64) -> Flame {
+pub(super) fn base(ppu: f64) -> Flame {
     let mut flame = java::flame();
     flame.centre_x = 0.0;
     flame.centre_y = 0.0;
@@ -48,7 +48,7 @@ fn base(ppu: f64) -> Flame {
 }
 
 /// A random variation added with a priority (`setPriority`: -1 pre, +1 post).
-fn add_prio(xf: &mut XForm, amount: f64, name: &str, priority: i32) {
+pub(super) fn add_prio(xf: &mut XForm, amount: f64, name: &str, priority: i32) {
     add(xf, amount, name).priority = priority;
 }
 

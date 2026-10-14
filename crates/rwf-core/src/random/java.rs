@@ -207,6 +207,119 @@ pub fn random_variation(rng: &mut Rng) -> &'static str {
     pick(rng, random_variation_names())
 }
 
+/// `VariationFuncList.getRandomVariationname(VARTYPE_2D / VARTYPE_3D)`.
+pub fn random_variation_of(rng: &mut Rng, three_d: bool) -> &'static str {
+    static NAMES: OnceLock<[Vec<&'static str>; 2]> = OnceLock::new();
+    let lists = NAMES.get_or_init(|| {
+        let split =
+            |is_3d: bool| random_variation_names().iter().copied().filter(|n| variations::find(n).is_some_and(|d| d.is_3d == is_3d)).collect();
+        [split(false), split(true)]
+    });
+    pick(rng, &lists[three_d as usize])
+}
+
+/// `getRandomVariationName` of several generators: a random 2D (25 %) or 3D variation that
+/// is no fractal formula, inflate, pre/post or flatten variation.
+pub fn random_variation_no_fract(rng: &mut Rng, two_d_or_3d: bool) -> &'static str {
+    loop {
+        let name = if two_d_or_3d {
+            let three_d = rng.random() <= 0.75;
+            random_variation_of(rng, three_d)
+        } else {
+            random_variation(rng)
+        };
+        if !name.starts_with("fract") && !name.starts_with("inflate") && !name.starts_with("pre_") && !name.starts_with("post_") && name != "flatten"
+        {
+            return name;
+        }
+    }
+}
+
+/// `VariationFunc.mutate` (generic version): moves one random parameter a step.
+pub fn mutate_variation(v: &mut VariationInstance, amount: f64, rng: &mut Rng) {
+    let Some(def) = variations::find(&v.name) else { return };
+    if def.params.is_empty() {
+        return;
+    }
+    let idx = ((rng.random() * def.params.len() as f64) as usize).min(def.params.len() - 1);
+    let p = &def.params[idx];
+    let old = v.params.get(idx).copied().unwrap_or(p.default);
+    let new = if p.integer {
+        let da = (amount.round() as i64).max(1) as f64;
+        if old >= 0.0 { old + da } else { old - da }
+    } else {
+        // `mutateStep`
+        let step = if old < 1.0e-6 || rng.random() < 0.3 {
+            if old >= 0.0 { 0.1 * amount } else { -0.1 * amount }
+        } else if old >= 0.0 {
+            old / 100.0 * amount
+        } else {
+            old / -100.0 * amount
+        };
+        old + step
+    };
+    v.set_param(p.name, new);
+}
+
+/// `RandomParamMutation.setRandomFlameProperty`: mutates one parameter of a random
+/// variation (with parameters) of the layer.
+pub fn set_random_flame_property(layer: &mut crate::model::Layer, amount: f64, rng: &mut Rng) {
+    const BLACKLIST: &[&str] = &[
+        "truchet",
+        "mandelbrot",
+        "fract_formula_julia_wf",
+        "fract_formula_mand_wf",
+        "dc_perlin",
+        "snowflake_wf",
+        "crob",
+        "tree_js",
+        "brownian_js",
+        "dragon_js",
+        "maurer_lines",
+        "htree_js",
+        "gosperisland_js",
+        "rsquares_js",
+        "hilbert_js",
+        "koch_js",
+        "bubblet3d",
+    ];
+    let mut candidates: Vec<&mut VariationInstance> = layer
+        .xforms
+        .iter_mut()
+        .chain(layer.final_xforms.iter_mut())
+        .flat_map(|xf| xf.variations.iter_mut())
+        .filter(|v| variations::find(&v.name).is_some_and(|d| !d.params.is_empty()))
+        .filter(|v| !BLACKLIST.contains(&v.name.to_lowercase().as_str()))
+        .collect();
+    if !candidates.is_empty() {
+        let idx = ((rng.random() * candidates.len() as f64) as usize).min(candidates.len() - 1);
+        mutate_variation(candidates[idx], amount, rng);
+    }
+}
+
+/// `RandomParamMutation.execute`.
+pub fn random_param_mutation(layer: &mut crate::model::Layer, strength: f64, rng: &mut Rng) {
+    for f in [6.0, 5.0, 2.0] {
+        let amount = f * (0.25 + 0.75 * rng.random()) * strength;
+        set_random_flame_property(layer, amount, rng);
+    }
+}
+
+/// `LocalGammaMutation.execute` (`XForm.randomizeModColorEffects` on every transform).
+pub fn local_gamma_mutation(layer: &mut crate::model::Layer, rng: &mut Rng) {
+    for xf in &mut layer.xforms {
+        let pair = |rng: &mut Rng| {
+            let v = 1.0 - 2.0 * rng.random();
+            let speed = if rng.random() < 0.33 { 1.0 - 2.0 * rng.random() } else { 0.0 };
+            (v, speed)
+        };
+        (xf.mod_gamma, xf.mod_gamma_speed) = pair(rng);
+        (xf.mod_contrast, xf.mod_contrast_speed) = pair(rng);
+        (xf.mod_saturation, xf.mod_saturation_speed) = pair(rng);
+        (xf.mod_hue, xf.mod_hue_speed) = pair(rng);
+    }
+}
+
 /// Brings a generated flame to RWildFire's 720 pixel high frame, keeping its vertical
 /// extent: JWildfire's default 800 × 600 becomes 1280 × 720 (a bit more is visible at the
 /// sides), other sizes keep their aspect ratio.
