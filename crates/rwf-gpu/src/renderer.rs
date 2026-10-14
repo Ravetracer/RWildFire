@@ -219,6 +219,9 @@ impl GpuContext {
     }
 }
 
+/// Warm-up iterations of a fresh chain (as `FUSE_ITERS` in the iterate kernel).
+const FUSE_ITERS: u32 = 30;
+
 /// Number of compiled pipelines kept besides the current one.
 const PIPELINE_CACHE_SIZE: usize = 12;
 
@@ -274,6 +277,9 @@ pub struct GpuRenderer {
     program: Option<Program>,
     samples: u64,
     needs_state_reset: bool,
+    /// Warm-up iterations per thread still to run after the states were reset: they plot
+    /// nothing and are not counted as samples.
+    fuse_pending: u32,
     last_error: Option<String>,
     frame_seed: u32,
     with_alpha: bool,
@@ -373,6 +379,7 @@ impl GpuRenderer {
             program: None,
             samples: 0,
             needs_state_reset: true,
+            fuse_pending: 0,
             last_error: None,
             frame_seed: 1,
             with_alpha: false,
@@ -798,11 +805,12 @@ impl GpuRenderer {
             let fy = (next() >> 8) as f32 / 16_777_216.0 * 2.0 - 1.0;
             let fc = (next() >> 8) as f32 / 16_777_216.0;
             let fm = (next() >> 8) as f32 / 16_777_216.0;
-            data.extend_from_slice(&[fx.to_bits(), fy.to_bits(), 0f32.to_bits(), fc.to_bits(), 0, 0, 0, 0, next() | 1, 30, 0, fm.to_bits()]);
+            data.extend_from_slice(&[fx.to_bits(), fy.to_bits(), 0f32.to_bits(), fc.to_bits(), 0, 0, 0, 0, next() | 1, FUSE_ITERS, 0, fm.to_bits()]);
         }
         self.ctx.queue.write_buffer(&self.states, 0, bytemuck::cast_slice(&data));
         self.frame_seed = self.frame_seed.wrapping_add(1);
         self.needs_state_reset = false;
+        self.fuse_pending = FUSE_ITERS;
     }
 
     /// Runs `dispatches` iterate passes of `iters` iterations per thread, then resolves the
@@ -887,9 +895,34 @@ impl GpuRenderer {
             }
         }
         self.ctx.queue.submit(Some(enc.finish()));
-        let added = self.thread_count as u64 * iters as u64 * dispatches as u64;
+        let per_thread = iters as u64 * dispatches as u64;
+        let fused = (self.fuse_pending as u64).min(per_thread);
+        self.fuse_pending -= fused as u32;
+        let added = self.thread_count as u64 * (per_thread - fused);
         self.samples += added;
         added
+    }
+
+    /// One batch of at most `max_dispatches` × `max_iters` iterations per thread towards
+    /// `target` samples, sized so the target is overshot by at most one iteration per GPU
+    /// thread. Returns `true` once the target is reached (or nothing can be iterated).
+    pub fn iterate_towards(&mut self, target: u64, max_dispatches: u32, max_iters: u32) -> bool {
+        if self.samples >= target {
+            return true;
+        }
+        let threads = self.thread_count as u64;
+        let remaining = target - self.samples;
+        let full = threads * max_iters.max(1) as u64;
+        let (dispatches, iters) = if remaining >= full {
+            ((remaining / full).min(max_dispatches.max(1) as u64) as u32, max_iters.max(1))
+        } else {
+            (1, (remaining.div_ceil(threads) as u32 + self.fuse_pending.min(max_iters)).clamp(1, max_iters.max(1)))
+        };
+        let before = self.samples;
+        let before_fuse = self.fuse_pending;
+        self.iterate(dispatches, iters);
+        // No progress (nothing to iterate): stop instead of looping forever.
+        (self.samples == before && self.fuse_pending == before_fuse) || self.samples >= target
     }
 
     /// Computes the background xform colors on the CPU if the flame has background xforms and
@@ -1227,9 +1260,12 @@ impl GpuRenderer {
             let view = self.view().cloned().ok_or("no view")?;
             let per_packet = (quality * view.raster_width as f64 * view.raster_height as f64 / view.oversample as f64) as u64;
             let target = per_packet * (i as u64 + 1);
-            while self.samples() < target {
-                self.iterate(4, 128);
+            loop {
+                let done = self.iterate_towards(target, 4, 128);
                 self.wait_idle();
+                if done {
+                    break;
+                }
             }
         }
         Ok(())

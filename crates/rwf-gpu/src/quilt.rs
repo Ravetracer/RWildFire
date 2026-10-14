@@ -198,12 +198,15 @@ pub fn render_quilt(r: &mut GpuRenderer, job: &QuiltJob, on: &mut dyn FnMut(Quil
         }
         let fv = r.full_view().cloned().ok_or("no view")?;
         let target = (job.quality * fv.raster_width as f64 * fv.raster_height as f64 / fv.oversample as f64) as u64;
-        while r.samples() < target {
-            r.iterate(4, 128);
+        loop {
+            let done = r.iterate_towards(target, 4, 128);
             r.wait_idle();
             let fraction = (r.samples() as f64 / target.max(1) as f64).min(1.0) as f32;
             if !on(QuiltEvent::Progress { tile: i, tiles: tiles.len(), fraction }, r) {
                 return Err("cancelled".into());
+            }
+            if done {
+                break;
             }
         }
         r.tonemap();

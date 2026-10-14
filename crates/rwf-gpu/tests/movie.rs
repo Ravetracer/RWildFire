@@ -35,7 +35,8 @@ fn renders_a_png_sequence() {
     let part =
         |seed: u64, morph: MorphType| MoviePart { flame: generate(Generator::Classic, &mut Rng::new(seed)), frames: 3, morph_frames: 2, morph };
     let movie = Movie {
-        parts: vec![part(1, MorphType::Morph), part(2, MorphType::Fade), part(3, MorphType::Fade)],
+        // Flames that are well visible at 160 x 90 (the Classic flame of seed 2 is nearly empty).
+        parts: vec![part(1, MorphType::Morph), part(4, MorphType::Fade), part(3, MorphType::Fade)],
         global_scripts: vec![Script { kind: GlobalScript::RotateRoll, amplitude: 1.0 }],
         width: 160,
         height: 90,

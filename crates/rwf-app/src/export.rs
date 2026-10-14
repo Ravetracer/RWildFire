@@ -234,11 +234,11 @@ impl ExportDialog {
         ctx.request_repaint();
         match &mut run.job {
             Job::Gpu { renderer, target } => {
-                if renderer.samples() < *target {
-                    renderer.iterate(2, 256);
+                if renderer.samples() < *target && !renderer.iterate_towards(*target, 2, 256) {
                     renderer.wait_idle();
                     return (renderer.samples() as f64 / *target as f64) as f32;
                 }
+                renderer.wait_idle();
                 let result = save_gpu(renderer, &run.save);
                 self.finish(result);
                 1.0

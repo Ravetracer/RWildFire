@@ -230,11 +230,14 @@ fn accumulate(
         let per_packet = (quality * view.raster_width as f64 * view.raster_height as f64 / view.oversample as f64) as u64;
         let target = per_packet * (i as u64 + 1);
         let total = per_packet * packets.len() as u64;
-        while r.samples() < target {
-            r.iterate(4, 128);
+        loop {
+            let done = r.iterate_towards(target, 4, 128);
             r.wait_idle();
             if !progress((r.samples() as f64 / total.max(1) as f64).min(1.0) as f32, r) {
                 return Ok(false);
+            }
+            if done {
+                break;
             }
         }
     }

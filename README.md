@@ -80,7 +80,6 @@ Optional / later:
 
 - Variations not ported yet: `taprats`
 - Scripting (e.g. Lua or Rhai in place of JWildfire's Java scripts)
-- Review of the CPU/GPU quality scale and brightness
 
 Not planned: variations that run user-written Java/GLSL code or formula engines (`custom_wf`, `c_var`, `dc_code`, `glsl_code`, `f_complex`, `colordomain`, `cut_c`, `ducks`, `fract_formula_*`), JWildfire's classic image-processing module, LeapMotion, applet and launcher.
 
