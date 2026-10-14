@@ -79,7 +79,7 @@ pub fn coverage(flame: &Flame, use_filter: bool) -> f64 {
     let img = preview(flame);
     let (w, h) = (PREVIEW.0 as usize, PREVIEW.1 as usize);
     let img = if use_filter { sobel(&img, w, h) } else { img };
-    let covered = img.chunks_exact(4).filter(|p| p[0] > 29 || p[1] > 15 || p[2] > 78).count();
+    let covered = img.as_chunks::<4>().0.iter().filter(|p| p[0] > 29 || p[1] > 15 || p[2] > 78).count();
     covered as f64 / (w * h) as f64
 }
 

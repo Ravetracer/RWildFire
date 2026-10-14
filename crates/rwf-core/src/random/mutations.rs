@@ -275,7 +275,7 @@ pub fn bokeh_mutation(flame: &mut Flame, strength: f64, rng: &mut Rng) {
             flame.cam_dof_fade = 0.2 + rng.random() * 0.8;
             flame.cam_dof_shape = DofShape::StarBlur;
             flame.cam_dof_param1 = 4.0 + rng.random() * 6.0;
-            flame.cam_dof_param2 = 0.40162283177245455973959534526548;
+            flame.cam_dof_param2 = 0.401_622_831_772_454_56;
         } else if sel < 0.72 {
             flame.cam_dof_angle = 0.0;
             flame.cam_dof_fade = 0.0;

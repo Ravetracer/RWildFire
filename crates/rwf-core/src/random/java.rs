@@ -99,10 +99,15 @@ pub fn scale(xf: &mut XForm, s: f64, x: bool, y: bool, post: bool) {
 
 /// `XFormTransformService.localTranslate`: `M * T(dx, dy)`.
 pub fn local_translate(xf: &mut XForm, dx: f64, dy: f64, post: bool) {
+    local_translate_in(xf, Plane::XY, dx, dy, post);
+}
+
+/// `XFormTransformService.localTranslate` in an edit plane.
+pub fn local_translate_in(xf: &mut XForm, plane: Plane, dx: f64, dy: f64, post: bool) {
     if dx.abs() < SMALL_EPSILON && dy.abs() < SMALL_EPSILON {
         return;
     }
-    let a = coefs(xf, Plane::XY, post);
+    let a = coefs(xf, plane, post);
     a.c20 += a.c00 * dx + a.c01 * dy;
     a.c21 += a.c10 * dx + a.c11 * dy;
 }

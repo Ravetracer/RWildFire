@@ -25,6 +25,7 @@ mod gens_a;
 mod gens_b;
 mod gens_c;
 mod gens_d;
+mod gens_e;
 pub mod java;
 pub mod mutations;
 
@@ -32,7 +33,7 @@ use crate::gradient::Gradient;
 use crate::model::{Flame, Layer, PostSymmetryType, VariationInstance, XForm};
 use crate::render::analysis::{auto_frame, coverage};
 use crate::rng::Rng;
-use crate::variations;
+use crate::{solid, variations};
 
 /// What a generator remembers between the attempts of one sample
 /// (`RandomFlameGeneratorState`).
@@ -57,7 +58,14 @@ impl Quality {
 }
 
 /// The solid rendering generators (base generators of several wrappers).
-pub(crate) const SOLID_GENERATORS: &[Generator] = &[];
+pub(crate) const SOLID_GENERATORS: &[Generator] = &[
+    Generator::SolidExperimental,
+    Generator::SolidStunning,
+    Generator::SolidJulia3D,
+    Generator::SolidShadows,
+    Generator::SolidLabyrinth,
+    Generator::SolidRecursive,
+];
 
 macro_rules! generators {
     ($($variant:ident => $label:literal),* $(,)?) => {
@@ -118,6 +126,12 @@ generators! {
     ExperimentalSimple => "Simple (experimental)",
     Simple => "Simple (stunning)",
     SimpleTiling => "Simple tiling",
+    SolidExperimental => "Solid (experimental)",
+    SolidRecursive => "Solid (recursive)",
+    SolidShadows => "Solid (shadows)",
+    SolidStunning => "Solid (stunning)",
+    SolidJulia3D => "Solid Julia3D",
+    SolidLabyrinth => "Solid Labyrinth",
     Spherical => "Spherical",
     Spherical3D => "Spherical3D",
     Spirals => "Spirals",
@@ -215,6 +229,12 @@ impl Generator {
             Generator::Layers => gens_d::layers(st),
             Generator::Painterly => gens_d::painterly(st),
             Generator::SubFlame => gens_d::sub_flame(st),
+            Generator::SolidExperimental => gens_e::solid_experimental(st),
+            Generator::SolidRecursive => gens_e::solid_recursive(st),
+            Generator::SolidShadows => gens_e::solid_shadows(st),
+            Generator::SolidStunning => gens_e::solid_stunning(st),
+            Generator::SolidJulia3D => gens_e::solid_julia3d(st),
+            Generator::SolidLabyrinth => gens_e::solid_labyrinth(st),
         }
     }
 
@@ -259,6 +279,15 @@ impl Generator {
                 }
             }
             Generator::BlackAndWhite => gens_d::black_and_white_post(st, flame),
+            Generator::SolidExperimental | Generator::SolidRecursive | Generator::SolidStunning | Generator::SolidJulia3D | Generator::SolidLabyrinth => {
+                gens_e::solid_post(flame, st.rng)
+            }
+            Generator::SolidShadows => {
+                if let Some(g) = st.sub {
+                    g.post_process(st, flame);
+                }
+                flame.post_symmetry.kind = PostSymmetryType::None;
+            }
             Generator::Bokeh => mutations::bokeh_mutation(flame, 1.0, st.rng),
             Generator::Painterly => {
                 for layer in &mut flame.layers {
@@ -282,13 +311,17 @@ impl Generator {
                     mutations::random_background_mutation(layer, 1.0, st.rng);
                 }
             }
+            Generator::SolidShadows => gens_e::solid_shadows_after(flame, st.rng),
+            Generator::SolidLabyrinth if st.rng.random() > 0.25 => {
+                flame.solid.shadow_type = if st.rng.random() > 0.25 { solid::ShadowType::Fast } else { solid::ShadowType::Smooth };
+            }
             _ => {}
         }
     }
 
-    /// `getMaxCoverage`.
+    /// `getMaxCoverage`: solid flames must leave some background.
     fn max_coverage(self) -> f64 {
-        1.0
+        if SOLID_GENERATORS.contains(&self) && self != Generator::SolidShadows { 0.75 } else { 1.0 }
     }
 }
 
