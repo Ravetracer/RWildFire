@@ -215,7 +215,7 @@ impl Preview {
             let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).saturating_sub(1).max(1);
             self.cpu = Some(CpuRender::start(
                 flame,
-                RenderOptions { width: size.0, height: size.1, threads, max_density: Some(self.target_quality), seed: 7 },
+                RenderOptions { width: size.0, height: size.1, threads, max_density: Some(self.target_quality), seed: 7, zbuffer: false },
             ));
             self.cpu_uploaded_samples = u64::MAX;
             self.cpu_final_uploaded = false;

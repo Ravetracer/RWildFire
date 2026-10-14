@@ -118,7 +118,7 @@ pub fn auto_frame(flame: &mut Flame) -> bool {
 /// Fraction of non-empty pixels in a tiny low-quality render (0..1).
 pub fn coverage(flame: &Flame) -> f64 {
     let (w, h) = (96u32, 72u32);
-    let r = CpuRender::start(flame, RenderOptions { width: w, height: h, threads: 1, max_density: Some(8.0), seed: 99 }).wait();
+    let r = CpuRender::start(flame, RenderOptions { width: w, height: h, threads: 1, max_density: Some(8.0), seed: 99, zbuffer: false }).wait();
     let img = r.image(true);
     let filled = img.chunks_exact(4).filter(|p| p[3] > 24).count();
     filled as f64 / (w * h) as f64

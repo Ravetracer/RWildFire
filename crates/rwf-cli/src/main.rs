@@ -34,11 +34,13 @@ struct Args {
     index: usize,
     gpu: bool,
     threads: usize,
+    zbuffer: bool,
+    jpeg_quality: u8,
 }
 
 fn usage() -> ! {
     eprintln!(
-        "usage: rwf-cli render <file.flame> [-o out.png] [-w width] [-h height] [-q quality] [-i flame-index] [--gpu] [-t threads]"
+        "usage: rwf-cli render <file.flame> [-o out.png|.jpg|.hdr|.exr] [-w width] [-h height] [-q quality] [-i flame-index] [--gpu] [-t threads] [--zbuffer] [--jpeg-quality 1-100]"
     );
     std::process::exit(2);
 }
@@ -57,6 +59,8 @@ fn parse_args() -> Args {
         index: 0,
         gpu: false,
         threads: std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4),
+        zbuffer: false,
+        jpeg_quality: 95,
     };
     while let Some(a) = it.next() {
         let mut val = || it.next().unwrap_or_else(|| usage());
@@ -68,6 +72,8 @@ fn parse_args() -> Args {
             "-i" => args.index = val().parse().unwrap_or(0),
             "-t" => args.threads = val().parse().unwrap_or(args.threads),
             "--gpu" => args.gpu = true,
+            "--zbuffer" => args.zbuffer = true,
+            "--jpeg-quality" => args.jpeg_quality = val().parse().unwrap_or(95),
             _ if args.input.as_os_str().is_empty() => args.input = PathBuf::from(a),
             _ => usage(),
         }
@@ -158,7 +164,7 @@ fn render_anim_cmd() {
             }
             None => {
                 let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
-                CpuRender::start_frame(&flame, frame as f64, RenderOptions { width: w, height: h, threads, max_density: Some(q), seed: 42 + frame as u64 })
+                CpuRender::start_frame(&flame, frame as f64, RenderOptions { width: w, height: h, threads, max_density: Some(q), seed: 42 + frame as u64, zbuffer: false })
                     .wait()
                     .image(false)
             }
@@ -207,8 +213,19 @@ fn main() {
         (None, None) => (flame.width, flame.height),
     };
     let quality = args.quality.unwrap_or(flame.sample_density);
+    let Some(format) = rwf_core::output::ImageFormat::from_path(&args.output) else {
+        eprintln!("unsupported output format: {} (png, jpg, hdr, exr)", args.output.display());
+        std::process::exit(1);
+    };
+    let mut gpu = args.gpu;
+    if gpu && (format.is_hdr() || args.zbuffer) {
+        eprintln!("note: HDR/EXR and z-buffer output are rendered on the CPU");
+        gpu = false;
+    }
     let t0 = Instant::now();
-    let rgba = if args.gpu {
+    let mut zbuffer = None;
+    let mut hdr = None;
+    let rgba = if gpu {
         match rwf_gpu::render_blocking(flame, w, h, quality, flame.bg_transparency) {
             Ok(img) => img,
             Err(e) => {
@@ -217,24 +234,47 @@ fn main() {
             }
         }
     } else {
-        let r = CpuRender::start(flame, RenderOptions { width: w, height: h, threads: args.threads, max_density: Some(quality), seed: 42 });
+        let opts = RenderOptions { width: w, height: h, threads: args.threads, max_density: Some(quality), seed: 42, zbuffer: args.zbuffer };
+        let r = CpuRender::start(flame, opts);
         if !r.missing_variations().is_empty() {
             eprintln!("warning: unsupported variations ignored: {}", r.missing_variations().join(", "));
         }
         let r = r.wait();
         eprintln!("{} samples", r.samples());
-        r.image(flame.bg_transparency)
+        if args.zbuffer {
+            zbuffer = r.zbuffer_image();
+        }
+        if format.is_hdr() {
+            hdr = Some(r.image_hdr());
+            Vec::new()
+        } else {
+            r.image(flame.bg_transparency)
+        }
     };
     let mut rgba = rgba;
-    match rwf_core::render::denoise::apply_post_denoiser(flame, &mut rgba, w, h, args.gpu) {
-        Ok(true) => eprintln!("denoised ({})", flame.ai_post_denoiser.label()),
-        Ok(false) => {}
-        Err(e) => eprintln!("warning: denoiser failed: {e}"),
+    if hdr.is_none() {
+        match rwf_core::render::denoise::apply_post_denoiser(flame, &mut rgba, w, h, gpu) {
+            Ok(true) => eprintln!("denoised ({})", flame.ai_post_denoiser.label()),
+            Ok(false) => {}
+            Err(e) => eprintln!("warning: denoiser failed: {e}"),
+        }
     }
     let dt = t0.elapsed();
-    if let Err(e) = write_png(&args.output, w, h, &rgba) {
+    let written = match &hdr {
+        Some(rgb) => rwf_core::output::write_float_rgb(&args.output, format, w, h, rgb),
+        None => rwf_core::output::write_rgba8(&args.output, format, w, h, &rgba, args.jpeg_quality),
+    };
+    if let Err(e) = written {
         eprintln!("failed to write {}: {e}", args.output.display());
         std::process::exit(1);
+    }
+    if let Some(z) = zbuffer {
+        let zpath = flame.zbuffer_filename.path_for(&args.output);
+        if let Err(e) = rwf_core::output::write_gray16_png(&zpath, w, h, &z) {
+            eprintln!("failed to write {}: {e}", zpath.display());
+            std::process::exit(1);
+        }
+        eprintln!("z-buffer -> {}", zpath.display());
     }
     eprintln!("rendered {}x{} @ quality {} in {:.2}s -> {}", w, h, quality, dt.as_secs_f64(), args.output.display());
 }

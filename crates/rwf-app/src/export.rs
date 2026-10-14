@@ -17,7 +17,7 @@
 //
 // SPDX-License-Identifier: LGPL-3.0-or-later
 
-//! Export dialog: renders the flame at full size and saves a PNG.
+//! Export dialog: renders the flame at full size and saves it (PNG, JPEG, HDR, EXR, z-buffer).
 
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, channel};
@@ -25,6 +25,7 @@ use std::time::Instant;
 
 use egui::RichText;
 use rwf_core::Flame;
+use rwf_core::output::ImageFormat;
 use rwf_core::render::{CpuRender, RenderOptions};
 use rwf_gpu::{GpuContext, GpuRenderer};
 
@@ -42,6 +43,9 @@ struct Running {
     width: u32,
     height: u32,
     with_alpha: bool,
+    format: ImageFormat,
+    jpeg_quality: u8,
+    zbuffer: bool,
     flame: Flame,
     started: Instant,
     target_density: f64,
@@ -75,6 +79,9 @@ pub struct ExportDialog {
     quality: f64,
     backend: Backend,
     transparent: bool,
+    image_format: ImageFormat,
+    jpeg_quality: u8,
+    zbuffer: bool,
     running: Option<Running>,
     status: Option<String>,
 }
@@ -94,6 +101,9 @@ impl Default for ExportDialog {
             quality: 1000.0,
             backend: Backend::Gpu,
             transparent: false,
+            image_format: ImageFormat::Png,
+            jpeg_quality: 95,
+            zbuffer: false,
             running: None,
             status: None,
         }
@@ -105,14 +115,34 @@ fn denoise(flame: &Flame, img: &mut [u8], w: u32, h: u32, gpu: bool) -> Result<(
     rwf_core::render::denoise::apply_post_denoiser(flame, img, w, h, gpu).map(|_| ()).map_err(|e| format!("denoiser: {e}"))
 }
 
-pub fn write_png(path: &std::path::Path, w: u32, h: u32, rgba: &[u8]) -> Result<(), String> {
-    let file = std::fs::File::create(path).map_err(|e| e.to_string())?;
-    let mut enc = png::Encoder::new(std::io::BufWriter::new(file), w, h);
-    enc.set_color(png::ColorType::Rgba);
-    enc.set_depth(png::BitDepth::Eight);
-    let mut writer = enc.write_header().map_err(|e| e.to_string())?;
-    writer.write_image_data(rgba).map_err(|e| e.to_string())?;
+/// Saves a finished CPU render: image in the chosen format plus the optional z-buffer.
+fn save_cpu(r: &CpuRender, run: &SaveJob) -> Result<(), String> {
+    let (w, h) = (run.width, run.height);
+    if run.format.is_hdr() {
+        rwf_core::output::write_float_rgb(&run.path, run.format, w, h, &r.image_hdr())?;
+    } else {
+        let mut img = r.image(run.with_alpha);
+        denoise(&run.flame, &mut img, w, h, false)?;
+        rwf_core::output::write_rgba8(&run.path, run.format, w, h, &img, run.jpeg_quality)?;
+    }
+    if run.zbuffer
+        && let Some(z) = r.zbuffer_image()
+    {
+        rwf_core::output::write_gray16_png(&run.flame.zbuffer_filename.path_for(&run.path), w, h, &z)?;
+    }
     Ok(())
+}
+
+/// What the save thread needs from [`Running`].
+struct SaveJob {
+    path: PathBuf,
+    width: u32,
+    height: u32,
+    with_alpha: bool,
+    format: ImageFormat,
+    jpeg_quality: u8,
+    zbuffer: bool,
+    flame: Flame,
 }
 
 impl ExportDialog {
@@ -139,12 +169,16 @@ impl ExportDialog {
 
 
     fn start(&mut self, flame: &Flame, gpu: Option<GpuContext>, path: PathBuf) {
+        // Only PNG keeps an alpha channel.
+        let alpha = self.transparent && self.image_format == ImageFormat::Png;
         let mut f = flame.clone();
-        f.bg_transparency = self.transparent;
+        f.bg_transparency = alpha;
+        // Float images and depths come from the CPU histogram.
+        let cpu_only = self.image_format.is_hdr() || self.zbuffer;
         let job = match (self.backend, gpu) {
-            (Backend::Gpu, Some(ctx)) => {
+            (Backend::Gpu, Some(ctx)) if !cpu_only => {
                 let mut r = GpuRenderer::new(ctx);
-                r.set_with_alpha(self.transparent);
+                r.set_with_alpha(alpha);
                 r.set_flame(&f, self.width, self.height);
                 if let Some(e) = r.last_error() {
                     self.status = Some(format!("GPU error: {e}"));
@@ -158,7 +192,7 @@ impl ExportDialog {
                 let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
                 let render = CpuRender::start(
                     &f,
-                    RenderOptions { width: self.width, height: self.height, threads, max_density: Some(self.quality), seed: 0x5EED },
+                    RenderOptions { width: self.width, height: self.height, threads, max_density: Some(self.quality), seed: 0x5EED, zbuffer: self.zbuffer },
                 );
                 Job::Cpu { render: Some(render), saving: None }
             }
@@ -168,7 +202,10 @@ impl ExportDialog {
             path,
             width: self.width,
             height: self.height,
-            with_alpha: self.transparent,
+            with_alpha: alpha,
+            format: self.image_format,
+            jpeg_quality: self.jpeg_quality,
+            zbuffer: self.zbuffer,
             flame: f,
             started: Instant::now(),
             target_density: self.quality,
@@ -190,7 +227,7 @@ impl ExportDialog {
                 renderer.tonemap();
                 let result = renderer.read_image().ok_or_else(|| "readback failed".to_string()).and_then(|mut img| {
                     denoise(&run.flame, &mut img, run.width, run.height, true)?;
-                    write_png(&run.path, run.width, run.height, &img)
+                    rwf_core::output::write_rgba8(&run.path, run.format, run.width, run.height, &img, run.jpeg_quality)
                 });
                 self.finish(result);
                 1.0
@@ -209,11 +246,18 @@ impl ExportDialog {
                 }
                 let r = render.take().expect("cpu render");
                 let (tx, rx) = channel();
-                let (path, w, h, alpha, flame) = (run.path.clone(), run.width, run.height, run.with_alpha, run.flame.clone());
+                let job = SaveJob {
+                    path: run.path.clone(),
+                    width: run.width,
+                    height: run.height,
+                    with_alpha: run.with_alpha,
+                    format: run.format,
+                    jpeg_quality: run.jpeg_quality,
+                    zbuffer: run.zbuffer,
+                    flame: run.flame.clone(),
+                };
                 std::thread::spawn(move || {
-                    let mut img = r.image(alpha);
-                    let result = denoise(&flame, &mut img, w, h, false).and_then(|_| write_png(&path, w, h, &img));
-                    let _ = tx.send(result);
+                    let _ = tx.send(save_cpu(&r, &job));
                 });
                 *saving = Some(rx);
                 0.99
@@ -256,7 +300,7 @@ impl ExportDialog {
                         Some(r) => r.render_frame(&flame, frame as f64, w, h, q)?,
                         None => {
                             let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
-                            CpuRender::start_frame(&flame, frame as f64, RenderOptions { width: w, height: h, threads, max_density: Some(q), seed: 0x5EED + frame as u64 })
+                            CpuRender::start_frame(&flame, frame as f64, RenderOptions { width: w, height: h, threads, max_density: Some(q), seed: 0x5EED + frame as u64, zbuffer: false })
                                 .wait()
                                 .image(false)
                         }
@@ -330,9 +374,34 @@ impl ExportDialog {
                     });
                     ui.end_row();
                     if self.mode == Mode::Image {
-                        ui.label(RichText::new("Background").color(theme::TEXT_MUTED));
-                        ui.checkbox(&mut self.transparent, "Transparent");
+                        ui.label(RichText::new("Format").color(theme::TEXT_MUTED));
+                        egui::ComboBox::from_id_salt("ifmt").selected_text(self.image_format.label()).show_ui(ui, |ui| {
+                            for f in ImageFormat::ALL {
+                                ui.selectable_value(&mut self.image_format, *f, f.label());
+                            }
+                        });
                         ui.end_row();
+                        if self.image_format == ImageFormat::Jpeg {
+                            ui.label(RichText::new("JPEG quality").color(theme::TEXT_MUTED));
+                            ui.add(egui::Slider::new(&mut self.jpeg_quality, 50..=100));
+                            ui.end_row();
+                        }
+                        if matches!(self.image_format, ImageFormat::Png) {
+                            ui.label(RichText::new("Background").color(theme::TEXT_MUTED));
+                            ui.checkbox(&mut self.transparent, "Transparent");
+                            ui.end_row();
+                        }
+                        ui.label(RichText::new("Depth").color(theme::TEXT_MUTED));
+                        ui.checkbox(&mut self.zbuffer, "Z-buffer (16-bit PNG)").on_hover_text(format!(
+                            "Saved as {}",
+                            flame.zbuffer_filename.path_for(std::path::Path::new(&format!("image.{}", self.image_format.extension()))).display()
+                        ));
+                        ui.end_row();
+                        if (self.image_format.is_hdr() || self.zbuffer) && self.backend == Backend::Gpu && gpu.is_some() {
+                            ui.label("");
+                            ui.label(RichText::new("HDR and z-buffer are rendered on the CPU").small().color(theme::TEXT_MUTED));
+                            ui.end_row();
+                        }
                     } else {
                         let last = flame.animation.frame_count.saturating_sub(1);
                         ui.label(RichText::new("Frames").color(theme::TEXT_MUTED));
@@ -385,9 +454,13 @@ impl ExportDialog {
                         self.start_animation(flame, path, self.backend == Backend::Gpu && gpu.is_some());
                     }
                 }
-            } else if ui.add_sized([ui.available_width(), 30.0], egui::Button::new(RichText::new("Render & save PNG…").strong()).fill(theme::ACCENT_DIM)).clicked() {
-                let default_name = if flame.name.is_empty() { "flame.png".to_string() } else { format!("{}.png", flame.name) };
-                if let Some(path) = rfd::FileDialog::new().add_filter("PNG image", &["png"]).set_file_name(default_name).save_file() {
+            } else if ui
+                .add_sized([ui.available_width(), 30.0], egui::Button::new(RichText::new(format!("Render & save {}…", self.image_format.label())).strong()).fill(theme::ACCENT_DIM))
+                .clicked()
+            {
+                let ext = self.image_format.extension();
+                let default_name = format!("{}.{ext}", if flame.name.is_empty() { "flame" } else { &flame.name });
+                if let Some(path) = rfd::FileDialog::new().add_filter(self.image_format.label(), &[ext]).set_file_name(default_name).save_file() {
                     self.start(flame, gpu.clone(), path);
                 }
             }

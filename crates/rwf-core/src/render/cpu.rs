@@ -19,7 +19,7 @@
 
 //! Multi-threaded, progressive CPU renderer.
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
@@ -78,6 +78,34 @@ impl Raster for Histogram {
         let i = (y as usize * self.width as usize + x as usize) * 4;
         let ld = |k: usize| self.cells[i + k].load(Ordering::Relaxed) as i64 as f64 / COLOR_SCALE;
         [self.cells[i].load(Ordering::Relaxed) as f64, ld(1), ld(2), ld(3)]
+    }
+}
+
+/// Per-cell maximum camera depth of bright samples (`RasterFloatIntWithZBuffer`), f32 bits.
+pub struct ZBuffer {
+    width: u32,
+    cells: Vec<AtomicU32>,
+}
+
+impl ZBuffer {
+    pub fn new(width: u32, height: u32) -> Self {
+        let n = width as usize * height as usize;
+        let mut cells = Vec::with_capacity(n);
+        cells.resize_with(n, || AtomicU32::new(solid::ZMIN.to_bits()));
+        Self { width, cells }
+    }
+
+    #[inline]
+    pub fn add(&self, x: u32, y: u32, z: f32) {
+        let c = &self.cells[y as usize * self.width as usize + x as usize];
+        let _ = c.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |old| (z > f32::from_bits(old)).then_some(z.to_bits()));
+    }
+
+    /// Depth of a cell, `None` if nothing was plotted there.
+    #[inline]
+    pub fn get(&self, x: u32, y: u32) -> Option<f32> {
+        let z = f32::from_bits(self.cells[y as usize * self.width as usize + x as usize].load(Ordering::Relaxed));
+        (z != solid::ZMIN).then_some(z)
     }
 }
 
@@ -155,6 +183,7 @@ struct Shared {
     target_samples: u64,
     dimish_color: [f64; 3],
     solid: Option<Mutex<SolidAccum>>,
+    zbuffer: Option<ZBuffer>,
 }
 
 #[derive(Clone)]
@@ -209,6 +238,8 @@ pub struct RenderOptions {
     /// Stop after this sample density (flame quality); `None` renders until stopped.
     pub max_density: Option<f64>,
     pub seed: u64,
+    /// Records depths for [`CpuRender::zbuffer_image`] (solid renders always have them).
+    pub zbuffer: bool,
 }
 
 impl CpuRender {
@@ -254,6 +285,7 @@ impl CpuRender {
             stop: AtomicBool::new(false),
             target_samples,
             dimish_color: [0.0; 3],
+            zbuffer: (opts.zbuffer && solid.is_none()).then(|| ZBuffer::new(view.raster_width, view.raster_height)),
             solid,
             packets,
         });
@@ -344,6 +376,55 @@ impl CpuRender {
 }
 
 impl CpuRender {
+    /// Tonemaps into linear float RGB (`RenderHDRImageThread`), 1.0 = full 8-bit white.
+    pub fn image_hdr(&self) -> Vec<f32> {
+        let v = &self.shared.packets[0].view;
+        if let Some(acc) = &self.shared.solid {
+            let acc = acc.lock().expect("solid accum").clone();
+            let lights = LightViews::new(&self.flame.solid);
+            let raster = solid::finalize(&acc, &self.flame, &lights);
+            return solid::SolidShader::new(&self.flame, &raster, &lights, v.border, false).render_hdr(v.image_width, v.image_height);
+        }
+        let tm = ToneMapper::new(&self.flame, v.image_width, v.image_height, v.ppu, self.density(), false).with_packets(self.shared.packets.len());
+        match super::de::DeParams::new(&self.flame, v.ppu_scale) {
+            Some(de) => tm.render_hdr(&self.flame, &super::de::apply(&self.shared.histogram, &de), v.image_width, v.image_height),
+            None => tm.render_hdr(&self.flame, &self.shared.histogram, v.image_width, v.image_height),
+        }
+    }
+
+    /// 16-bit gray depth image (`RenderZBufferThread`), mapped by the flame's z-buffer scale,
+    /// shift and bias. `None` unless the render recorded depths.
+    pub fn zbuffer_image(&self) -> Option<Vec<u16>> {
+        let v = &self.shared.packets[0].view;
+        let solid = self.shared.solid.as_ref().map(|acc| acc.lock().expect("solid accum").z.clone());
+        let read = |x: u32, y: u32| -> Option<f32> {
+            if x >= v.raster_width || y >= v.raster_height {
+                return None;
+            }
+            match (&solid, &self.shared.zbuffer) {
+                (Some(z), _) => Some(z[(y * v.raster_width + x) as usize]).filter(|z| *z != solid::ZMIN),
+                (None, Some(zb)) => zb.get(x, y),
+                (None, None) => None,
+            }
+        };
+        if solid.is_none() && self.shared.zbuffer.is_none() {
+            return None;
+        }
+        Some(zbuffer_gray(&self.flame, v.image_width, v.image_height, |x, y| {
+            let os = v.oversample;
+            let (mut sum, mut n) = (0.0, 0);
+            for px in 0..os {
+                for py in 0..os {
+                    if let Some(z) = read(x * os + px + v.border, y * os + py + v.border) {
+                        sum += z as f64;
+                        n += 1;
+                    }
+                }
+            }
+            (n > 0).then(|| sum / n as f64)
+        }))
+    }
+
     /// Solid rendering: normals, AO, shadows, shading and (optionally) post DOF of the current
     /// z-buffer.
     fn solid_image(&self, with_alpha: bool, post_dof: bool) -> Vec<u8> {
@@ -369,10 +450,48 @@ impl Drop for CpuRender {
     }
 }
 
+/// Maps averaged pixel depths to 16-bit gray levels (`RenderZBufferThread`).
+fn zbuffer_gray(flame: &Flame, w: u32, h: u32, depth: impl Fn(u32, u32) -> Option<f64> + Sync) -> Vec<u16> {
+    use rayon::prelude::*;
+    let z_scale = flame.zbuffer_scale * 0.001;
+    let z_bias = if flame.zbuffer_bias <= 0.0 {
+        0
+    } else if flame.zbuffer_bias >= 1.0 {
+        0xffff
+    } else {
+        crate::math::ftoi(flame.zbuffer_bias * 65535.0) as i64
+    };
+    let z_shift = flame.zbuffer_shift;
+    let mut out = vec![0u16; (w * h) as usize];
+    out.par_chunks_mut(w as usize).enumerate().for_each(|(y, row)| {
+        for x in 0..w {
+            let d = depth(x, y as u32);
+            let lvl = |s: f64, z: f64| (crate::math::ftoi((s * z - z_shift) * 32767.0 + 32767.0) as i64).clamp(0, 0xffff);
+            // Negative scale: black near the camera, white background.
+            let gray = if z_scale < 0.0 {
+                match d {
+                    Some(z) => {
+                        let g = 0xffff - lvl(-z_scale, z);
+                        if z_bias > 0 && g > 0xffff - z_bias { 0xffff - z_bias } else { g }
+                    }
+                    None => 0xffff - z_bias,
+                }
+            } else {
+                match d {
+                    Some(z) => lvl(z_scale, z).max(z_bias),
+                    None => z_bias,
+                }
+            };
+            row[x as usize] = gray as u16;
+        }
+    });
+    out
+}
+
 /// Blocking convenience render to RGBA8.
 pub fn render_image(flame: &Flame, width: u32, height: u32, quality: f64, with_alpha: bool) -> Vec<u8> {
     let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
-    let r = CpuRender::start(flame, RenderOptions { width, height, threads, max_density: Some(quality), seed: 0x5EED_1234 }).wait();
+    let r = CpuRender::start(flame, RenderOptions { width, height, threads, max_density: Some(quality), seed: 0x5EED_1234, zbuffer: false }).wait();
     r.image(with_alpha)
 }
 
@@ -517,7 +636,7 @@ fn plot(sh: &Shared, pk: &Packet, layer: &PreparedLayer, p: &Pt, q: &Pt, x: f64,
         plot_solid(sh, pk, lights, layer, p, q, x, y, out);
         return;
     }
-    let Some((mut raw_x, mut raw_y, dz)) = pk.view.project(x, y, q.z, ctx) else {
+    let Some((mut raw_x, mut raw_y, dz, cam_z)) = pk.view.project(x, y, q.z, ctx) else {
         return;
     };
     if !(x.is_finite() && y.is_finite()) {
@@ -542,6 +661,11 @@ fn plot(sh: &Shared, pk: &Packet, layer: &PreparedLayer, p: &Pt, q: &Pt, x: f64,
     r = (d[0] + (r - d[0]) * dz) * w;
     g = (d[1] + (g - d[1]) * dz) * w;
     b = (d[2] + (b - d[2]) * dz) * w;
+    if let Some(zb) = &sh.zbuffer
+        && 0.299 * r + 0.588 * g + 0.113 * b > 8.0
+    {
+        zb.add(sx as u32, sy as u32, cam_z as f32);
+    }
     match &pk.post_blur {
         Some(pb) if ctx.random() > pb.fade => {
             let side = 2 * pb.radius + 1;
@@ -629,6 +753,7 @@ fn shadow_frames(pk: &Packet, flame: &Flame) -> Vec<Option<ShadowFrame>> {
         target_samples: 0,
         dimish_color: [0.0; 3],
         solid: None,
+        zbuffer: None,
     };
     let mut ctx = Ctx::new(solid::SHADOW_SEED ^ 0x5AD0_3D5E, pk.prepared.preserve_z);
     let mut out = PlotOut::default();

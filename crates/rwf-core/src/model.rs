@@ -420,6 +420,41 @@ pub struct Background {
     pub cc: [u8; 3],
 }
 
+/// Name of the Z-buffer file next to a rendered image.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum ZBufferFilename {
+    /// `zbuf_<name>.png`
+    PreZbuf,
+    /// `<name>_depth.png`
+    #[default]
+    PostDepth,
+}
+
+impl ZBufferFilename {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ZBufferFilename::PreZbuf => "PRE_ZBUF",
+            ZBufferFilename::PostDepth => "POST_DEPTH",
+        }
+    }
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim() {
+            "PRE_ZBUF" => Some(ZBufferFilename::PreZbuf),
+            "POST_DEPTH" => Some(ZBufferFilename::PostDepth),
+            _ => None,
+        }
+    }
+    /// Z-buffer file for an image file (`Tools.makeZBufferFilename`); always a PNG.
+    pub fn path_for(&self, image: &std::path::Path) -> std::path::PathBuf {
+        let stem = image.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        let name = match self {
+            ZBufferFilename::PreZbuf => format!("zbuf_{stem}.png"),
+            ZBufferFilename::PostDepth => format!("{stem}_depth.png"),
+        };
+        image.with_file_name(name)
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum PostSymmetryType {
     #[default]
@@ -536,6 +571,12 @@ pub struct Flame {
     pub post_blur_radius: u32,
     pub post_blur_fade: f64,
     pub post_blur_falloff: f64,
+    /// Z-buffer output: depth mapping (`gray = (scale * 0.001 * z - shift) * 32767 + 32767`,
+    /// a negative scale inverts it), minimum gray level `bias` (0..1) and file naming.
+    pub zbuffer_scale: f64,
+    pub zbuffer_bias: f64,
+    pub zbuffer_shift: f64,
+    pub zbuffer_filename: ZBufferFilename,
     /// AI post denoiser applied to final renders; `blend` mixes the original back in.
     pub ai_post_denoiser: crate::render::denoise::Denoiser,
     pub post_denoiser_blend: f64,
@@ -625,6 +666,10 @@ impl Default for Flame {
             post_blur_radius: 0,
             post_blur_fade: 0.95,
             post_blur_falloff: 2.0,
+            zbuffer_scale: 1.0,
+            zbuffer_bias: 0.0,
+            zbuffer_shift: 0.0,
+            zbuffer_filename: ZBufferFilename::PostDepth,
             ai_post_denoiser: crate::render::denoise::Denoiser::None,
             post_denoiser_blend: 0.11111,
             post_denoiser_only_for_cpu: true,

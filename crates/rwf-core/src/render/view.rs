@@ -116,11 +116,13 @@ impl View {
         }
     }
 
-    /// Projects a world point; returns `(px, py, intensity)` in raster units (not rounded).
+    /// Projects a world point; returns `(px, py, intensity, z)` in raster units (not rounded),
+    /// `z` is the camera depth scaled like x (0 without 3D projection).
     #[inline]
-    pub fn project(&self, x: f64, y: f64, z: f64, ctx: &mut crate::variations::Ctx) -> Option<(f64, f64, f64)> {
+    pub fn project(&self, x: f64, y: f64, z: f64, ctx: &mut crate::variations::Ctx) -> Option<(f64, f64, f64, f64)> {
         let (mut x, mut y) = (x, y);
         let mut intensity = 1.0;
+        let mut cam_z = 0.0;
         if self.project_3d {
             let m = &self.matrix;
             let cx = m[0][0] * x + m[1][0] * y + m[2][0] * z + self.cam_pos[0];
@@ -136,6 +138,7 @@ impl View {
                     intensity = (-zdist * zdist * self.dimish_z).exp();
                 }
             }
+            cam_z = cz;
             match self.dof.as_ref().and_then(|d| d.distance(cx, cy, cz).map(|dist| (d, dist))) {
                 Some((dof, dist)) => {
                     let (bx, by) = dof.apply(ctx, cx, cy, dist);
@@ -156,7 +159,7 @@ impl View {
         if py < 0.0 || py > self.cam_h {
             return None;
         }
-        Some((self.bws * px, self.bhs * py, intensity))
+        Some((self.bws * px, self.bhs * py, intensity, cam_z * self.bws))
     }
 
     /// Projection for solid rendering: camera only, DOF becomes a post effect. Returns

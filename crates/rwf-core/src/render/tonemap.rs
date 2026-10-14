@@ -350,6 +350,52 @@ impl ToneMapper {
         [red as u8, green as u8, blue as u8, alpha_out as u8]
     }
 
+    /// Gamma correction + background blend without quantization (`transformPointHDR`): linear
+    /// RGB where 1.0 is 8-bit full scale. The saturation modifier is not applied (as in JWildfire).
+    pub fn gamma_pixel_hdr(&self, f: [f64; 4], bg: [i32; 3]) -> [f32; 3] {
+        let p = &self.params;
+        let intensity = f[0];
+        if intensity <= 0.0 {
+            return bg.map(|c| c as f32 / 255.0);
+        }
+        let alpha = if intensity <= p.gamma_threshold {
+            let frac = intensity / p.gamma_threshold;
+            (1.0 - frac) * intensity * p.scl_gamma + frac * intensity.powf(p.gamma)
+        } else {
+            intensity.powf(p.gamma)
+        };
+        let log_scl = p.vib_int * alpha / intensity;
+        let inv_alpha = 255.0 - (alpha * 255.0).clamp(0.0, 255.0);
+        let mut out = [0f32; 3];
+        for k in 0..3 {
+            let c = f[k + 1];
+            let raw = if p.inverse_vib_int > 0.0 { log_scl * c + p.inverse_vib_int * c.powf(p.gamma) } else { log_scl * c };
+            out[k] = ((raw + inv_alpha * bg[k] as f64 / 255.0).max(0.0) / 255.0) as f32;
+        }
+        out
+    }
+
+    /// Tonemaps the whole raster into linear float RGB (`w * h * 3` values).
+    pub fn render_hdr<R: Raster>(&self, flame: &Flame, raster: &R, w: u32, h: u32) -> Vec<f32> {
+        match flame.mixer.color_func() {
+            Some(func) => self.render_raster_hdr(flame, &mix_raster(raster, &func), w, h),
+            None => self.render_raster_hdr(flame, raster, w, h),
+        }
+    }
+
+    fn render_raster_hdr<R: Raster>(&self, flame: &Flame, raster: &R, w: u32, h: u32) -> Vec<f32> {
+        let backdrop = super::background::Backdrop::new(flame, w, h);
+        let mut out = vec![0f32; (w * h * 3) as usize];
+        out.par_chunks_mut((w * 3) as usize).enumerate().for_each(|(y, row)| {
+            for x in 0..w {
+                let f = self.filtered(raster, x, y as u32);
+                let px = self.gamma_pixel_hdr(f, backdrop.get(x, y as u32));
+                row[(x * 3) as usize..(x * 3 + 3) as usize].copy_from_slice(&px);
+            }
+        });
+        out
+    }
+
     /// Tonemaps the whole raster into an RGBA8 buffer of `w * h * 4` bytes.
     pub fn render<R: Raster>(&self, flame: &Flame, raster: &R, w: u32, h: u32) -> Vec<u8> {
         match flame.mixer.color_func() {

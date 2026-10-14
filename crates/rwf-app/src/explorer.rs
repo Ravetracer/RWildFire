@@ -77,7 +77,7 @@ impl Default for Explorer {
 fn render_thumb(flame: &Flame) -> Vec<u8> {
     let mut f = flame.clone();
     f.bg_transparency = false;
-    let opts = rwf_core::render::RenderOptions { width: THUMB_W, height: THUMB_H, threads: 2, max_density: Some(60.0), seed: 3 };
+    let opts = rwf_core::render::RenderOptions { width: THUMB_W, height: THUMB_H, threads: 2, max_density: Some(60.0), seed: 3, zbuffer: false };
     rwf_core::render::CpuRender::start(&f, opts).wait().image(false)
 }
 

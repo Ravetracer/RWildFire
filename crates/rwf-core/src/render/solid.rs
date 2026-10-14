@@ -716,6 +716,29 @@ impl<'a> SolidShader<'a> {
     }
 }
 
+impl SolidShader<'_> {
+    /// Linear float RGB without quantization (`transformPointHDR`); no post DOF.
+    pub fn render_hdr(&self, w: u32, h: u32) -> Vec<f32> {
+        let flame = self.flame;
+        let gamma = if flame.gamma == 0.0 { 0.0 } else { 1.0 / flame.gamma };
+        let alpha_scale = 1.0 - (3.0 * (flame.fg_opacity - 1.0)).atan() / 1.25;
+        let mut out = vec![0f32; (w * h * 3) as usize];
+        let backdrop = super::background::Backdrop::new(flame, w, h);
+        out.par_chunks_mut((w * 3) as usize).enumerate().for_each(|(y, row)| {
+            for x in 0..w {
+                let bg = backdrop.get(x, y as u32);
+                let (col, intensity, _) = self.pixel(x, y as u32, bg);
+                let inv = if intensity > 0.0 { 255.0 - (intensity.powf(1.0 + gamma) * 255.0 * alpha_scale).clamp(0.0, 255.0) } else { 255.0 };
+                let col = if intensity > 0.0 { col } else { [0.0; 3] };
+                for k in 0..3 {
+                    row[(x * 3) as usize + k] = ((col[k] + inv * bg[k] as f64 / 255.0).max(0.0) / 255.0) as f32;
+                }
+            }
+        });
+        out
+    }
+}
+
 /// Fixed point scale of the post DOF accumulation buffer.
 const DOF_SCALE: f64 = 1024.0;
 

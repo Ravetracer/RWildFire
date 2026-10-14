@@ -156,6 +156,14 @@ fn parse_flame(el: &Element) -> Flame {
             "post_blur_radius" => flame.post_blur_radius = f.unwrap_or(0.0).max(0.0) as u32,
             "post_blur_fade" => flame.post_blur_fade = f.unwrap_or(0.95),
             "post_blur_falloff" => flame.post_blur_falloff = f.unwrap_or(2.0),
+            "zbuffer_scale" => flame.zbuffer_scale = f.unwrap_or(1.0),
+            "zbuffer_bias" => flame.zbuffer_bias = f.unwrap_or(0.0),
+            "zbuffer_shift" => flame.zbuffer_shift = f.unwrap_or(0.0),
+            "zbuffer_filename" => {
+                if let Some(z) = ZBufferFilename::parse(v) {
+                    flame.zbuffer_filename = z;
+                }
+            }
             "filter_sharpness" => flame.filter_sharpness = f.unwrap_or(4.0),
             "filter_low_density" => flame.filter_low_density = f.unwrap_or(0.025),
             "filter_indicator" => flame.filter_indicator = v.trim() == "1",
@@ -544,6 +552,10 @@ pub fn write_flame(flame: &Flame) -> String {
     attr(&mut s, "post_blur_radius", flame.post_blur_radius.to_string());
     attr(&mut s, "post_blur_fade", fmt_f(flame.post_blur_fade));
     attr(&mut s, "post_blur_falloff", fmt_f(flame.post_blur_falloff));
+    attr(&mut s, "zbuffer_scale", fmt_f(flame.zbuffer_scale));
+    attr(&mut s, "zbuffer_bias", fmt_f(flame.zbuffer_bias));
+    attr(&mut s, "zbuffer_shift", fmt_f(flame.zbuffer_shift));
+    attr(&mut s, "zbuffer_filename", flame.zbuffer_filename.as_str());
     flame.solid.write_attrs(|k, v| attr(&mut s, k, v));
     flame.mixer.write_attrs(|k, v| attr(&mut s, k, v));
     attr(&mut s, "ai_post_denoiser", flame.ai_post_denoiser.as_str());
