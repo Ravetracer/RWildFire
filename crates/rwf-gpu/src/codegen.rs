@@ -29,7 +29,7 @@ use std::fmt::Write as _;
 use rwf_core::model::{ColorType, DrawMode, Flame, PostSymmetryType};
 use rwf_core::render::prepared::{AffineMode, NEXT_XFORM_TABLE_SIZE, PreparedFlame, PreparedXForm, StepMode, VarStep};
 use rwf_core::variations::wgsl::{prelude, var_fn_name, variation_function, variation_function_weighted};
-use rwf_core::variations::{VarDef, subflame};
+use rwf_core::variations::{NOISE_TABLES_LEN, VarDef, noise_tables, subflame};
 use rwf_core::weighting::{Field, FieldInput};
 
 /// Offsets inside an xform parameter block.
@@ -461,7 +461,8 @@ impl Layout {
         let mut unsupported: Vec<String> = prepared.missing_variations.clone();
         let mut used_vars: BTreeMap<&'static str, &'static VarDef> = BTreeMap::new();
         let mut layers = Vec::new();
-        let mut param_len = 0usize;
+        // The noise tables come first (see `wgsl/noise.wgsl`).
+        let mut param_len = NOISE_TABLES_LEN;
         let mut next_len = 0usize;
         let mut any_weighting = false;
         let mut weighted_fns: WeightedFns = BTreeMap::new();
@@ -840,6 +841,7 @@ impl Program {
     /// Packs the layers and weighting field tables (everything but the flame-wide blocks).
     pub fn pack_layers(&self, prepared: &PreparedFlame) -> Vec<f32> {
         let mut p = vec![0.0f32; self.param_len.max(1)];
+        p[..NOISE_TABLES_LEN].copy_from_slice(&noise_tables());
         if let Some(t) = self.wf_tables {
             p[t..t + WF_TABLES_LEN].copy_from_slice(&rwf_core::fastnoise::tables());
         }

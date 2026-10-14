@@ -215,6 +215,17 @@ fn hypertile12_prepare(p: &[f64]) -> Vec<f64> {
     vec![pp, qq, pa, r]
 }
 
+/// Length of [`noise_tables`].
+pub const NOISE_TABLES_LEN: usize = 4096;
+
+/// The noise tables for the GPU, packed at the start of the parameter buffer (see
+/// `wgsl/noise.wgsl`): the hash table, then the flattened gradients.
+pub fn noise_tables() -> Vec<f32> {
+    let mut t: Vec<f32> = NOISE_PERM.iter().map(|&v| v as f32).collect();
+    t.extend(NOISE_GRAD3.iter().flatten().map(|&v| v as f32));
+    t
+}
+
 /// Hash table of `NoiseTools.p` (first 1k block; the Java table repeats it).
 static NOISE_PERM: [u16; 1024] = [
     127, 71, 882, 898, 798, 463, 517, 451, 454, 634, 578, 695, 728, 742, 325, 350, 684, 153, 340,

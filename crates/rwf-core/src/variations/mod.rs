@@ -55,6 +55,7 @@ mod batch_a;
 mod batch_b;
 mod batch_c;
 mod batch_d;
+pub use batch_d::{NOISE_TABLES_LEN, noise_tables};
 // Batches of the full port; each is behind its own feature while being ported.
 #[cfg(feature = "w01")]
 mod batch_w01;

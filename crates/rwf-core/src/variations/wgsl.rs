@@ -158,7 +158,9 @@ pub fn variation_function_weighted(def: &VarDef, preserve_z: bool, name: &str, p
     let body = expand_snippet(&body).replace("PRESERVE_Z", pz);
     let args: String = (0..params.len()).map(|n| format!(", wpf{n}: f32")).collect();
     let _ = helpers;
-    format!("fn {name}(a_in: Pt, v_in: Pt, base: u32, AMOUNT: f32{args}) -> PtPair {{\n  var a = a_in;\n  var v = v_in;\n  {{\n{body}\n  }}\n  return PtPair(a, v);\n}}\n")
+    format!(
+        "fn {name}(a_in: Pt, v_in: Pt, base: u32, AMOUNT: f32{args}) -> PtPair {{\n  var a = a_in;\n  var v = v_in;\n  {{\n{body}\n  }}\n  return PtPair(a, v);\n}}\n"
+    )
 }
 
 /// Replaces the reads `D(k)` (not part of a longer identifier) by `with`.
@@ -215,7 +217,10 @@ mod tests {
 
     #[test]
     fn prelude_is_valid() {
-        let src = format!("{}\n@group(0) @binding(0) var<storage, read_write> prm: array<f32>;\n@compute @workgroup_size(1) fn main() {{ prm[0] = rnd(); }}\n", prelude());
+        let src = format!(
+            "{}\n@group(0) @binding(0) var<storage, read_write> prm: array<f32>;\n@compute @workgroup_size(1) fn main() {{ prm[0] = rnd(); }}\n",
+            prelude()
+        );
         validate(&src).unwrap();
     }
 
@@ -252,5 +257,21 @@ mod tests {
         if let Err(e) = validate(&test_shader(&gpu_defs())) {
             panic!("combined module invalid:\n{}", e.lines().take(30).collect::<Vec<_>>().join("\n"));
         }
+    }
+
+    /// Large lookup tables belong into `prm` (see `noise_tables`): dynamically indexed constant
+    /// arrays made the NVIDIA driver stall for minutes per pass.
+    #[test]
+    fn no_large_constant_arrays() {
+        let src = test_shader(&gpu_defs());
+        let large: Vec<&str> = src
+            .lines()
+            .filter(|l| l.starts_with("const ") && l.contains(": array<"))
+            .filter(|l| {
+                let n = l.split(": array<").nth(1).and_then(|t| t.split('>').next()).and_then(|t| t.rsplit(", ").next());
+                n.and_then(|n| n.trim().parse::<usize>().ok()).is_some_and(|n| n > 256)
+            })
+            .collect();
+        assert!(large.is_empty(), "large constant arrays: {large:?}");
     }
 }
