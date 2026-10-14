@@ -17,7 +17,12 @@
 //
 // SPDX-License-Identifier: LGPL-3.0-or-later
 
-//! Random flame generators and mutations, inspired by JWildfire's random flame generators.
+//! Random flame generators (ports of JWildfire's random flame generators plus RWildFire's
+//! own "Classic" and "Symmetric") and mutations.
+
+mod coverage;
+mod gens_a;
+pub mod java;
 
 use crate::gradient::Gradient;
 use crate::model::{Flame, Layer, PostSymmetryType, VariationInstance, XForm};
@@ -25,43 +30,115 @@ use crate::render::analysis::{auto_frame, coverage};
 use crate::rng::Rng;
 use crate::variations;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Generator {
-    Classic,
-    Linear,
-    Bubbles,
-    Julians,
-    Spirals,
-    Gnarl,
-    Symmetric,
-    Synth,
+/// What a generator remembers between the attempts of one sample
+/// (`RandomFlameGeneratorState`).
+pub struct State<'a> {
+    pub rng: &'a mut Rng,
+    /// Generator chosen once per sample by "(All)" and the 3D wrappers.
+    pub(crate) sub: Option<Generator>,
+}
+
+macro_rules! generators {
+    ($($variant:ident => $label:literal),* $(,)?) => {
+        #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+        pub enum Generator {
+            $($variant),*
+        }
+
+        impl Generator {
+            pub const ALL: &'static [Generator] = &[$(Generator::$variant),*];
+
+            pub fn label(&self) -> &'static str {
+                match self {
+                    $(Generator::$variant => $label),*
+                }
+            }
+        }
+    };
+}
+
+generators! {
+    All => "(All)",
+    Classic => "Classic",
+    Symmetric => "Symmetric",
+    Affine3D => "Affine3D",
+    Bubbles => "Bubbles",
+    Bubbles3D => "Bubbles3D",
+    ExperimentalBubbles3D => "Bubbles3D (experimental)",
+    Linear => "Linear only",
+    Sierpinsky => "Sierpinsky",
+    ExperimentalSimple => "Simple (experimental)",
+    Simple => "Simple (stunning)",
+    Spherical => "Spherical",
+    Spherical3D => "Spherical3D",
 }
 
 impl Generator {
-    pub const ALL: &'static [Generator] = &[
-        Generator::Classic,
-        Generator::Linear,
-        Generator::Bubbles,
-        Generator::Julians,
-        Generator::Spirals,
-        Generator::Gnarl,
-        Generator::Symmetric,
-        Generator::Synth,
-    ];
+    /// Looks a generator up by its label.
+    pub fn by_label(label: &str) -> Option<Generator> {
+        Generator::ALL.iter().copied().find(|g| g.label() == label)
+    }
 
-    pub fn label(&self) -> &'static str {
+    /// RWildFire's own generators (no JWildfire counterpart): framed automatically.
+    fn is_own(self) -> bool {
+        matches!(self, Generator::Classic | Generator::Symmetric)
+    }
+
+    /// The generators "(All)" chooses from.
+    fn all_candidates() -> Vec<Generator> {
+        Generator::ALL.iter().copied().filter(|g| *g != Generator::All && !g.is_own()).collect()
+    }
+
+    /// `prepareFlame`.
+    fn prepare(self, st: &mut State) -> Flame {
         match self {
-            Generator::Classic => "Classic",
-            Generator::Linear => "Linear",
-            Generator::Bubbles => "Bubbles",
-            Generator::Julians => "Julians",
-            Generator::Spirals => "Spirals",
-            Generator::Gnarl => "Gnarl",
-            Generator::Symmetric => "Symmetric",
-            Generator::Synth => "Wild mix",
+            Generator::All => {
+                let g = *st.sub.get_or_insert_with(|| {
+                    let c = Generator::all_candidates();
+                    c[st.rng.random_int(c.len())]
+                });
+                let mut sub = State { rng: &mut *st.rng, sub: None };
+                let mut f = g.prepare(&mut sub);
+                f.name = g.label().to_string();
+                f
+            }
+            Generator::Classic | Generator::Symmetric => own_generator(self, st.rng),
+            Generator::Affine3D => gens_a::affine3d(st),
+            Generator::Bubbles => gens_a::bubbles(st),
+            Generator::Bubbles3D => gens_a::bubbles3d(st),
+            Generator::ExperimentalBubbles3D => gens_a::experimental_bubbles3d(st),
+            Generator::Linear => gens_a::linear(st),
+            Generator::Sierpinsky => gens_a::sierpinsky(st),
+            Generator::ExperimentalSimple => gens_a::experimental_simple(st),
+            Generator::Simple => gens_a::simple(st),
+            Generator::Spherical => gens_a::spherical(st),
+            Generator::Spherical3D => gens_a::spherical3d(st),
         }
     }
+
+    /// `isUseFilter`: judge the preview by its edges instead of its area.
+    fn use_filter(self, st: &mut State) -> bool {
+        match self {
+            Generator::All => st.sub.is_some_and(|g| g.use_filter(st)),
+            Generator::Affine3D => st.rng.random() > 0.42,
+            Generator::Bubbles | Generator::Bubbles3D | Generator::ExperimentalBubbles3D | Generator::ExperimentalSimple | Generator::Simple => true,
+            _ => false,
+        }
+    }
+
+    /// `postProcessFlameBeforeRendering` (after the random gradient was applied).
+    fn post_process(self, _st: &mut State, _flame: &mut Flame) {}
+
+    /// `getMaxCoverage`.
+    fn max_coverage(self) -> f64 {
+        1.0
+    }
 }
+
+/// Minimum coverage of an accepted sample and the number of attempts
+/// (`RandomBatchQuality.NORMAL`).
+const MIN_COVERAGE: f64 = 0.42;
+const MAX_SAMPLES: usize = 16;
 
 /// Variations that tend to produce nice results in random flames.
 const NICE: &[&str] = &[
@@ -124,12 +201,13 @@ fn base_flame(rng: &mut Rng) -> Flame {
     flame
 }
 
-fn generate_raw(generator: Generator, rng: &mut Rng) -> Flame {
+/// RWildFire's own generators.
+fn own_generator(generator: Generator, rng: &mut Rng) -> Flame {
     let nice = available(NICE);
     let mut flame = base_flame(rng);
     let layer = &mut flame.layers[0];
     match generator {
-        Generator::Classic | Generator::Synth => {
+        Generator::Classic => {
             let n = 2 + rng.random_int(4);
             let mut scl = 1.0;
             for _ in 0..n {
@@ -139,7 +217,7 @@ fn generate_raw(generator: Generator, rng: &mut Rng) -> Flame {
                 xf.color = rng.random();
                 xf.weight = rng.random() * 0.9 + 0.1;
                 add_var(&mut xf, "linear3D", rng.random() * 0.3 + 0.2, rng);
-                let extra = if generator == Generator::Synth { 1 + rng.random_int(3) } else { usize::from(rng.chance(0.9)) };
+                let extra = usize::from(rng.chance(0.9));
                 for _ in 0..extra {
                     let name = pick(rng, &nice);
                     add_var(&mut xf, name, 0.2 + rng.random() * 0.6, rng);
@@ -151,92 +229,6 @@ fn generate_raw(generator: Generator, rng: &mut Rng) -> Flame {
                 add_var(&mut f, pick(rng, &nice), 1.0, rng);
                 layer.final_xforms.push(f);
             }
-        }
-        Generator::Linear => {
-            let n = 3 + rng.random_int(3);
-            for _ in 0..n {
-                let mut xf = XForm::default();
-                random_affine_r(&mut xf, rng, 0.4, 0.8);
-                xf.color = rng.random();
-                xf.weight = rng.range(0.2, 1.0);
-                add_var(&mut xf, "linear3D", 1.0, rng);
-                layer.xforms.push(xf);
-            }
-            let mut f = XForm::default();
-            let finals = available(&["spherical", "julia", "bubble", "swirl", "polar", "disc", "eyefish"]);
-            add_var(&mut f, pick(rng, &finals), 1.0, rng);
-            layer.final_xforms.push(f);
-        }
-        Generator::Bubbles => {
-            let n = 2 + rng.random_int(3);
-            let others = available(&["bubble", "linear3D", "julia", "spherical3D"]);
-            for i in 0..n {
-                let mut xf = XForm::default();
-                random_affine_r(&mut xf, rng, 0.3, 0.9);
-                xf.color = rng.random();
-                xf.weight = rng.range(0.3, 1.0);
-                let name = if i == 0 { "spherical" } else { pick(rng, &others) };
-                add_var(&mut xf, name, rng.range(0.5, 1.0), rng);
-                layer.xforms.push(xf);
-            }
-        }
-        Generator::Julians => {
-            let n = 2 + rng.random_int(3);
-            let blend = available(&["linear3D", "spherical", "bubble", "disc"]);
-            for _ in 0..n {
-                let mut xf = XForm::default();
-                random_affine_r(&mut xf, rng, 0.5, 1.2);
-                xf.color = rng.random();
-                xf.weight = rng.range(0.2, 1.0);
-                let mut v = VariationInstance::new("julian", rng.range(0.5, 1.0));
-                v.set_param("power", (2 + rng.random_int(8)) as f64 * if rng.chance(0.3) { -1.0 } else { 1.0 });
-                v.set_param("dist", rng.range(-1.0, 2.0));
-                xf.variations.push(v);
-                if rng.chance(0.5) {
-                    add_var(&mut xf, pick(rng, &blend), rng.range(0.05, 0.4), rng);
-                }
-                layer.xforms.push(xf);
-            }
-        }
-        Generator::Spirals => {
-            let n = 2 + rng.random_int(2);
-            for i in 0..n {
-                let mut xf = XForm::default();
-                if i == 0 {
-                    xf.coefs.rotate(rng.range(5.0, 45.0) * if rng.chance(0.5) { -1.0 } else { 1.0 });
-                    xf.coefs.scale(rng.range(0.85, 0.98));
-                    xf.weight = rng.range(5.0, 15.0);
-                } else {
-                    random_affine_r(&mut xf, rng, 0.1, 0.5);
-                    xf.weight = rng.range(0.3, 1.0);
-                }
-                xf.color = rng.random();
-                xf.color_symmetry = if i == 0 { 0.9 } else { 0.0 };
-                let name = if i == 0 { "linear3D" } else { pick(rng, &nice) };
-                add_var(&mut xf, name, 1.0, rng);
-                layer.xforms.push(xf);
-            }
-        }
-        Generator::Gnarl => {
-            let mut xf = XForm::default();
-            xf.coefs.rotate(rng.range(-30.0, 30.0));
-            xf.coefs.scale(rng.range(0.9, 1.0));
-            xf.weight = 1.0;
-            xf.color = rng.random();
-            xf.color_symmetry = 0.95;
-            let mut v = VariationInstance::new("waves2", 1.0);
-            v.set_param("scalex", rng.range(-0.1, 0.1));
-            v.set_param("scaley", rng.range(-0.1, 0.1));
-            v.set_param("freqx", rng.range(1.0, 6.0));
-            v.set_param("freqy", rng.range(1.0, 6.0));
-            xf.variations.push(v);
-            layer.xforms.push(xf);
-            let mut x2 = XForm::default();
-            random_affine(&mut x2, rng, 0.4);
-            x2.weight = 0.05;
-            x2.color = rng.random();
-            add_var(&mut x2, "linear3D", 1.0, rng);
-            layer.xforms.push(x2);
         }
         Generator::Symmetric => {
             let n = 1 + rng.random_int(3);
@@ -254,15 +246,49 @@ fn generate_raw(generator: Generator, rng: &mut Rng) -> Flame {
             flame.post_symmetry.kind = PostSymmetryType::Point;
             flame.post_symmetry.order = 3 + rng.random_int(8) as i32;
         }
+        _ => unreachable!("not an own generator"),
     }
     flame
 }
 
-/// Generates a random flame, retrying until it covers a reasonable part of the frame.
+/// Generates a random flame (`RandomFlameGeneratorSampler.createSample`): up to 16
+/// attempts with a random gradient each, the first one that fills enough of a quick preview
+/// wins, otherwise the one that came closest.
 pub fn generate(generator: Generator, rng: &mut Rng) -> Flame {
+    if generator.is_own() {
+        return generate_own(generator, rng);
+    }
+    let mut st = State { rng, sub: None };
+    let mut best: Option<(f64, Flame)> = None;
+    for _ in 0..MAX_SAMPLES {
+        let mut flame = generator.prepare(&mut st);
+        for layer in &mut flame.layers {
+            layer.gradient = Gradient::random(st.rng);
+        }
+        generator.post_process(&mut st, &mut flame);
+        if flame.name.is_empty() {
+            flame.name = generator.label().to_string();
+        }
+        java::to_widescreen(&mut flame);
+        flame.bg_transparency = false;
+        let use_filter = generator.use_filter(&mut st);
+        let c = coverage::coverage(&flame, use_filter);
+        if c >= MIN_COVERAGE && c < generator.max_coverage() {
+            return flame;
+        }
+        if best.as_ref().is_none_or(|(b, _)| c > *b) {
+            best = Some((c, flame));
+        }
+    }
+    best.map(|(_, f)| f).expect("at least one attempt")
+}
+
+/// RWildFire's own generators: framed automatically, retried until they cover a reasonable
+/// part of the frame.
+fn generate_own(generator: Generator, rng: &mut Rng) -> Flame {
     let mut best: Option<(f64, Flame)> = None;
     for _ in 0..12 {
-        let mut f = generate_raw(generator, rng);
+        let mut f = own_generator(generator, rng);
         if !auto_frame(&mut f) {
             continue;
         }
@@ -275,7 +301,7 @@ pub fn generate(generator: Generator, rng: &mut Rng) -> Flame {
             best = Some((score, f));
         }
     }
-    best.map(|(_, f)| f).unwrap_or_else(|| generate_raw(generator, rng))
+    best.map(|(_, f)| f).unwrap_or_else(|| own_generator(generator, rng))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -355,4 +381,29 @@ pub fn mutate(flame: &Flame, kind: Mutation, strength: f64, rng: &mut Rng) -> Fl
         Mutation::Mixed => unreachable!(),
     }
     f
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_generator_builds_flames() {
+        for &g in Generator::ALL {
+            for seed in 0..3 {
+                let mut rng = Rng::new(seed * 7919 + 1);
+                let mut st = State { rng: &mut rng, sub: None };
+                let flame = g.prepare(&mut st);
+                assert!(flame.layers.iter().any(|l| !l.xforms.is_empty()), "{} produced no transforms", g.label());
+                for l in &flame.layers {
+                    for xf in l.xforms.iter().chain(&l.final_xforms) {
+                        for v in &xf.variations {
+                            assert!(variations::find(&v.name).is_some(), "{}: unknown variation {}", g.label(), v.name);
+                        }
+                    }
+                }
+            }
+            assert_eq!(Generator::by_label(g.label()), Some(g));
+        }
+    }
 }
