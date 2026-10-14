@@ -47,6 +47,7 @@ pub struct RwfApp {
     explorer_open: bool,
     timeline: crate::timeline::Timeline,
     export: ExportDialog,
+    render: crate::render_view::InteractiveRenderer,
     generator: Generator,
     rng: Rng,
     toast: Option<(String, Instant)>,
@@ -69,6 +70,7 @@ impl RwfApp {
             explorer_open: false,
             timeline: Default::default(),
             export: ExportDialog::default(),
+            render: Default::default(),
             generator: Generator::Classic,
             rng,
             toast: None,
@@ -148,6 +150,13 @@ impl RwfApp {
                 self.doc.path = None;
             }
             Action::ToggleTimeline => self.timeline.open = !self.timeline.open,
+            Action::ToggleRender => {
+                if self.render.open {
+                    self.render.open = false;
+                } else {
+                    self.render.open_with(&self.doc.flame);
+                }
+            }
             Action::ToggleExplorer => {
                 self.explorer_open = !self.explorer_open;
                 if self.explorer_open {
@@ -160,7 +169,8 @@ impl RwfApp {
 
     fn shortcuts(&mut self, ctx: &egui::Context) -> Option<Action> {
         use egui::{Key, KeyboardShortcut, Modifiers};
-        let typing = ctx.memory(|m| m.focused().is_some()) && ctx.egui_wants_keyboard_input();
+        // The editing shortcuts act on the editor only.
+        let typing = (ctx.memory(|m| m.focused().is_some()) && ctx.egui_wants_keyboard_input()) || self.render.open;
         let mut act = None;
         ctx.input_mut(|i| {
             let c = Modifiers::COMMAND;
@@ -231,14 +241,24 @@ impl eframe::App for RwfApp {
                 can_redo: self.doc.can_redo(),
                 explorer_open: self.explorer_open,
                 timeline_open: self.timeline.open,
+                render_open: self.render.open,
             };
             if let Some(a) = topbar::show(ui, &info, &mut self.generator) {
                 action = Some(a);
             }
         });
 
+        // ---- interactive renderer (replaces the editor panels) ----
+        if self.render.open {
+            if let Some(f) = self.render.show(ui, frame, &self.doc.flame, self.preview.gpu_context()) {
+                self.doc.replace(f);
+                self.render.open = false;
+                self.notify("Flame loaded into the editor");
+            }
+        }
+
         // ---- explorer strip ----
-        if self.explorer_open {
+        if self.explorer_open && !self.render.open {
             egui::Panel::bottom("explorer").resizable(false).frame(egui::Frame::new().fill(theme::PANEL).inner_margin(egui::Margin::symmetric(12, 8))).show(ui, |ui| {
                 if let Some(f) = self.explorer.show(ui, &self.doc.flame, &self.doc.library) {
                     self.doc.replace(f);
@@ -247,28 +267,30 @@ impl eframe::App for RwfApp {
         }
 
         // ---- timeline ----
-        if self.timeline.open {
+        if self.timeline.open && !self.render.open {
             egui::Panel::bottom("timeline").resizable(false).exact_size(crate::timeline::Timeline::panel_height(&self.doc.flame)).frame(egui::Frame::new().fill(theme::PANEL).inner_margin(egui::Margin::symmetric(12, 8))).show(ui, |ui| {
                 self.timeline.show(ui, &mut self.doc);
             });
         }
 
-        // ---- left: transforms ----
-        egui::Panel::left("transforms").resizable(true).default_size(290.0).size_range(240.0..=460.0).frame(egui::Frame::new().fill(theme::PANEL).inner_margin(egui::Margin::symmetric(10, 8))).show(ui, |ui| {
-            egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-                transforms::show(ui, &mut self.doc, &mut self.transforms);
+        if !self.render.open {
+            // ---- left: transforms ----
+            egui::Panel::left("transforms").resizable(true).default_size(290.0).size_range(240.0..=460.0).frame(egui::Frame::new().fill(theme::PANEL).inner_margin(egui::Margin::symmetric(10, 8))).show(ui, |ui| {
+                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                    transforms::show(ui, &mut self.doc, &mut self.transforms);
+                });
             });
-        });
 
-        // ---- right: inspector ----
-        egui::Panel::right("inspector").resizable(true).default_size(340.0).size_range(300.0..=520.0).frame(egui::Frame::new().fill(theme::PANEL).inner_margin(egui::Margin::symmetric(12, 10))).show(ui, |ui| {
-            inspector::show(ui, &mut self.doc, &mut self.inspector, &mut self.preview, &mut self.canvas);
-        });
+            // ---- right: inspector ----
+            egui::Panel::right("inspector").resizable(true).default_size(340.0).size_range(300.0..=520.0).frame(egui::Frame::new().fill(theme::PANEL).inner_margin(egui::Margin::symmetric(12, 10))).show(ui, |ui| {
+                inspector::show(ui, &mut self.doc, &mut self.inspector, &mut self.preview, &mut self.canvas);
+            });
 
-        // ---- center: canvas ----
-        egui::CentralPanel::default().frame(egui::Frame::new().fill(theme::CANVAS)).show(ui, |ui| {
-            canvas::show(ui, frame, &mut self.doc, &mut self.canvas, &mut self.preview);
-        });
+            // ---- center: canvas ----
+            egui::CentralPanel::default().frame(egui::Frame::new().fill(theme::CANVAS)).show(ui, |ui| {
+                canvas::show(ui, frame, &mut self.doc, &mut self.canvas, &mut self.preview);
+            });
+        }
 
         self.export.show(&ctx, &self.doc.flame, self.preview.gpu_context());
         let current = self.doc.layer().gradient.clone();

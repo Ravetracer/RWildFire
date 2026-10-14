@@ -104,7 +104,7 @@ impl Default for ExportDialog {
 }
 
 /// Runs the flame's AI post denoiser, if any (`apply_post_denoiser`).
-fn denoise(flame: &Flame, img: &mut [u8], w: u32, h: u32, gpu: bool) -> Result<(), String> {
+pub(crate) fn denoise(flame: &Flame, img: &mut [u8], w: u32, h: u32, gpu: bool) -> Result<(), String> {
     rwf_core::render::denoise::apply_post_denoiser(flame, img, w, h, gpu).map(|_| ()).map_err(|e| format!("denoiser: {e}"))
 }
 

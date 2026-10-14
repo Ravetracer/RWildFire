@@ -37,6 +37,7 @@ pub enum Action {
     Randomize,
     ToggleExplorer,
     ToggleTimeline,
+    ToggleRender,
 }
 
 pub struct TopBarInfo<'a> {
@@ -45,6 +46,7 @@ pub struct TopBarInfo<'a> {
     pub can_redo: bool,
     pub explorer_open: bool,
     pub timeline_open: bool,
+    pub render_open: bool,
 }
 
 pub fn show(ui: &mut Ui, info: &TopBarInfo, generator: &mut Generator) -> Option<Action> {
@@ -115,6 +117,11 @@ pub fn show(ui: &mut Ui, info: &TopBarInfo, generator: &mut Generator) -> Option
         let mut tl = info.timeline_open;
         if ui.toggle_value(&mut tl, format!("{}  Animate", icons::FILM_STRIP)).on_hover_text("Timeline, keyframes and playback").clicked() {
             action = Some(Action::ToggleTimeline);
+        }
+
+        let mut ir = info.render_open;
+        if ui.toggle_value(&mut ir, format!("{}  Render", icons::RENDER)).on_hover_text("Interactive renderer: long renders with pause, resume and saved render state").clicked() {
+            action = Some(Action::ToggleRender);
         }
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

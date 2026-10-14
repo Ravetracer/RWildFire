@@ -2354,6 +2354,7 @@ name = "rwf-gpu"
 version = "0.1.0"
 dependencies = [
  "bytemuck",
+ "flate2",
  "naga",
  "pollster 1.0.1",
  "rwf-core",

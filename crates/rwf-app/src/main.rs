@@ -27,6 +27,7 @@ mod explorer;
 mod gradients;
 mod icons;
 mod preview;
+mod render_view;
 mod theme;
 mod timeline;
 mod ui;

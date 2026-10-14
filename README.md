@@ -72,12 +72,11 @@ Each variation is a `VarDef` with a CPU function and a WGSL snippet that read th
 
 ## Status / roadmap
 
-Done: core editor, file compatibility, CPU and GPU renderer, 1010 variations (incl. prepost, image and mesh resources, formula plots and curves, SVG and text, sub-flames), gradient editing, random generators, mutations, PNG export, density estimation, DOF, layers, animation and video export, adaptive filter, post blur, AI denoiser, solid rendering, xform weighting fields, channel mixer, background xforms, JPEG/HDR/OpenEXR and z-buffer output (CPU and GPU).
+Done: core editor, file compatibility, CPU and GPU renderer, 1010 variations (incl. prepost, image and mesh resources, formula plots and curves, SVG and text, sub-flames), gradient editing, random generators, mutations, PNG export, density estimation, DOF, layers, animation and video export, adaptive filter, post blur, AI denoiser, solid rendering, xform weighting fields, channel mixer, background xforms, JPEG/HDR/OpenEXR and z-buffer output (CPU and GPU), interactive renderer (long progressive GPU renders with pause, resume and saved render state).
 
 Planned, by priority:
 
 1. Rendering and output
-   - Interactive renderer: long progressive renders with pause, resume and saved render state
    - Batch renderer (render queue)
    - Quilt renderer (very large images rendered in tiles)
 2. Creative tools

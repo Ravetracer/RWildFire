@@ -30,6 +30,7 @@ use rwf_core::render::tonemap::ToneParams;
 use rwf_core::render::{PreparedFlame, View};
 
 use crate::codegen::Program;
+use crate::state::RenderState;
 
 /// Fixed-point scale for colors in the integer histogram.
 const COLOR_SCALE: f32 = 8.0;
@@ -1008,6 +1009,76 @@ impl GpuRenderer {
         drop(data);
         staging.unmap();
         Some(out)
+    }
+}
+
+impl GpuRenderer {
+    /// Captures the running accumulation (flame, settings and buffers, blocking readback) so
+    /// it can be continued later with [`GpuRenderer::restore_state`].
+    pub fn save_state(&self, elapsed_ms: u64) -> Option<RenderState> {
+        let (flame, bufs) = (self.flame.as_ref()?, self.buffers.as_ref()?);
+        let mut named: Vec<(&str, &wgpu::Buffer)> = vec![("states", &self.states)];
+        match &self.solid.buffers {
+            Some(sb) if flame.solid.enabled => named.extend([("sld-zbuf", &sb.zbuf), ("sld-attr", &sb.sattr), ("sld-shadowmaps", &sb.smap)]),
+            _ => {
+                named.push(("accum", &bufs.accum));
+                if let Some(z) = &bufs.zbuf {
+                    named.push(("zbuf", z));
+                }
+            }
+        }
+        let buffers = named.into_iter().map(|(n, b)| Some((n.to_string(), self.read_buffer(b, b.size())?))).collect::<Option<Vec<_>>>()?;
+        Some(RenderState {
+            flame: flame.clone(),
+            width: bufs.image_w,
+            height: bufs.image_h,
+            with_alpha: self.with_alpha,
+            zbuffer: self.zbuffer,
+            samples: self.samples,
+            packets: self.packets,
+            frame_seed: self.frame_seed,
+            elapsed_ms,
+            buffers,
+        })
+    }
+
+    /// Sets up the saved flame and continues its accumulation.
+    pub fn restore_state(&mut self, st: &RenderState) -> Result<(), String> {
+        self.set_with_alpha(st.with_alpha);
+        self.set_zbuffer(st.zbuffer);
+        self.flame = None;
+        self.set_flame(&st.flame, st.width, st.height);
+        if let Some(e) = self.last_error() {
+            return Err(e.to_string());
+        }
+        let bufs = self.buffers.as_ref().ok_or("no render buffers")?;
+        let solid = self.solid.buffers.as_ref().filter(|_| st.flame.solid.enabled);
+        let mut fresh_states = true;
+        for (name, data) in &st.buffers {
+            let target = match (name.as_str(), solid) {
+                ("states", _) => &self.states,
+                ("accum", None) => &bufs.accum,
+                ("zbuf", None) => bufs.zbuf.as_ref().ok_or("z-buffer missing")?,
+                ("sld-zbuf", Some(sb)) => &sb.zbuf,
+                ("sld-attr", Some(sb)) => &sb.sattr,
+                ("sld-shadowmaps", Some(sb)) => &sb.smap,
+                _ => return Err(format!("unexpected buffer `{name}` in render state")),
+            };
+            if target.size() != data.len() as u64 {
+                if name == "states" {
+                    // Other thread count: restart the iteration points, keep the image.
+                    continue;
+                }
+                return Err(format!("buffer `{name}` does not fit the flame ({} instead of {} bytes)", data.len(), target.size()));
+            }
+            self.ctx.queue.write_buffer(target, 0, data);
+            fresh_states &= name != "states";
+        }
+        self.samples = st.samples;
+        self.packets = st.packets.max(1);
+        self.frame_seed = st.frame_seed;
+        self.needs_state_reset = fresh_states || st.samples == 0;
+        Ok(())
     }
 }
 

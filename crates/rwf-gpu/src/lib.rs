@@ -22,5 +22,7 @@
 pub mod codegen;
 pub mod renderer;
 mod solid;
+pub mod state;
 
 pub use renderer::{GpuContext, GpuRenderer, render_blocking};
+pub use state::RenderState;
