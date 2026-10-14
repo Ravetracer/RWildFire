@@ -129,22 +129,51 @@ fn load(d: &mut [f64], res: &[Vec<u8>], env: &LoadEnv, o: usize) {
     };
     let key_time = if is_seq == SEQ_CURVE { frame } else { -1 };
     d[o + ID] = register(format!("{key_time}#{source}"), || {
-        let mut flame = crate::io::read_flames(&source).ok()?.into_iter().next()?;
+        let flame = crate::io::read_flames(&source).ok()?.into_iter().next()?;
         let time = if is_seq == SEQ_CURVE { frame } else { flame.frame as i32 };
-        if flame.animation.is_animated() {
-            flame.apply_animation((time - 1).max(0) as f64);
-        }
-        let layer = flame.layers.first_mut()?;
-        for xf in &mut layer.final_xforms {
-            if xf.color_type == ColorType::Unset {
-                xf.color_type = ColorType::Diffusion;
-            }
-        }
-        flame.layers.truncate(1);
-        flame.layers[0].visible = true;
-        let preserve_z = flame.preserve_z;
-        Some(SubFlame { flame: PreparedFlame::new(&flame), preserve_z })
+        finish(flame, time)
     }) as f64;
+}
+
+/// A flame as sub-flame: its animation at `time`, the first layer only, unset final colors
+/// as diffusion.
+fn finish(mut flame: crate::model::Flame, time: i32) -> Option<SubFlame> {
+    if flame.animation.is_animated() {
+        flame.apply_animation((time - 1).max(0) as f64);
+    }
+    let layer = flame.layers.first_mut()?;
+    for xf in &mut layer.final_xforms {
+        if xf.color_type == ColorType::Unset {
+            xf.color_type = ColorType::Diffusion;
+        }
+    }
+    flame.layers.truncate(1);
+    flame.layers[0].visible = true;
+    let preserve_z = flame.preserve_z;
+    Some(SubFlame { flame: PreparedFlame::new(&flame), preserve_z })
+}
+
+/// Registers the flame `build` returns under `key` (once); returns its id (0 = none).
+pub(crate) fn register_flame(key: String, build: impl FnOnce() -> Option<crate::model::Flame>) -> usize {
+    register(key, || {
+        let flame = build()?;
+        let time = flame.frame as i32;
+        finish(flame, time)
+    })
+}
+
+/// The data indices of all sub-flame ids of a variation (the GPU renderer replaces them by
+/// slots, see `rwf_gpu::subflames`).
+pub fn id_indices(variation: &str, data: &[f64]) -> Vec<usize> {
+    match variation {
+        "iflames_wf" => super::iflames::subflame_id_indices(data),
+        _ => id_index(variation).into_iter().collect(),
+    }
+}
+
+/// True for the variations that draw sub-flames.
+pub fn uses_subflames(variation: &str) -> bool {
+    variation == "iflames_wf" || id_index(variation).is_some()
 }
 
 /// `prefuseIter`
@@ -166,6 +195,14 @@ fn prefuse(st: &mut SubState, ctx: &mut Ctx) {
         st.xf = Some(i);
         st.p = layer.xforms[i].transform(ctx, &layer.colormap, layer.smooth_gradient, &st.p);
     }
+}
+
+/// The sub-flame parameter block of a variation that only embeds a flame: scale 1, no
+/// rotation or offsets, color mode -1 (`SubFlameWFFunc` defaults), then the id.
+pub(crate) fn default_block(id: usize) -> [f64; ID + 1] {
+    let mut b = [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0, 0.0, 1.0, 0.0, 1.0, 4.0, 0.0];
+    b[ID] = id as f64;
+    b
 }
 
 /// `subflameIter`: advances to the next visible point `q` (scaled, rotated and moved).

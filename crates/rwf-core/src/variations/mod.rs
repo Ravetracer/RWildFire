@@ -49,6 +49,7 @@ mod draw;
 mod tess;
 mod dla3d;
 pub mod subflame;
+mod iflames;
 mod lsystem;
 mod lsystem3d;
 mod wangtiles;
@@ -448,7 +449,7 @@ pub struct ResourceVar {
 /// Resource declaration of a variation, if it has resources.
 pub fn resources_of(name: &str) -> Option<&'static ResourceVar> {
     let name = find(name)?.name;
-    resource_vars::RESOURCES.iter().chain(lsystem::RESOURCES).chain(lsystem3d::RESOURCES).chain(plots::RESOURCES).chain(subflame::RESOURCES).chain(draw::RESOURCES).chain(tess::RESOURCES).chain(dla3d::RESOURCES).find(|r| r.name == name)
+    resource_vars::RESOURCES.iter().chain(lsystem::RESOURCES).chain(lsystem3d::RESOURCES).chain(iflames::RESOURCES).chain(plots::RESOURCES).chain(subflame::RESOURCES).chain(draw::RESOURCES).chain(tess::RESOURCES).chain(dla3d::RESOURCES).find(|r| r.name == name)
 }
 
 /// Checks a formula resource of a variation (`Err` with a message if it does not compile).
@@ -484,7 +485,7 @@ fn registry() -> &'static Registry {
     REG.get_or_init(|| {
         let mut defs: Vec<&'static VarDef> = Vec::new();
         #[allow(unused_mut)]
-        let mut lists: Vec<&'static [VarDef]> = vec![basic::DEFS, resource_vars::DEFS, wangtiles::DEFS, lsystem::DEFS, lsystem3d::DEFS, plots::DEFS, subflame::DEFS, draw::DEFS, tess::DEFS, dla3d::DEFS, batch_a::DEFS, batch_b::DEFS, batch_c::DEFS, batch_d::DEFS];
+        let mut lists: Vec<&'static [VarDef]> = vec![basic::DEFS, resource_vars::DEFS, wangtiles::DEFS, lsystem::DEFS, lsystem3d::DEFS, iflames::DEFS, plots::DEFS, subflame::DEFS, draw::DEFS, tess::DEFS, dla3d::DEFS, batch_a::DEFS, batch_b::DEFS, batch_c::DEFS, batch_d::DEFS];
         #[cfg(feature = "w01")]
         lists.push(batch_w01::DEFS);
         #[cfg(feature = "w02")]

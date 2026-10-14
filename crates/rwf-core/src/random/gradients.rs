@@ -64,7 +64,7 @@ pub fn rgb2hsl(c: [u8; 3]) -> (f64, f64, f64) {
 }
 
 /// Shared by `HSLTransformer.rgb2hsl` and `HSLRGBConverter.fromRgb`.
-fn hsl_of(r: f64, g: f64, b: f64) -> (f64, f64, f64) {
+pub(crate) fn hsl_of(r: f64, g: f64, b: f64) -> (f64, f64, f64) {
     const EPSILON: f64 = 1.0e-6;
     let max = r.max(g.max(b));
     let min = r.min(g.min(b));
@@ -91,7 +91,7 @@ fn hsl_of(r: f64, g: f64, b: f64) -> (f64, f64, f64) {
 
 /// `GammaCorrectionFilter.HSLRGBConverter.fromHsl` (unrounded RGB 0..1; its fallback case
 /// differs from `HSLTransformer`).
-fn converter_from_hsl(hue: f64, saturation: f64, luminosity: f64) -> (f64, f64, f64) {
+pub(crate) fn converter_from_hsl(hue: f64, saturation: f64, luminosity: f64) -> (f64, f64, f64) {
     let (hue, saturation, luminosity) = (hue.clamp(0.0, 1.0), saturation.clamp(0.0, 1.0), luminosity.clamp(0.0, 1.0));
     let v = if luminosity <= 0.5 { luminosity * (1.0 + saturation) } else { luminosity + saturation - luminosity * saturation };
     if v <= 0.0 {

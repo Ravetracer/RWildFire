@@ -75,33 +75,34 @@ impl ImageMap {
     /// cyan, blue): the fallback image of the image-based variations.
     pub fn default_gradient() -> Arc<Self> {
         static IMG: OnceLock<Arc<ImageMap>> = OnceLock::new();
-        IMG.get_or_init(|| {
-            const N: i32 = 256;
-            const SPREC: i32 = 10;
-            let (ul, ur, ll, lr) = ([255, 0, 0], [255, 255, 0], [0, 255, 255], [0, 0, 255]);
-            let slope = |a: [i32; 3], b: [i32; 3], n: i32| [0, 1, 2].map(|k| ((b[k] - a[k]) << SPREC) / (n - 1));
-            let (lm, rm) = (slope(ul, ll, N), slope(ur, lr, N));
-            let mut pixels = vec![0u32; (N * N) as usize];
-            let pack = |c: [i32; 3]| (c[0] as u32 & 255) << 16 | (c[1] as u32 & 255) << 8 | (c[2] as u32 & 255);
-            for i in 0..N {
-                let (l, r) = match i {
-                    0 => (ul, ur),
-                    _ if i == N - 1 => (ll, lr),
-                    _ => ([0, 1, 2].map(|k| ((i * lm[k]) >> SPREC) + ul[k]), [0, 1, 2].map(|k| ((i * rm[k]) >> SPREC) + ur[k])),
-                };
-                let hm = slope(l, r, N);
-                let row = &mut pixels[(i * N) as usize..((i + 1) * N) as usize];
-                row[0] = pack(l);
-                let mut t = [0; 3];
-                for px in row.iter_mut().take(N as usize - 1).skip(1) {
-                    t = [0, 1, 2].map(|k| t[k] + hm[k]);
-                    *px = pack([0, 1, 2].map(|k| (t[k] >> SPREC) + l[k]));
-                }
-                row[N as usize - 1] = pack(r);
+        IMG.get_or_init(|| Arc::new(Self::gradient(256))).clone()
+    }
+
+    /// `GradientCreator` with its default corner colors: an `n` × `n` image.
+    pub fn gradient(n: i32) -> Self {
+        const SPREC: i32 = 10;
+        let (ul, ur, ll, lr) = ([255, 0, 0], [255, 255, 0], [0, 255, 255], [0, 0, 255]);
+        let slope = |a: [i32; 3], b: [i32; 3], n: i32| [0, 1, 2].map(|k| ((b[k] - a[k]) << SPREC) / (n - 1));
+        let (lm, rm) = (slope(ul, ll, n), slope(ur, lr, n));
+        let mut pixels = vec![0u32; (n * n) as usize];
+        let pack = |c: [i32; 3]| (c[0] as u32 & 255) << 16 | (c[1] as u32 & 255) << 8 | (c[2] as u32 & 255);
+        for i in 0..n {
+            let (l, r) = match i {
+                0 => (ul, ur),
+                _ if i == n - 1 => (ll, lr),
+                _ => ([0, 1, 2].map(|k| ((i * lm[k]) >> SPREC) + ul[k]), [0, 1, 2].map(|k| ((i * rm[k]) >> SPREC) + ur[k])),
+            };
+            let hm = slope(l, r, n);
+            let row = &mut pixels[(i * n) as usize..((i + 1) * n) as usize];
+            row[0] = pack(l);
+            let mut t = [0; 3];
+            for px in row.iter_mut().take(n as usize - 1).skip(1) {
+                t = [0, 1, 2].map(|k| t[k] + hm[k]);
+                *px = pack([0, 1, 2].map(|k| (t[k] >> SPREC) + l[k]));
             }
-            Arc::new(ImageMap { width: N as u32, height: N as u32, pixels, alpha: vec![255; (N * N) as usize] })
-        })
-        .clone()
+            row[n as usize - 1] = pack(r);
+        }
+        ImageMap { width: n as u32, height: n as u32, pixels, alpha: vec![255; (n * n) as usize] }
     }
 }
 

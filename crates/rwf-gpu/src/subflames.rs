@@ -65,17 +65,18 @@ pub fn assign_slots(prepared: &mut PreparedFlame) -> Vec<usize> {
     for layer in &mut prepared.layers {
         for xf in layer.xforms.iter_mut().chain(layer.finals.iter_mut()) {
             for s in xf.pre.iter_mut().chain(xf.normal.iter_mut()).chain(xf.post_vars.iter_mut()) {
-                let Some(i) = subflame::id_index(s.def.name) else { continue };
-                let Some(v) = s.data.get_mut(i) else { continue };
-                let id = *v as usize;
-                *v = if id > 0 && subflame::sub_flame(id).is_some() {
-                    ids.iter().position(|&x| x == id).unwrap_or_else(|| {
-                        ids.push(id);
-                        ids.len() - 1
-                    }) as f64
-                } else {
-                    -1.0
-                };
+                for i in subflame::id_indices(s.def.name, &s.data) {
+                    let Some(v) = s.data.get_mut(i) else { continue };
+                    let id = *v as usize;
+                    *v = if id > 0 && subflame::sub_flame(id).is_some() {
+                        ids.iter().position(|&x| x == id).unwrap_or_else(|| {
+                            ids.push(id);
+                            ids.len() - 1
+                        }) as f64
+                    } else {
+                        -1.0
+                    };
+                }
             }
         }
     }

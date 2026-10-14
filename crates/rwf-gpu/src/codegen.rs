@@ -790,7 +790,7 @@ impl Program {
         }
         w.push_str(ITER_MAIN_TAIL);
 
-        let uses_subflames = used_vars.keys().any(|n| subflame::id_index(n).is_some());
+        let uses_subflames = used_vars.keys().any(|n| subflame::uses_subflames(n));
         Self {
             signature: sig,
             wgsl: w,
@@ -817,7 +817,7 @@ impl Program {
         for layer in &mut prepared.layers {
             for xf in layer.xforms.iter_mut().chain(layer.finals.iter_mut()) {
                 for s in xf.pre.iter_mut().chain(xf.normal.iter_mut()).chain(xf.post_vars.iter_mut()) {
-                    if subflame::id_index(s.def.name).is_some() {
+                    if subflame::uses_subflames(s.def.name) {
                         s.def = &UNSUPPORTED_DEF;
                     }
                 }
