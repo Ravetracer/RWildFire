@@ -4745,8 +4745,13 @@ a.y = (y * re - x * im) * r;",
             super::subflame::prepare_sub(&mut d, 0);
             d
         }),
-        // Like subflame_wf there is no GPU implementation (the sub-flame runs its own chaos game).
-        wgsl: "",
+        wgsl: "let s = subflame_point(base, 0u);
+if (s.valid) {
+  a.x = s.p.x;
+  a.y = s.p.y;
+  a.z = s.p.z;
+  a = subflame_set_color(s.p, i32(D(6)), a);
+}",
     },
     VarDef {
         name: "quad",
@@ -6507,8 +6512,55 @@ if (dx != 0.0 && l != 0.0) {
             d.extend([r1, r2, r1 / (r1 + r2), p[5].abs(), java_max(-1.0, java_min(p[6], 1.0))]);
             d
         }),
-        // Like subflame_wf there is no GPU implementation (the sub-flame runs its own chaos game).
-        wgsl: "",
+        // d = [hide_inner, innerradius, outerradius, thickness, contrast, pow, scatter_area,
+        // hide_outer, <sub-flame parameters 8..20>, slot 20, radius1, radius2, gamma, abs_pow, cA];
+        // the last point is kept per GPU thread and iteration pass.
+        wgsl: "var<private> ringsubflame_last: vec2<f32>;
+@body
+let s = subflame_point(base, 8u);
+if (s.valid) {
+  var q = s.p;
+  let r = sqrt(q.x * q.x + q.y * q.y);
+  let alpha = D(1) / r;
+  if (r < D(21)) {
+    if (i32(D(0)) == 0) {
+      let ph = 2.0 * PI * rnd();
+      let rr = select(D(22), D(21), rnd() < D(23));
+      v.x += AMOUNT * (rr * cos(ph));
+      v.y += AMOUNT * (rr * sin(ph));
+    } else {
+      v.x = ringsubflame_last.x;
+      v.y = ringsubflame_last.y;
+    }
+  } else if (rnd() > D(4) * pow(alpha, D(24))) {
+    v.x += AMOUNT * q.x;
+    v.y += AMOUNT * q.y;
+  } else {
+    v.x += AMOUNT * alpha * alpha * q.x;
+    v.y += AMOUNT * alpha * alpha * q.y;
+  }
+  ringsubflame_last = vec2<f32>(v.x, v.y);
+  let cr = D(2);
+  let rad = sqrt(v.x * v.x + v.y * v.y);
+  let ang = atan2(v.y, v.x);
+  let rdc = cr + rnd() * 0.5 * D(25);
+  let esc = rad > cr;
+  let cr0 = i32(D(7)) == 1;
+  v.hide = 0.0;
+  if (cr0 && esc) {
+    v.x = 0.0;
+    v.y = 0.0;
+    q.hide = 1.0;
+    v.hide = 1.0;
+  } else if (!cr0 && esc) {
+    v.x = AMOUNT * rdc * cos(ang);
+    v.y = AMOUNT * rdc * sin(ang);
+  } else {
+    v.x *= AMOUNT;
+    v.y *= AMOUNT;
+  }
+  v = subflame_set_color(q, i32(D(14)), v);
+}",
     },
     VarDef {
         name: "ripple",

@@ -25,6 +25,7 @@ pub mod quilt;
 pub mod renderer;
 mod solid;
 pub mod state;
+pub mod subflames;
 
 pub use renderer::{GpuContext, GpuRenderer, Tile, render_blocking};
 pub use state::RenderState;

@@ -28,8 +28,8 @@ use std::fmt::Write as _;
 
 use rwf_core::model::{ColorType, DrawMode, Flame, PostSymmetryType};
 use rwf_core::render::prepared::{AffineMode, NEXT_XFORM_TABLE_SIZE, PreparedFlame, PreparedXForm, StepMode, VarStep};
-use rwf_core::variations::VarDef;
 use rwf_core::variations::wgsl::{prelude, var_fn_name, variation_function, variation_function_weighted};
+use rwf_core::variations::{VarDef, subflame};
 use rwf_core::weighting::{Field, FieldInput};
 
 /// Offsets inside an xform parameter block.
@@ -59,7 +59,6 @@ mod lo {
     pub const DENSITY: usize = 1;
     pub const SIZE: usize = 2;
 }
-
 
 #[derive(Clone, Debug)]
 pub struct LayerLayout {
@@ -92,6 +91,8 @@ pub struct Program {
     pub wf_tables: Option<usize>,
     /// Classic rendering records depths into a z-buffer (binding 6, see [`ZBUFFER_WGSL`]).
     pub zbuffer: bool,
+    /// Sub-flame variations read the sub-flame points (binding 9, see `subflame.wgsl`).
+    pub uses_subflames: bool,
 }
 
 /// Floats per shadow map in the solid `prm` block.
@@ -176,7 +177,9 @@ fn dof_rotate(o: vec2<f32>, d: vec2<f32>) -> vec2<f32> {{\n  if ({rot} < 0.5) {{
             }
         }
         // Bubble (also the fallback for shapes without GPU support)
-        _ => format!("  let dr = dof_fade() * {k} * zdist * {sc};\n  let a = TWO_PI * rnd();\n  return vec2<f32>(x + dr * cos(a), y + dr * sin(a));\n"),
+        _ => {
+            format!("  let dr = dof_fade() * {k} * zdist * {sc};\n  let a = TWO_PI * rnd();\n  return vec2<f32>(x + dr * cos(a), y + dr * sin(a));\n")
+        }
     };
     let _ = write!(w, "fn dof_apply(x: f32, y: f32, zdist: f32) -> vec2<f32> {{\n{body}}}\n");
     w
@@ -437,47 +440,31 @@ fn emit_xform(out: &mut String, fname: &str, xf: &PreparedXForm, base: usize, la
     out.push_str("  return d;\n}\n");
 }
 
-impl Program {
-    pub fn new(flame: &Flame, prepared: &PreparedFlame) -> Self {
-        Self::new_scaled(flame, prepared, 1.0, false)
-    }
+/// Variation functions with weighting field modulated parameters, by function name.
+type WeightedFns = BTreeMap<String, (&'static VarDef, Vec<(usize, bool)>)>;
 
-    /// `ppu_scale` = output size relative to the flame size (scales the shadow map size).
-    /// `zbuffer`: record depths (solid rendering always has a z-buffer).
-    pub fn new_scaled(flame: &Flame, prepared: &PreparedFlame, ppu_scale: f64, zbuffer: bool) -> Self {
-        let mut sig = String::new();
+/// Parameter layout and the variation functions of a prepared flame (shared by the iterate
+/// and the sub-flame kernels).
+struct Layout {
+    sig: String,
+    unsupported: Vec<String>,
+    used_vars: BTreeMap<&'static str, &'static VarDef>,
+    weighted_fns: WeightedFns,
+    layers: Vec<LayerLayout>,
+    param_len: usize,
+    next_len: usize,
+    wf_tables: Option<usize>,
+}
+
+impl Layout {
+    fn new(prepared: &PreparedFlame, mut sig: String) -> Self {
         let mut unsupported: Vec<String> = prepared.missing_variations.clone();
         let mut used_vars: BTreeMap<&'static str, &'static VarDef> = BTreeMap::new();
         let mut layers = Vec::new();
         let mut param_len = 0usize;
         let mut next_len = 0usize;
         let mut any_weighting = false;
-        let mut weighted_fns: BTreeMap<String, (&'static VarDef, Vec<(usize, bool)>)> = BTreeMap::new();
-
-        let _ = write!(sig, "pz{}|sym{:?}|3d{}|", prepared.preserve_z, flame.post_symmetry.kind, flame.is_3d_projection_required());
-        let solid = flame.solid.enabled;
-        let mut shadow_maps = Vec::new();
-        let mut map_count = 0u32;
-        if solid {
-            let lights = rwf_core::render::solid::LightViews::new(&flame.solid);
-            for m in &lights.proj {
-                shadow_maps.push(m.map(|_| {
-                    map_count += 1;
-                    map_count - 1
-                }));
-            }
-        }
-        let shadow_map_size = if map_count > 0 { rwf_core::render::solid::shadow_map_size(flame, ppu_scale) } else { 0 };
-        if solid {
-            let _ = write!(sig, "solid{map_count}x{shadow_map_size}|");
-        }
-        let zbuffer = zbuffer && !solid;
-        if zbuffer {
-            sig.push_str("zb|");
-        }
-        if flame.post_blur_radius > 0 {
-            let _ = write!(sig, "pb{}/{}/{}|", flame.post_blur_radius, flame.post_blur_fade, flame.post_blur_falloff);
-        }
+        let mut weighted_fns: WeightedFns = BTreeMap::new();
         for (li, layer) in prepared.layers.iter().enumerate() {
             let header = param_len;
             param_len += lo::SIZE;
@@ -531,84 +518,143 @@ impl Program {
             layers.push(LayerLayout { header, xforms, finals, next_base, cmap_base: li * 256 });
             sig.push('|');
         }
-
         let wf_tables = any_weighting.then(|| {
             param_len += WF_TABLES_LEN;
             param_len - WF_TABLES_LEN
         });
+        if wf_tables.is_some() {
+            sig.push_str("wf|");
+        }
+        Self { sig, unsupported, used_vars, weighted_fns, layers, param_len, next_len, wf_tables }
+    }
+}
+
+/// Variation, xform, dispatcher, visibility and finals functions of every layer.
+fn emit_functions(
+    w: &mut String,
+    prepared: &PreparedFlame,
+    layers: &[LayerLayout],
+    used_vars: &BTreeMap<&'static str, &'static VarDef>,
+    weighted_fns: &WeightedFns,
+    wf_tables: Option<usize>,
+    solid: bool,
+) {
+    if let Some(t) = wf_tables {
+        let _ = writeln!(w, "const WF_TABLES: u32 = {t}u;");
+        w.push_str(include_str!("weighting.wgsl"));
+    }
+    for def in used_vars.values() {
+        w.push_str(&variation_function(def, prepared.preserve_z));
+    }
+    for (name, (def, wp)) in weighted_fns {
+        w.push_str(&variation_function_weighted(def, prepared.preserve_z, name, wp));
+    }
+    // Variations without GPU code compile to a no-op.
+    w.push_str("fn var_unsupported(a_in: Pt, v_in: Pt, base: u32, AMOUNT: f32) -> PtPair { return PtPair(a_in, v_in); }\n");
+
+    for (li, layer) in prepared.layers.iter().enumerate() {
+        let lay = &layers[li];
+        for (k, xf) in layer.xforms.iter().enumerate() {
+            let mut xf2 = xf.clone();
+            strip_unsupported(&mut xf2);
+            emit_xform(w, &format!("xf_{li}_{k}"), &xf2, lay.xforms[k], li, lay.cmap_base, layer.smooth_gradient);
+        }
+        for (k, xf) in layer.finals.iter().enumerate() {
+            let mut xf2 = xf.clone();
+            strip_unsupported(&mut xf2);
+            emit_xform(w, &format!("fxf_{li}_{k}"), &xf2, lay.finals[k], li, lay.cmap_base, layer.smooth_gradient);
+        }
+        // Dispatcher
+        let _ = writeln!(w, "fn apply_xf_{li}(idx: u32, p: Pt) -> Pt {{\n  switch idx {{");
+        for k in 0..layer.xforms.len() {
+            let _ = writeln!(w, "    case {k}u: {{ return xf_{li}_{k}(p); }}");
+        }
+        let _ = writeln!(w, "    default: {{ return p; }}\n  }}\n}}");
+        if solid {
+            let _ = writeln!(w, "fn mat_xf_{li}(idx: u32, m: f32) -> f32 {{\n  switch idx {{");
+            for k in 0..layer.xforms.len() {
+                let _ = writeln!(
+                    w,
+                    "    case {k}u: {{ return m * prm[{b}u + {m1}u] + prm[{b}u + {m2}u]; }}",
+                    b = lay.xforms[k],
+                    m1 = xo::MAT1,
+                    m2 = xo::MAT2
+                );
+            }
+            let _ = writeln!(w, "    default: {{ return m; }}\n  }}\n}}");
+        }
+        // Visibility (draw mode)
+        let _ = writeln!(w, "fn visible_{li}(idx: u32) -> bool {{\n  switch idx {{");
+        for (k, xf) in layer.xforms.iter().enumerate() {
+            match xf.draw_mode {
+                DrawMode::Normal => {}
+                DrawMode::Hidden => {
+                    let _ = writeln!(w, "    case {k}u: {{ return false; }}");
+                }
+                DrawMode::Opaque => {
+                    let _ = writeln!(w, "    case {k}u: {{ return rnd() <= prm[{}u + {}u]; }}", lay.xforms[k], xo::OPACITY);
+                }
+            }
+        }
+        let _ = writeln!(w, "    default: {{ return true; }}\n  }}\n}}");
+        // Finals
+        let _ = writeln!(w, "fn finals_{li}(p: Pt) -> Pt {{\n  var q = p;");
+        for k in 0..layer.finals.len() {
+            let _ = writeln!(w, "  q = fxf_{li}_{k}(q);");
+        }
+        let _ = writeln!(w, "  return q;\n}}");
+        let has_table: Vec<bool> = layer.xforms.iter().map(|x| x.next.is_some()).collect();
+        let _ = writeln!(w, "fn has_next_{li}(idx: u32) -> bool {{\n  switch idx {{");
+        for (k, t) in has_table.iter().enumerate() {
+            if !t {
+                let _ = writeln!(w, "    case {k}u: {{ return false; }}");
+            }
+        }
+        let _ = writeln!(w, "    default: {{ return true; }}\n  }}\n}}");
+    }
+}
+
+impl Program {
+    pub fn new(flame: &Flame, prepared: &PreparedFlame) -> Self {
+        Self::new_scaled(flame, prepared, 1.0, false)
+    }
+
+    /// `ppu_scale` = output size relative to the flame size (scales the shadow map size).
+    /// `zbuffer`: record depths (solid rendering always has a z-buffer).
+    pub fn new_scaled(flame: &Flame, prepared: &PreparedFlame, ppu_scale: f64, zbuffer: bool) -> Self {
+        let mut sig = String::new();
+        let _ = write!(sig, "pz{}|sym{:?}|3d{}|", prepared.preserve_z, flame.post_symmetry.kind, flame.is_3d_projection_required());
+        let solid = flame.solid.enabled;
+        let mut shadow_maps = Vec::new();
+        let mut map_count = 0u32;
+        if solid {
+            let lights = rwf_core::render::solid::LightViews::new(&flame.solid);
+            for m in &lights.proj {
+                shadow_maps.push(m.map(|_| {
+                    map_count += 1;
+                    map_count - 1
+                }));
+            }
+        }
+        let shadow_map_size = if map_count > 0 { rwf_core::render::solid::shadow_map_size(flame, ppu_scale) } else { 0 };
+        if solid {
+            let _ = write!(sig, "solid{map_count}x{shadow_map_size}|");
+        }
+        let zbuffer = zbuffer && !solid;
+        if zbuffer {
+            sig.push_str("zb|");
+        }
+        if flame.post_blur_radius > 0 {
+            let _ = write!(sig, "pb{}/{}/{}|", flame.post_blur_radius, flame.post_blur_fade, flame.post_blur_falloff);
+        }
+        let Layout { mut sig, unsupported, used_vars, weighted_fns, layers, mut param_len, next_len, wf_tables } = Layout::new(prepared, sig);
 
         // ---- WGSL ----
         let mut w = String::with_capacity(32 * 1024);
         w.push_str(&prelude());
         w.push_str(ITER_BINDINGS);
-        if let Some(t) = wf_tables {
-            let _ = writeln!(w, "const WF_TABLES: u32 = {t}u;");
-            w.push_str(include_str!("weighting.wgsl"));
-            sig.push_str("wf|");
-        }
-        for def in used_vars.values() {
-            w.push_str(&variation_function(def, prepared.preserve_z));
-        }
-        for (name, (def, wp)) in &weighted_fns {
-            w.push_str(&variation_function_weighted(def, prepared.preserve_z, name, wp));
-        }
-        // Variations without GPU code compile to a no-op.
-        w.push_str("fn var_unsupported(a_in: Pt, v_in: Pt, base: u32, AMOUNT: f32) -> PtPair { return PtPair(a_in, v_in); }\n");
-
-        for (li, layer) in prepared.layers.iter().enumerate() {
-            let lay = &layers[li];
-            for (k, xf) in layer.xforms.iter().enumerate() {
-                let mut xf2 = xf.clone();
-                strip_unsupported(&mut xf2);
-                emit_xform(&mut w, &format!("xf_{li}_{k}"), &xf2, lay.xforms[k], li, lay.cmap_base, layer.smooth_gradient);
-            }
-            for (k, xf) in layer.finals.iter().enumerate() {
-                let mut xf2 = xf.clone();
-                strip_unsupported(&mut xf2);
-                emit_xform(&mut w, &format!("fxf_{li}_{k}"), &xf2, lay.finals[k], li, lay.cmap_base, layer.smooth_gradient);
-            }
-            // Dispatcher
-            let _ = writeln!(w, "fn apply_xf_{li}(idx: u32, p: Pt) -> Pt {{\n  switch idx {{");
-            for k in 0..layer.xforms.len() {
-                let _ = writeln!(w, "    case {k}u: {{ return xf_{li}_{k}(p); }}");
-            }
-            let _ = writeln!(w, "    default: {{ return p; }}\n  }}\n}}");
-            if solid {
-                let _ = writeln!(w, "fn mat_xf_{li}(idx: u32, m: f32) -> f32 {{\n  switch idx {{");
-                for k in 0..layer.xforms.len() {
-                    let _ = writeln!(w, "    case {k}u: {{ return m * prm[{b}u + {m1}u] + prm[{b}u + {m2}u]; }}", b = lay.xforms[k], m1 = xo::MAT1, m2 = xo::MAT2);
-                }
-                let _ = writeln!(w, "    default: {{ return m; }}\n  }}\n}}");
-            }
-            // Visibility (draw mode)
-            let _ = writeln!(w, "fn visible_{li}(idx: u32) -> bool {{\n  switch idx {{");
-            for (k, xf) in layer.xforms.iter().enumerate() {
-                match xf.draw_mode {
-                    DrawMode::Normal => {}
-                    DrawMode::Hidden => {
-                        let _ = writeln!(w, "    case {k}u: {{ return false; }}");
-                    }
-                    DrawMode::Opaque => {
-                        let _ = writeln!(w, "    case {k}u: {{ return rnd() <= prm[{}u + {}u]; }}", lay.xforms[k], xo::OPACITY);
-                    }
-                }
-            }
-            let _ = writeln!(w, "    default: {{ return true; }}\n  }}\n}}");
-            // Finals
-            let _ = writeln!(w, "fn finals_{li}(p: Pt) -> Pt {{\n  var q = p;");
-            for k in 0..layer.finals.len() {
-                let _ = writeln!(w, "  q = fxf_{li}_{k}(q);");
-            }
-            let _ = writeln!(w, "  return q;\n}}");
-            let has_table: Vec<bool> = layer.xforms.iter().map(|x| x.next.is_some()).collect();
-            let _ = writeln!(w, "fn has_next_{li}(idx: u32) -> bool {{\n  switch idx {{");
-            for (k, t) in has_table.iter().enumerate() {
-                if !t {
-                    let _ = writeln!(w, "    case {k}u: {{ return false; }}");
-                }
-            }
-            let _ = writeln!(w, "    default: {{ return true; }}\n  }}\n}}");
-        }
+        w.push_str(ITER_COMMON);
+        emit_functions(&mut w, prepared, &layers, &used_vars, &weighted_fns, wf_tables, solid);
 
         // Plot with post symmetry
         // Depth of field
@@ -646,7 +692,10 @@ impl Program {
                 project = project
                     .replace("    var intensity = 1.0;\n", "    var intensity = 1.0;\n    var cam_z = 0.0;\n")
                     .replace("        if (zr < EPSILON) { return; }\n", "        if (zr < EPSILON) { return; }\n        cam_z = cz;\n")
-                    .replace("    splat(ix, iy, col_in * intensity);", "    zbuf_add(ix, iy, cam_z * U.bws, col_in * intensity);\n    splat(ix, iy, col_in * intensity);");
+                    .replace(
+                        "    splat(ix, iy, col_in * intensity);",
+                        "    zbuf_add(ix, iy, cam_z * U.bws, col_in * intensity);\n    splat(ix, iy, col_in * intensity);",
+                    );
             }
             w.push_str(&project);
         }
@@ -690,12 +739,74 @@ impl Program {
         }
         w.push_str(ITER_MAIN_TAIL);
 
-        Self { signature: sig, wgsl: w, layer_count: layers.len(), layers, param_len, next_len, unsupported, dof_base, solid_base, shadow_maps, shadow_map_size, wf_tables, zbuffer }
+        let uses_subflames = used_vars.keys().any(|n| subflame::id_index(n).is_some());
+        Self {
+            signature: sig,
+            wgsl: w,
+            layer_count: layers.len(),
+            layers,
+            param_len,
+            next_len,
+            unsupported,
+            dof_base,
+            solid_base,
+            shadow_maps,
+            shadow_map_size,
+            wf_tables,
+            zbuffer,
+            uses_subflames,
+        }
+    }
+
+    /// The sub-flame kernel `sub_iterate` of a sub-flame (layer 0; sub-flame variations inside
+    /// it are ignored).
+    pub fn new_sub(sub: &PreparedFlame) -> Self {
+        let mut prepared = sub.clone();
+        prepared.layers.truncate(1);
+        for layer in &mut prepared.layers {
+            for xf in layer.xforms.iter_mut().chain(layer.finals.iter_mut()) {
+                for s in xf.pre.iter_mut().chain(xf.normal.iter_mut()).chain(xf.post_vars.iter_mut()) {
+                    if subflame::id_index(s.def.name).is_some() {
+                        s.def = &UNSUPPORTED_DEF;
+                    }
+                }
+            }
+        }
+        let Layout { sig, unsupported, used_vars, weighted_fns, layers, param_len, next_len, wf_tables } =
+            Layout::new(&prepared, format!("sub|pz{}|", prepared.preserve_z));
+        let mut w = String::with_capacity(32 * 1024);
+        w.push_str(&prelude());
+        w.push_str(ITER_COMMON);
+        emit_functions(&mut w, &prepared, &layers, &used_vars, &weighted_fns, wf_tables, false);
+        if let Some(lay) = layers.first() {
+            w.push_str(
+                &SUB_KERNEL
+                    .replace("NBu", &format!("{}u", lay.next_base))
+                    .replace("TSu", &format!("{}u", NEXT_XFORM_TABLE_SIZE))
+                    .replace("MASKu", &format!("{}u", NEXT_XFORM_TABLE_SIZE - 1)),
+            );
+        }
+        Self {
+            signature: sig,
+            wgsl: w,
+            layer_count: layers.len(),
+            layers,
+            param_len,
+            next_len,
+            unsupported,
+            dof_base: None,
+            solid_base: None,
+            shadow_maps: Vec::new(),
+            shadow_map_size: 0,
+            wf_tables,
+            zbuffer: false,
+            uses_subflames: false,
+        }
     }
 
     /// Packs all numeric values into the `prm` buffer layout of this program.
     pub fn pack_params(&self, flame: &Flame, prepared: &PreparedFlame) -> Vec<f32> {
-        let mut p = vec![0.0f32; self.param_len.max(1)];
+        let mut p = self.pack_layers(prepared);
         if let (Some(base), Some(d)) = (self.dof_base, rwf_core::render::dof::Dof::new(flame)) {
             let mut put = |o: usize, v: f64| p[base + o] = v as f32;
             put(dofo::LEGACY, d.legacy as u8 as f64);
@@ -723,10 +834,16 @@ impl Program {
                 }
             }
         }
+        p
+    }
+
+    /// Packs the layers and weighting field tables (everything but the flame-wide blocks).
+    pub fn pack_layers(&self, prepared: &PreparedFlame) -> Vec<f32> {
+        let mut p = vec![0.0f32; self.param_len.max(1)];
         if let Some(t) = self.wf_tables {
             p[t..t + WF_TABLES_LEN].copy_from_slice(&rwf_core::fastnoise::tables());
         }
-        for (li, layer) in prepared.layers.iter().enumerate() {
+        for (li, layer) in prepared.layers.iter().take(self.layers.len()).enumerate() {
             let lay = &self.layers[li];
             p[lay.header + lo::WEIGHT] = layer.weight as f32;
             p[lay.header + lo::DENSITY] = layer.density as f32;
@@ -762,7 +879,7 @@ impl Program {
 
     pub fn pack_next(&self, prepared: &PreparedFlame) -> Vec<u32> {
         let mut n = vec![0u32; self.next_len.max(1)];
-        for (li, layer) in prepared.layers.iter().enumerate() {
+        for (li, layer) in prepared.layers.iter().take(self.layers.len()).enumerate() {
             let base = self.layers[li].next_base;
             for (k, xf) in layer.xforms.iter().enumerate() {
                 if let Some(t) = &xf.next {
@@ -866,25 +983,34 @@ fn pack_xform(p: &mut [f32], base: usize, xf: &PreparedXForm) {
                 put(wfo::LACUNARITY, n.lacunarity as f64);
                 put(wfo::GAIN, n.gain as f64);
                 put(wfo::BOUNDING, n.fractal_bounding() as f64);
-                put(wfo::FRACTAL, match n.fractal_type {
-                    FractalType::Fbm => 0.0,
-                    FractalType::Billow => 1.0,
-                    FractalType::RigidMulti => 2.0,
-                });
-                put(wfo::CELL_DIST, match n.cellular_distance {
-                    CellularDistance::Euclidean => 0.0,
-                    CellularDistance::Manhattan => 1.0,
-                    CellularDistance::Natural => 2.0,
-                });
-                put(wfo::CELL_RET, match n.cellular_return {
-                    CellularReturn::CellValue => 0.0,
-                    CellularReturn::Distance => 1.0,
-                    CellularReturn::Distance2 => 2.0,
-                    CellularReturn::Distance2Add => 3.0,
-                    CellularReturn::Distance2Sub => 4.0,
-                    CellularReturn::Distance2Mul => 5.0,
-                    CellularReturn::Distance2Div => 6.0,
-                });
+                put(
+                    wfo::FRACTAL,
+                    match n.fractal_type {
+                        FractalType::Fbm => 0.0,
+                        FractalType::Billow => 1.0,
+                        FractalType::RigidMulti => 2.0,
+                    },
+                );
+                put(
+                    wfo::CELL_DIST,
+                    match n.cellular_distance {
+                        CellularDistance::Euclidean => 0.0,
+                        CellularDistance::Manhattan => 1.0,
+                        CellularDistance::Natural => 2.0,
+                    },
+                );
+                put(
+                    wfo::CELL_RET,
+                    match n.cellular_return {
+                        CellularReturn::CellValue => 0.0,
+                        CellularReturn::Distance => 1.0,
+                        CellularReturn::Distance2 => 2.0,
+                        CellularReturn::Distance2Add => 3.0,
+                        CellularReturn::Distance2Sub => 4.0,
+                        CellularReturn::Distance2Mul => 5.0,
+                        CellularReturn::Distance2Div => 6.0,
+                    },
+                );
             }
             Field::Image { img, x_centre, y_centre, x_size, y_size } => {
                 put(wfo::TYPE, 11.0);
@@ -1004,13 +1130,17 @@ struct IterUniforms {
     sym_rot_sin: f32, sym_rot_cos: f32, sym_do_rot: u32, _pad0: u32,
 }
 
+@group(0) @binding(0) var<uniform> U: IterUniforms;
+@group(0) @binding(5) var<storage, read_write> hist: array<atomic<i32>>;
+"#;
+
+/// Parameters, xform tables and chaos-game states (iterate and sub-flame kernels).
+const ITER_COMMON: &str = r#"
 struct State { x: f32, y: f32, z: f32, color: f32, r: f32, g: f32, b: f32, xf: u32, rng: u32, skip: u32, hide: f32, mat: f32 }
 
-@group(0) @binding(0) var<uniform> U: IterUniforms;
 @group(0) @binding(1) var<storage, read> prm: array<f32>;
 @group(0) @binding(2) var<storage, read> nxt: array<u32>;
 @group(0) @binding(4) var<storage, read_write> states: array<State>;
-@group(0) @binding(5) var<storage, read_write> hist: array<atomic<i32>>;
 
 const FUSE_ITERS: u32 = 30u;
 
@@ -1162,6 +1292,52 @@ const ITER_MAIN_TAIL: &str = r#"
 }
 "#;
 
+/// Sub-flame kernel: every thread writes `per_thread` visible points (after the finals) of
+/// layer 0 to `outpts`, three vec4 per point (see `subflame.wgsl`). `NB`, `TS` and `MASK` are
+/// substituted.
+const SUB_KERNEL: &str = r#"
+struct SubUniforms { thread_count: u32, per_thread: u32, out_base: u32, max_iter: u32 }
+@group(0) @binding(0) var<uniform> SU: SubUniforms;
+@group(0) @binding(5) var<storage, read_write> outpts: array<vec4<f32>>;
+
+@compute @workgroup_size(64)
+fn sub_iterate(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let tid = gid.x;
+    if (tid >= SU.thread_count) { return; }
+    // Keep every binding in the layout, even if no xform reads the gradient.
+    _ = cmap[0];
+    _ = prm[0];
+    var s = states[tid];
+    rng_state = s.rng;
+    cmap_base = 0u;
+    var p = Pt(s.x, s.y, s.z, s.color, s.r, s.g, s.b, 0.0, s.hide, 0.0);
+    var xf = s.xf;
+    var skip = s.skip;
+    for (var k = 0u; k < SU.per_thread; k++) {
+        var q = p;
+        var ok = false;
+        for (var i = 0u; i < SU.max_iter; i++) {
+            if (!has_next_0(xf)) { break; }
+            xf = nxt[NBu + xf * TSu + (rnd_u32() & MASKu)];
+            p = apply_xf_0(xf, p);
+            if (bad(p)) { p = fresh_point(); skip = FUSE_ITERS; continue; }
+            if (skip > 0u) { skip -= 1u; continue; }
+            if (!visible_0(xf)) { continue; }
+            q = finals_0(p);
+            ok = true;
+            break;
+        }
+        let o = (SU.out_base + tid * SU.per_thread + k) * 3u;
+        outpts[o] = vec4<f32>(q.x, q.y, q.z, q.color);
+        outpts[o + 1u] = vec4<f32>(q.r, q.g, q.b, q.rgbc);
+        outpts[o + 2u] = vec4<f32>(q.hide, select(0.0, 1.0, ok && !bad(q)), 0.0, 0.0);
+    }
+    s.x = p.x; s.y = p.y; s.z = p.z; s.color = p.color; s.r = p.r; s.g = p.g; s.b = p.b;
+    s.xf = xf; s.skip = skip; s.rng = rng_state; s.hide = p.hide;
+    states[tid] = s;
+}
+"#;
+
 /// Validates WGSL with naga (used by tests and debug builds).
 pub fn validate_wgsl(src: &str) -> Result<(), String> {
     let module = naga::front::wgsl::parse_str(src).map_err(|e| e.emit_to_string(src))?;
@@ -1169,4 +1345,3 @@ pub fn validate_wgsl(src: &str) -> Result<(), String> {
     validator.validate(&module).map_err(|e| e.emit_to_string(src))?;
     Ok(())
 }
-

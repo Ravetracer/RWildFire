@@ -160,7 +160,7 @@ pub fn layers(st: &mut State) -> Flame {
 }
 
 /// `SubFlameRandomFlameGenerator`: a quick sample of a simple generator embedded with
-/// `subflame_wf` (CPU only, like in JWildfire).
+/// `subflame_wf`.
 pub fn sub_flame(st: &mut State) -> Flame {
     let sub = sample(Generator::All, st.rng, Quality::LOW, true, false);
     let r = &mut *st.rng;

@@ -27,6 +27,7 @@
 //! | `wgsl/complex.wgsl`      | `cx_`                           | `complex::Complex` methods    |
 //! | `wgsl/noise.wgsl`        | `noise_`, `NOISE_`              | `noise` (`NoiseTools`, `VoronoiTools`) |
 //! | `wgsl/resource.wgsl`     | `res_`                          | `resource_vars` (images, meshes) |
+//! | `wgsl/subflame.wgsl`     | `subflame_`                     | `subflame` (sub-flame points) |
 
 pub static LIBS: &[&str] = &[
     include_str!("wgsl/math.wgsl"),
@@ -35,6 +36,7 @@ pub static LIBS: &[&str] = &[
     include_str!("wgsl/complex.wgsl"),
     include_str!("wgsl/noise.wgsl"),
     include_str!("wgsl/resource.wgsl"),
+    include_str!("wgsl/subflame.wgsl"),
 ];
 
 #[cfg(test)]
@@ -123,6 +125,9 @@ mod tests {
   acc += res_ngon_point(n, x).x + res_triangle_point(v2, w2, v2).y;
   acc += res_formula(ub, 4u, v4);
   acc += res_f(ub, 2u, v4) + res_normal(v3, v3).x + res_plot_displ(ub, 1u, x > 0.0, x, y) + res_plot_color(ub, 1u, true, x, y, mp).r;
+  // subflame.wgsl
+  let sq = subflame_point(ub, 2u);
+  if (sq.valid) { acc += subflame_set_color(sq.p, n, mp).color; }
   prm[4] = acc;
 "#;
 
@@ -162,12 +167,10 @@ mod tests {
     /// Library names must carry a library prefix so they cannot clash with variation helpers.
     #[test]
     fn library_function_names_are_prefixed() {
-        const PREFIXES: &[&str] = &["glsl_", "c_", "cx_", "dc_", "noise_", "math_", "java_", "gfx_", "res_"];
+        const PREFIXES: &[&str] = &["glsl_", "c_", "cx_", "dc_", "noise_", "math_", "java_", "gfx_", "res_", "subflame_"];
         const PLAIN: &[&str] = &["ftoi", "limit_value", "limit_value_i", "erf", "lgamma"];
-        let bad: Vec<String> = lib_function_names()
-            .into_iter()
-            .filter(|n| !PREFIXES.iter().any(|p| n.starts_with(p)) && !PLAIN.contains(&n.as_str()))
-            .collect();
+        let bad: Vec<String> =
+            lib_function_names().into_iter().filter(|n| !PREFIXES.iter().any(|p| n.starts_with(p)) && !PLAIN.contains(&n.as_str())).collect();
         assert!(bad.is_empty(), "unprefixed library functions: {bad:?}");
     }
 }

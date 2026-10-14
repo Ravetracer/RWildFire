@@ -48,7 +48,7 @@ pub mod resource_vars;
 mod draw;
 mod tess;
 mod dla3d;
-mod subflame;
+pub mod subflame;
 mod plots;
 pub mod presets;
 mod batch_a;

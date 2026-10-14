@@ -21,8 +21,9 @@
 //! (stored as XML in the variation, or read from a flame file sequence) by one visible point.
 //!
 //! The sub-flame is prepared like a normal flame and registered under an id that goes into the
-//! prepared data; the chaos-game state lives per render thread in [`Ctx`]. Like in JWildfire
-//! (where it is "not desired for GPU rendering"), there is no GPU implementation.
+//! prepared data; the chaos-game state lives per render thread in [`Ctx`]. On the GPU the
+//! sub-flame runs as its own kernel that refills a point buffer, and the variations pick random
+//! points from it (`wgsl/subflame.wgsl`).
 
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock, RwLock};
@@ -35,8 +36,8 @@ use crate::render::prepared::{NEXT_XFORM_TABLE_SIZE, PreparedFlame};
 
 /// A prepared sub-flame (first layer) and its `preserve_z` flag.
 pub struct SubFlame {
-    flame: PreparedFlame,
-    preserve_z: bool,
+    pub flame: PreparedFlame,
+    pub preserve_z: bool,
 }
 
 /// Chaos-game state of one sub-flame in one render thread (`SubFlameWFFunc.p/q/xf`).
@@ -69,7 +70,8 @@ fn register(key: String, build: impl FnOnce() -> Option<SubFlame>) -> usize {
     reg.len()
 }
 
-fn sub_flame(id: usize) -> Option<Arc<SubFlame>> {
+/// The registered sub-flame `id` (as stored in the prepared data, see [`id_index`]).
+pub fn sub_flame(id: usize) -> Option<Arc<SubFlame>> {
     registry().read().unwrap().get(id.checked_sub(1)?).map(|(_, s)| s.clone())
 }
 
@@ -87,6 +89,16 @@ fn sequence_filename(name: &str, frame: i32, digits: i32) -> String {
         number.insert(0, '0');
     }
     format!("{base}{number}{ext}")
+}
+
+/// Index of the sub-flame id in the prepared data of a sub-flame variation.
+pub fn id_index(variation: &str) -> Option<usize> {
+    match variation {
+        "subflame_wf" | "pre_subflame_wf" => Some(ID),
+        "ringsubflame" => Some(8 + ID),
+        "glynns3subfl" => Some(GLYNN + ID),
+        _ => None,
+    }
 }
 
 const SEQ_FILES: i32 = 1;
@@ -351,7 +363,13 @@ pub static DEFS: &[VarDef] = &[
             prepare_sub(&mut d, 0);
             d
         }),
-        wgsl: "",
+        wgsl: "let s = subflame_point(base, 0u);
+if (s.valid) {
+  v.x += s.p.x;
+  v.y += s.p.y;
+  v.z += s.p.z;
+  v = subflame_set_color(s.p, i32(D(6)), v);
+}",
     },
     VarDef {
         name: "glynns3subfl",
@@ -379,41 +397,90 @@ pub static DEFS: &[VarDef] = &[
             }
             d
         }),
-        wgsl: "",
+        // d = [weight, show, radius, thickness, contrast, pow, type, phi1, phi2, <sub-flame
+        // parameters 9..21>, slot 21, radius1, radius2, gamma, abs_pow, phi10, delta]
+        wgsl: "let r = sqrt(a.x * a.x + a.y * a.y);
+let alpha = D(2) / r;
+var inside = r < D(22);
+if (i32(D(6)) != 0) { inside = r < D(2); }
+var nx = 0.0;
+var ny = 0.0;
+if (inside) {
+  if (i32(D(1)) == 1) {
+    var cr = 0.0;
+    var phi = 0.0;
+    if (i32(D(6)) != 0) {
+      cr = D(2) + D(3) - D(24) * rnd();
+      phi = D(26) + D(27) * rnd();
+    } else {
+      phi = 2.0 * PI * rnd();
+      cr = select(D(23), D(22), rnd() < D(24));
+    }
+    nx = AMOUNT * cr * cos(phi);
+    ny = AMOUNT * cr * sin(phi);
+  } else {
+    nx = AMOUNT * a.x;
+    ny = AMOUNT * a.y;
+  }
+} else if (rnd() > D(4) * pow(alpha, D(25))) {
+  nx = AMOUNT * a.x;
+  ny = AMOUNT * a.y;
+} else {
+  nx = AMOUNT * alpha * alpha * a.x;
+  ny = AMOUNT * alpha * alpha * a.y;
+}
+if (rnd() < D(0)) {
+  v.x = nx;
+  v.y = ny;
+  if (PRESERVE_Z) { v.z += AMOUNT * a.z; }
+} else {
+  let s = subflame_point(base, 9u);
+  if (s.valid) {
+    v.x += s.p.x * AMOUNT;
+    v.y += s.p.y * AMOUNT;
+    v.z += s.p.z * AMOUNT;
+    v = subflame_set_color(s.p, i32(D(15)), v);
+  }
+}",
     },
 ];
 
-pub static RESOURCES: &[ResourceVar] = &[ResourceVar {
-    name: "subflame_wf",
-    resources: &[
-        ResDef { name: "flame", kind: ResKind::FlameXml, default: include_str!("../../assets/subflame_wf_default.flame") },
-        ResDef { name: "flame_filename", kind: ResKind::FlameFile, default: "" },
-    ],
-    load: |d, res, env| load(d, res, env, 0),
-}, ResourceVar {
-    name: "glynns3subfl",
-    resources: &[
-        ResDef { name: "flame", kind: ResKind::FlameXml, default: include_str!("../../assets/subflame_wf_default.flame") },
-        ResDef { name: "flame_filename", kind: ResKind::FlameFile, default: "" },
-    ],
-    load: |d, res, env| load(d, res, env, GLYNN),
-}, ResourceVar {
-    // batch_w12
-    name: "pre_subflame_wf",
-    resources: &[
-        ResDef { name: "flame", kind: ResKind::FlameXml, default: include_str!("../../assets/subflame_wf_default.flame") },
-        ResDef { name: "flame_filename", kind: ResKind::FlameFile, default: "" },
-    ],
-    load: |d, res, env| load(d, res, env, 0),
-}, ResourceVar {
-    // batch_w12 (sub-flame parameters after the 8 ring parameters)
-    name: "ringsubflame",
-    resources: &[
-        ResDef { name: "flame", kind: ResKind::FlameXml, default: include_str!("../../assets/ringsubflame_default.flame") },
-        ResDef { name: "flame_filename", kind: ResKind::FlameFile, default: "" },
-    ],
-    load: |d, res, env| load(d, res, env, 8),
-}];
+pub static RESOURCES: &[ResourceVar] = &[
+    ResourceVar {
+        name: "subflame_wf",
+        resources: &[
+            ResDef { name: "flame", kind: ResKind::FlameXml, default: include_str!("../../assets/subflame_wf_default.flame") },
+            ResDef { name: "flame_filename", kind: ResKind::FlameFile, default: "" },
+        ],
+        load: |d, res, env| load(d, res, env, 0),
+    },
+    ResourceVar {
+        name: "glynns3subfl",
+        resources: &[
+            ResDef { name: "flame", kind: ResKind::FlameXml, default: include_str!("../../assets/subflame_wf_default.flame") },
+            ResDef { name: "flame_filename", kind: ResKind::FlameFile, default: "" },
+        ],
+        load: |d, res, env| load(d, res, env, GLYNN),
+    },
+    ResourceVar {
+        // batch_w12
+        name: "pre_subflame_wf",
+        resources: &[
+            ResDef { name: "flame", kind: ResKind::FlameXml, default: include_str!("../../assets/subflame_wf_default.flame") },
+            ResDef { name: "flame_filename", kind: ResKind::FlameFile, default: "" },
+        ],
+        load: |d, res, env| load(d, res, env, 0),
+    },
+    ResourceVar {
+        // batch_w12 (sub-flame parameters after the 8 ring parameters)
+        name: "ringsubflame",
+        resources: &[
+            ResDef { name: "flame", kind: ResKind::FlameXml, default: include_str!("../../assets/ringsubflame_default.flame") },
+            ResDef { name: "flame_filename", kind: ResKind::FlameFile, default: "" },
+        ],
+        load: |d, res, env| load(d, res, env, 8),
+    },
+];
 
 #[cfg(test)]
 mod tests {

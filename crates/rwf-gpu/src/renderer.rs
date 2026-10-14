@@ -278,6 +278,7 @@ pub struct GpuRenderer {
     solid: crate::solid::SolidGpu,
     /// Record depths for [`GpuRenderer::read_zbuffer`].
     zbuffer: bool,
+    subflames: crate::subflames::SubFlames,
 }
 
 fn storage_buffer(device: &wgpu::Device, label: &str, size: u64) -> wgpu::Buffer {
@@ -373,6 +374,7 @@ impl GpuRenderer {
             packets: 1,
             solid: crate::solid::SolidGpu::new(),
             zbuffer: false,
+            subflames: Default::default(),
             ctx,
         }
     }
@@ -467,10 +469,7 @@ impl GpuRenderer {
         if same_size && self.flame.as_ref() == Some(flame) {
             return;
         }
-        if same_size
-            && self.tone_base.is_some()
-            && self.flame.as_ref().is_some_and(|f| rwf_core::render::same_iteration(f, flame))
-        {
+        if same_size && self.tone_base.is_some() && self.flame.as_ref().is_some_and(|f| rwf_core::render::same_iteration(f, flame)) {
             // Tonemapping-only change: keep accumulating.
             if let Some(t) = self.tone_base.as_mut() {
                 set_background(t, flame);
@@ -479,7 +478,8 @@ impl GpuRenderer {
             return;
         }
         let device = &self.ctx.device;
-        let prepared = PreparedFlame::new(flame);
+        let mut prepared = PreparedFlame::new(flame);
+        let sub_ids = crate::subflames::assign_slots(&mut prepared);
         let filter_size = flame.filter_kernel.filter_size(flame.spatial_filter_radius, flame.spatial_oversampling.max(1));
         let (view, full_view) = match self.tile {
             Some(t) => {
@@ -514,10 +514,16 @@ impl GpuRenderer {
             }
         }
 
+        let sub_error = self.subflames.update(device, &self.ctx.queue, &sub_ids, program.uses_subflames);
+        if sub_error.is_some() && self.last_error.is_none() {
+            self.last_error = sub_error;
+        }
+
         // Raster/output buffers
-        let mut need_new = !self.buffers.as_ref().is_some_and(|b| {
-            b.raster_w == view.raster_width && b.raster_h == view.raster_height && b.image_w == width && b.image_h == height
-        });
+        let mut need_new = !self
+            .buffers
+            .as_ref()
+            .is_some_and(|b| b.raster_w == view.raster_width && b.raster_h == view.raster_height && b.image_w == width && b.image_h == height);
         if need_new {
             let cells = view.raster_width as u64 * view.raster_height as u64;
             let output = device.create_texture(&wgpu::TextureDescriptor {
@@ -563,7 +569,16 @@ impl GpuRenderer {
             // Shadow maps are placed for the full image, so all tiles share them.
             let (sw, sh) = self.tile.map_or((width, height), |t| (t.full_width, t.full_height));
             self.solid.frames = if maps > 0 { rwf_core::render::cpu::solid_shadow_frames(flame, sw, sh) } else { Vec::new() };
-            self.solid.ensure_buffers(device, view.raster_width, view.raster_height, width, height, flame.solid.lights.len(), maps, program.shadow_map_size);
+            self.solid.ensure_buffers(
+                device,
+                view.raster_width,
+                view.raster_height,
+                width,
+                height,
+                flame.solid.lights.len(),
+                maps,
+                program.shadow_map_size,
+            );
         }
 
         // Parameter data
@@ -800,6 +815,10 @@ impl GpuRenderer {
             wgpu::BindGroupEntry { binding: 4, resource: self.states.as_entire_binding() },
         ];
         let program = self.program.as_ref().expect("program");
+        if let Some(points) = self.subflames.points().filter(|_| program.uses_subflames) {
+            entries.push(wgpu::BindGroupEntry { binding: 9, resource: points.as_entire_binding() });
+        }
+        let sub_groups = self.subflames.bind_groups(&device);
         match (&self.solid.buffers, program.solid_base) {
             (Some(sb), Some(_)) => {
                 entries.push(wgpu::BindGroupEntry { binding: 6, resource: sb.zbuf.as_entire_binding() });
@@ -815,7 +834,11 @@ impl GpuRenderer {
                 }
             }
         }
-        let iter_bg = device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("iterate-bg"), layout: &iterate.get_bind_group_layout(0), entries: &entries });
+        let iter_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("iterate-bg"),
+            layout: &iterate.get_bind_group_layout(0),
+            entries: &entries,
+        });
         let resolve_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("resolve-bg"),
             layout: &self.resolve_pipeline.get_bind_group_layout(0),
@@ -830,6 +853,7 @@ impl GpuRenderer {
         let resolve_groups = cells.div_ceil(256);
         let (rx, ry) = if resolve_groups > 65535 { (65535u32, resolve_groups.div_ceil(65535) as u32) } else { (resolve_groups as u32, 1) };
         for _ in 0..dispatches {
+            crate::subflames::SubFlames::dispatch(&mut enc, &sub_groups);
             {
                 let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("iterate"), timestamp_writes: None });
                 pass.set_pipeline(&iterate);
@@ -861,7 +885,11 @@ impl GpuRenderer {
         }
         let (w, h) = (bufs.image_w, bufs.image_h);
         let tile = self.tile;
-        if self.backdrop.as_ref().is_some_and(|b| b.width == w && b.height == h && b.tile == tile && rwf_core::render::background::same_backdrop(&b.flame, flame)) {
+        if self
+            .backdrop
+            .as_ref()
+            .is_some_and(|b| b.width == w && b.height == h && b.tile == tile && rwf_core::render::background::same_backdrop(&b.flame, flame))
+        {
             return true;
         }
         let backdrop = match tile {
