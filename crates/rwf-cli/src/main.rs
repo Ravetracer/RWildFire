@@ -97,17 +97,24 @@ fn write_png(path: &PathBuf, w: u32, h: u32, rgba: &[u8]) -> std::io::Result<()>
     Ok(())
 }
 
-/// `rwf-cli random <out-dir> [count]`: generates random flames (.flame + preview .png).
+/// `rwf-cli random <out-dir> [count] [generator filter]`: generates random flames (.flame +
+/// preview .png), cycling through the generators whose name contains the filter.
 fn random_cmd() {
     let mut it = std::env::args().skip(2);
     let dir = PathBuf::from(it.next().unwrap_or_else(|| usage()));
     let count: usize = it.next().and_then(|s| s.parse().ok()).unwrap_or(8);
+    let filter = it.next().unwrap_or_default().to_lowercase();
+    let generators: Vec<_> = rwf_core::random::Generator::ALL.iter().copied().filter(|g| g.label().to_lowercase().contains(&filter)).collect();
+    if generators.is_empty() {
+        eprintln!("no generator matches {filter:?}");
+        std::process::exit(2);
+    }
     std::fs::create_dir_all(&dir).expect("create output dir");
     let mut rng = rwf_core::rng::Rng::from_entropy();
     for i in 0..count {
-        let generator = rwf_core::random::Generator::ALL[i % rwf_core::random::Generator::ALL.len()];
+        let generator = generators[i % generators.len()];
         let flame = rwf_core::random::generate(generator, &mut rng);
-        let base = dir.join(format!("random_{i:02}_{}", generator.label().replace(' ', "_")));
+        let base = dir.join(format!("random_{i:02}_{}", generator.label().replace([' ', '(', ')'], "_")));
         rwf_core::io::write_flame_to_file(&flame, base.with_extension("flame")).expect("write flame");
         let (w, h) = (480, 270);
         let img = rwf_core::render::render_image(&flame, w, h, 200.0, false);

@@ -22,6 +22,7 @@
 
 mod coverage;
 mod gens_a;
+mod gens_b;
 pub mod java;
 
 use crate::gradient::Gradient;
@@ -62,15 +63,27 @@ generators! {
     Classic => "Classic",
     Symmetric => "Symmetric",
     Affine3D => "Affine3D",
+    Brokat => "Brokat",
+    Brokat3D => "Brokat3D",
     Bubbles => "Bubbles",
     Bubbles3D => "Bubbles3D",
     ExperimentalBubbles3D => "Bubbles3D (experimental)",
+    EDisc => "EDisc",
+    Gnarl => "Gnarl",
+    Gnarl3D => "Gnarl3D",
+    ExperimentalGnarl => "Gnarl (experimental)",
+    JulianDisc => "JulianDisc",
+    JulianRings => "JulianRings",
+    Julians => "Julians",
     Linear => "Linear only",
     Sierpinsky => "Sierpinsky",
     ExperimentalSimple => "Simple (experimental)",
     Simple => "Simple (stunning)",
     Spherical => "Spherical",
     Spherical3D => "Spherical3D",
+    Spirals => "Spirals",
+    Spirals3D => "Spirals3D",
+    Synth => "Synth",
 }
 
 impl Generator {
@@ -113,6 +126,18 @@ impl Generator {
             Generator::Simple => gens_a::simple(st),
             Generator::Spherical => gens_a::spherical(st),
             Generator::Spherical3D => gens_a::spherical3d(st),
+            Generator::Brokat => gens_b::brokat(st),
+            Generator::Brokat3D => gens_b::brokat3d(st),
+            Generator::EDisc => gens_b::edisc(st),
+            Generator::Gnarl => gens_b::gnarl(st),
+            Generator::Gnarl3D => gens_b::gnarl3d(st),
+            Generator::ExperimentalGnarl => gens_b::experimental_gnarl(st),
+            Generator::JulianDisc => gens_b::julian_disc(st),
+            Generator::JulianRings => gens_b::julian_rings(st),
+            Generator::Julians => gens_b::julians(st),
+            Generator::Spirals => gens_b::spirals(st),
+            Generator::Spirals3D => gens_b::spirals3d(st),
+            Generator::Synth => gens_b::synth(st),
         }
     }
 
@@ -121,7 +146,13 @@ impl Generator {
         match self {
             Generator::All => st.sub.is_some_and(|g| g.use_filter(st)),
             Generator::Affine3D => st.rng.random() > 0.42,
-            Generator::Bubbles | Generator::Bubbles3D | Generator::ExperimentalBubbles3D | Generator::ExperimentalSimple | Generator::Simple => true,
+            Generator::Bubbles
+            | Generator::Bubbles3D
+            | Generator::ExperimentalBubbles3D
+            | Generator::ExperimentalSimple
+            | Generator::Simple
+            | Generator::EDisc
+            | Generator::Synth => true,
             _ => false,
         }
     }

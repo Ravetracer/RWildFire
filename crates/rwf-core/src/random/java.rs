@@ -207,14 +207,14 @@ pub fn random_variation(rng: &mut Rng) -> &'static str {
     pick(rng, random_variation_names())
 }
 
-/// Scales the 800 × 600 frame of a JWildfire generator to 1280 × 720, keeping the
-/// vertical extent (the wider frame shows a bit more at the sides).
+/// Brings a generated flame to RWildFire's 720 pixel high frame, keeping its vertical
+/// extent: JWildfire's default 800 × 600 becomes 1280 × 720 (a bit more is visible at the
+/// sides), other sizes keep their aspect ratio.
 pub fn to_widescreen(flame: &mut Flame) {
-    if flame.width == 800 && flame.height == 600 {
-        flame.pixels_per_unit *= 720.0 / 600.0;
-        flame.width = 1280;
-        flame.height = 720;
-    }
+    let h = flame.height.max(1) as f64;
+    flame.pixels_per_unit *= 720.0 / h;
+    flame.width = if (flame.width, flame.height) == (800, 600) { 1280 } else { (flame.width as f64 * 720.0 / h).round() as u32 };
+    flame.height = 720;
 }
 
 #[cfg(test)]
