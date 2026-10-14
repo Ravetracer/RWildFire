@@ -176,26 +176,19 @@ fn wf_fractal(b: u32, base: i32, x_in: f32, y_in: f32, z_in: f32) -> f32 {
   var z = z_in;
   var amp = 1.0;
   var sum = 0.0;
-  if (ftype == 0) {
-    sum = wf_single(base, seed, x, y, z);
-  } else if (ftype == 1) {
-    sum = abs(wf_single(base, seed, x, y, z)) * 2.0 - 1.0;
-  } else {
-    sum = 1.0 - abs(wf_single(base, seed, x, y, z));
-  }
-  for (var i = 1; i < octaves; i++) {
-    x *= lacunarity;
-    y *= lacunarity;
-    z *= lacunarity;
-    amp *= gain;
-    seed += 1;
-    if (ftype == 0) {
-      sum += wf_single(base, seed, x, y, z) * amp;
-    } else if (ftype == 1) {
-      sum += (abs(wf_single(base, seed, x, y, z)) * 2.0 - 1.0) * amp;
-    } else {
-      sum -= (1.0 - abs(wf_single(base, seed, x, y, z))) * amp;
+  // One noise call site: it is inlined once instead of once per fractal type and octave.
+  for (var i = 0; i < max(octaves, 1); i++) {
+    if (i > 0) {
+      x *= lacunarity;
+      y *= lacunarity;
+      z *= lacunarity;
+      amp *= gain;
+      seed += 1;
     }
+    let n = wf_single(base, seed, x, y, z);
+    var v = n;
+    if (ftype == 1) { v = abs(n) * 2.0 - 1.0; } else if (ftype == 2) { v = 1.0 - abs(n); }
+    if (i == 0) { sum = v; } else if (ftype == 2) { sum -= v * amp; } else { sum += v * amp; }
   }
   if (ftype == 2) { return sum; }
   return sum * prm[b + 6u];
@@ -251,44 +244,17 @@ fn wf_image_red(b: u32, ix: i32, iy: i32) -> f32 {
   return prm[b + u32(prm[b + 16u]) + u32(iy * w + ix)];
 }
 
-// types: 1 cellular, 2 cubic, 3 cubic fractal, 4 perlin, 5 perlin fractal, 6 simplex,
-// 7 simplex fractal, 8 value, 9 value fractal, 10 white, 11 image map
-fn wf_value(b: u32, x_in: f32, y_in: f32, z_in: f32) -> f32 {
-  let t = i32(prm[b]);
-  if (t == 11) {
-    let xs = prm[b + 12u];
-    let ys = prm[b + 13u];
-    let xc = (x_in + xs * 0.5 - prm[b + 10u]) / xs * prm[b + 14u];
-    let yc = (y_in + ys * 0.5 - prm[b + 11u]) / ys * prm[b + 15u];
-    let ix = i32(xc);
-    let iy = i32(yc);
-    let px = xc - trunc(xc);
-    let py = yc - trunc(yc);
-    let top = wf_lerp(wf_image_red(b, ix, iy), wf_image_red(b, ix + 1, iy), px);
-    let bottom = wf_lerp(wf_image_red(b, ix, iy + 1), wf_image_red(b, ix + 1, iy + 1), px);
-    return 0.5 - wf_lerp(top, bottom, py) / 255.0;
-  }
-  let f = prm[b + 2u];
-  let x = x_in * f;
-  let y = y_in * f;
-  let z = z_in * f;
-  let seed = i32(prm[b + 1u]);
-  switch t {
-    case 1: { return wf_cellular(b, x, y, z); }
-    case 2: { return wf_cubic3(seed, x, y, z); }
-    case 3: { return wf_fractal(b, 3, x, y, z); }
-    case 4: { return wf_perlin3(seed, x, y, z); }
-    case 5: { return wf_fractal(b, 1, x, y, z); }
-    case 6: { return wf_simplex3(seed, x, y, z); }
-    case 7: { return wf_fractal(b, 2, x, y, z); }
-    case 8: { return wf_value3(seed, x, y, z); }
-    case 9: { return wf_fractal(b, 0, x, y, z); }
-    case 10: {
-      let xb = bitcast<i32>(x);
-      let yb = bitcast<i32>(y);
-      let zb = bitcast<i32>(z);
-      return wf_val_coord3(seed, xb ^ (xb >> 16u), yb ^ (yb >> 16u), zb ^ (zb >> 16u));
-    }
-    default: { return 0.0; }
-  }
+// Image map field (type 11); the codegen emits `wf_value_<type>` for the field types in use.
+fn wf_image(b: u32, x_in: f32, y_in: f32) -> f32 {
+  let xs = prm[b + 12u];
+  let ys = prm[b + 13u];
+  let xc = (x_in + xs * 0.5 - prm[b + 10u]) / xs * prm[b + 14u];
+  let yc = (y_in + ys * 0.5 - prm[b + 11u]) / ys * prm[b + 15u];
+  let ix = i32(xc);
+  let iy = i32(yc);
+  let px = xc - trunc(xc);
+  let py = yc - trunc(yc);
+  let top = wf_lerp(wf_image_red(b, ix, iy), wf_image_red(b, ix + 1, iy), px);
+  let bottom = wf_lerp(wf_image_red(b, ix, iy + 1), wf_image_red(b, ix + 1, iy + 1), px);
+  return 0.5 - wf_lerp(top, bottom, py) / 255.0;
 }

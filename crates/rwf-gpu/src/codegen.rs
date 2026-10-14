@@ -236,6 +236,53 @@ mod wfo {
     pub const STEP_LEN: usize = 4;
 }
 
+/// Field type code of the GPU (see `weighting.wgsl`): 0 none, 1 cellular, 2 cubic, 3 cubic
+/// fractal, 4 perlin, 5 perlin fractal, 6 simplex, 7 simplex fractal, 8 value, 9 value fractal,
+/// 10 white noise, 11 image map.
+fn field_code(field: &Field) -> u32 {
+    use rwf_core::fastnoise::NoiseType;
+    match field {
+        Field::Empty => 0,
+        Field::Noise(n) => match n.noise_type {
+            NoiseType::Cellular => 1,
+            NoiseType::Cubic => 2,
+            NoiseType::CubicFractal => 3,
+            NoiseType::Perlin => 4,
+            NoiseType::PerlinFractal => 5,
+            NoiseType::Simplex => 6,
+            NoiseType::SimplexFractal => 7,
+            NoiseType::Value => 8,
+            NoiseType::ValueFractal => 9,
+            NoiseType::WhiteNoise => 10,
+        },
+        Field::Image { .. } => 11,
+    }
+}
+
+/// `wf_value_<code>(b, x, y, z)`: the value of a field of one type. Specialized per type, so a
+/// call site inlines one noise function and not all of them.
+fn wf_value_fn(code: u32) -> String {
+    let noise = match code {
+        1 => "return wf_cellular(b, x, y, z);",
+        2 => "return wf_cubic3(seed, x, y, z);",
+        3 => "return wf_fractal(b, 3, x, y, z);",
+        4 => "return wf_perlin3(seed, x, y, z);",
+        5 => "return wf_fractal(b, 1, x, y, z);",
+        6 => "return wf_simplex3(seed, x, y, z);",
+        7 => "return wf_fractal(b, 2, x, y, z);",
+        8 => "return wf_value3(seed, x, y, z);",
+        9 => "return wf_fractal(b, 0, x, y, z);",
+        10 => {
+            "let xb = bitcast<i32>(x);\n  let yb = bitcast<i32>(y);\n  let zb = bitcast<i32>(z);\n  return wf_val_coord3(seed, xb ^ (xb >> 16u), yb ^ (yb >> 16u), zb ^ (zb >> 16u));"
+        }
+        11 => return format!("fn wf_value_{code}(b: u32, x_in: f32, y_in: f32, z_in: f32) -> f32 {{\n  return wf_image(b, x_in, y_in);\n}}\n"),
+        _ => return format!("fn wf_value_{code}(b: u32, x_in: f32, y_in: f32, z_in: f32) -> f32 {{\n  return 0.0;\n}}\n"),
+    };
+    format!(
+        "fn wf_value_{code}(b: u32, x_in: f32, y_in: f32, z_in: f32) -> f32 {{\n  let f = prm[b + 2u];\n  let x = x_in * f;\n  let y = y_in * f;\n  let z = z_in * f;\n  let seed = i32(prm[b + 1u]);\n  {noise}\n}}\n"
+    )
+}
+
 fn wf_len(xf: &PreparedXForm) -> usize {
     match &xf.weighting {
         Some(w) => {
@@ -341,9 +388,10 @@ fn emit_xform(out: &mut String, fname: &str, xf: &PreparedXForm, base: usize, la
     }
     emit_affine(out, xf.affine_mode, "B", xo::COEFS, xo::YZ, xo::ZX, "a", "src");
     let wf = wf_offset(xf);
+    let wf_value = format!("wf_value_{}", xf.weighting.as_ref().map_or(0, |w| field_code(&w.field)));
     if let Some(w) = &xf.weighting {
         let p = if w.input == FieldInput::Position { "src" } else { "a" };
-        let _ = writeln!(out, "  let wmv = wf_value(B + {wf}u, {p}.x, {p}.y, {p}.z);");
+        let _ = writeln!(out, "  let wmv = {wf_value}(B + {wf}u, {p}.x, {p}.y, {p}.z);");
         let _ = writeln!(out, "  let vai = prm[B + {}u];", wf + wfo::VAR_AMOUNT);
         out.push_str("  let wamt = select(1.0, 1.0 + wmv * vai, abs(wmv) > EPSILON && abs(vai) > EPSILON);\n");
     }
@@ -395,7 +443,7 @@ fn emit_xform(out: &mut String, fname: &str, xf: &PreparedXForm, base: usize, la
     if xf.weighting.is_some() {
         let _ = writeln!(
             out,
-            "  {{ let j = prm[B + {j}u]; if (abs(j) > EPSILON) {{ d.x += wf_value(B + {wf}u, d.x, d.y, d.z) * j; d.y += wf_value(B + {wf}u, d.y, d.x, d.z) * j; d.z += wf_value(B + {wf}u, d.z, d.x, d.y) * j; }}\n    let cs = prm[B + {c}u]; if (abs(cs) > EPSILON) {{ d.color *= 1.0 + wmv * cs; }} }}",
+            "  {{ let j = prm[B + {j}u]; if (abs(j) > EPSILON) {{ d.x += {wf_value}(B + {wf}u, d.x, d.y, d.z) * j; d.y += {wf_value}(B + {wf}u, d.y, d.x, d.z) * j; d.z += {wf_value}(B + {wf}u, d.z, d.x, d.y) * j; }}\n    let cs = prm[B + {c}u]; if (abs(cs) > EPSILON) {{ d.color *= 1.0 + wmv * cs; }} }}",
             j = wf + wfo::JITTER,
             c = wf + wfo::COLOR_SCALE
         );
@@ -454,6 +502,8 @@ struct Layout {
     param_len: usize,
     next_len: usize,
     wf_tables: Option<usize>,
+    /// Weighting field type codes in use (see [`field_code`]).
+    wf_types: std::collections::BTreeSet<u32>,
 }
 
 impl Layout {
@@ -465,6 +515,7 @@ impl Layout {
         let mut param_len = NOISE_TABLES_LEN;
         let mut next_len = 0usize;
         let mut any_weighting = false;
+        let mut wf_types = std::collections::BTreeSet::new();
         let mut weighted_fns: WeightedFns = BTreeMap::new();
         for (li, layer) in prepared.layers.iter().enumerate() {
             let header = param_len;
@@ -495,7 +546,9 @@ impl Layout {
                     if xf.next.is_some() { "t" } else { "-" }
                 );
                 if let Some(w) = &xf.weighting {
-                    let _ = write!(sig, "w{}{},", wf_len(xf), w.input == FieldInput::Position);
+                    let code = field_code(&w.field);
+                    let _ = write!(sig, "w{}{}t{code},", wf_len(xf), w.input == FieldInput::Position);
+                    wf_types.insert(code);
                     any_weighting = true;
                 }
                 for s in steps(xf) {
@@ -526,23 +579,19 @@ impl Layout {
         if wf_tables.is_some() {
             sig.push_str("wf|");
         }
-        Self { sig, unsupported, used_vars, weighted_fns, layers, param_len, next_len, wf_tables }
+        Self { sig, unsupported, used_vars, weighted_fns, layers, param_len, next_len, wf_tables, wf_types }
     }
 }
 
 /// Variation, xform, dispatcher, visibility and finals functions of every layer.
-fn emit_functions(
-    w: &mut String,
-    prepared: &PreparedFlame,
-    layers: &[LayerLayout],
-    used_vars: &BTreeMap<&'static str, &'static VarDef>,
-    weighted_fns: &WeightedFns,
-    wf_tables: Option<usize>,
-    solid: bool,
-) {
+fn emit_functions(w: &mut String, prepared: &PreparedFlame, layout: &Layout, solid: bool) {
+    let Layout { layers, used_vars, weighted_fns, wf_tables, wf_types, .. } = layout;
     if let Some(t) = wf_tables {
         let _ = writeln!(w, "const WF_TABLES: u32 = {t}u;");
         w.push_str(include_str!("weighting.wgsl"));
+        for code in wf_types {
+            w.push_str(&wf_value_fn(*code));
+        }
     }
     for def in used_vars.values() {
         w.push_str(&variation_function(def, prepared.preserve_z));
@@ -648,14 +697,15 @@ impl Program {
         if flame.post_blur_radius > 0 {
             let _ = write!(sig, "pb{}/{}/{}|", flame.post_blur_radius, flame.post_blur_fade, flame.post_blur_falloff);
         }
-        let Layout { mut sig, unsupported, used_vars, weighted_fns, layers, mut param_len, next_len, wf_tables } = Layout::new(prepared, sig);
+        let layout = Layout::new(prepared, sig);
 
         // ---- WGSL ----
         let mut w = String::with_capacity(32 * 1024);
         w.push_str(&prelude());
         w.push_str(ITER_BINDINGS);
         w.push_str(ITER_COMMON);
-        emit_functions(&mut w, prepared, &layers, &used_vars, &weighted_fns, wf_tables, solid);
+        emit_functions(&mut w, prepared, &layout, solid);
+        let Layout { mut sig, unsupported, used_vars, layers, mut param_len, next_len, wf_tables, .. } = layout;
 
         // Plot with post symmetry
         // Depth of field
@@ -773,12 +823,12 @@ impl Program {
                 }
             }
         }
-        let Layout { sig, unsupported, used_vars, weighted_fns, layers, param_len, next_len, wf_tables } =
-            Layout::new(&prepared, format!("sub|pz{}|", prepared.preserve_z));
+        let layout = Layout::new(&prepared, format!("sub|pz{}|", prepared.preserve_z));
         let mut w = String::with_capacity(32 * 1024);
         w.push_str(&prelude());
         w.push_str(ITER_COMMON);
-        emit_functions(&mut w, &prepared, &layers, &used_vars, &weighted_fns, wf_tables, false);
+        emit_functions(&mut w, &prepared, &layout, false);
+        let Layout { sig, unsupported, layers, param_len, next_len, wf_tables, .. } = layout;
         if let Some(lay) = layers.first() {
             w.push_str(
                 &SUB_KERNEL
@@ -965,20 +1015,8 @@ fn pack_xform(p: &mut [f32], base: usize, xf: &PreparedXForm) {
         match &w.field {
             Field::Empty => put(wfo::TYPE, 0.0),
             Field::Noise(n) => {
-                use rwf_core::fastnoise::{CellularDistance, CellularReturn, FractalType, NoiseType};
-                let t = match n.noise_type {
-                    NoiseType::Cellular => 1,
-                    NoiseType::Cubic => 2,
-                    NoiseType::CubicFractal => 3,
-                    NoiseType::Perlin => 4,
-                    NoiseType::PerlinFractal => 5,
-                    NoiseType::Simplex => 6,
-                    NoiseType::SimplexFractal => 7,
-                    NoiseType::Value => 8,
-                    NoiseType::ValueFractal => 9,
-                    NoiseType::WhiteNoise => 10,
-                };
-                put(wfo::TYPE, t as f64);
+                use rwf_core::fastnoise::{CellularDistance, CellularReturn, FractalType};
+                put(wfo::TYPE, field_code(&w.field) as f64);
                 put(wfo::SEED, n.seed as f64);
                 put(wfo::FREQUENCY, n.frequency as f64);
                 put(wfo::OCTAVES, n.octaves as f64);
