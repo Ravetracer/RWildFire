@@ -52,6 +52,7 @@ pub struct RwfApp {
     inspector: InspectorState,
     explorer: Explorer,
     explorer_open: bool,
+    mutagen: crate::mutagen::MutaGen,
     timeline: crate::timeline::Timeline,
     export: ExportDialog,
     render: crate::render_view::InteractiveRenderer,
@@ -80,6 +81,7 @@ impl RwfApp {
             inspector: InspectorState::default(),
             explorer: Explorer::default(),
             explorer_open: false,
+            mutagen: Default::default(),
             timeline: Default::default(),
             export: ExportDialog::default(),
             render: Default::default(),
@@ -322,6 +324,9 @@ impl eframe::App for RwfApp {
                 if let Some(f) = self.explorer.show(ui, &self.doc.flame, &self.doc.library) {
                     self.doc.replace(f);
                 }
+                if std::mem::take(&mut self.explorer.open_mutagen) {
+                    self.mutagen.open_with(&self.doc.flame);
+                }
             });
         }
 
@@ -352,6 +357,10 @@ impl eframe::App for RwfApp {
         }
 
         self.export.show(&ctx, &self.doc.flame, self.preview.gpu_context());
+        if let Some(f) = self.mutagen.show(&ctx, &self.doc.flame) {
+            self.doc.replace(f);
+            self.notify("Flame loaded into the editor");
+        }
         let current = self.doc.layer().gradient.clone();
         if let Some(g) = self.inspector.library.show_window(&ctx, &current) {
             self.doc.layer_mut().gradient = g;

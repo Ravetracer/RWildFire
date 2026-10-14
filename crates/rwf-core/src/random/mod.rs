@@ -26,7 +26,9 @@ mod gens_b;
 mod gens_c;
 mod gens_d;
 mod gens_e;
+pub mod gradients;
 pub mod java;
+pub mod mutagen;
 pub mod mutations;
 
 use crate::gradient::Gradient;
@@ -456,7 +458,7 @@ pub(crate) fn sample(generator: Generator, rng: &mut Rng, quality: Quality, simp
     for _ in 0..quality.max_samples {
         let mut flame = generator.prepare(&mut st);
         for layer in &mut flame.layers {
-            layer.gradient = Gradient::random(st.rng);
+            layer.gradient = gradients::random_gradient(st.rng);
         }
         generator.post_process(&mut st, &mut flame);
         if st.rng.random() > 0.666 {
@@ -506,85 +508,6 @@ fn generate_own(generator: Generator, rng: &mut Rng) -> Flame {
         }
     }
     best.map(|(_, f)| f).unwrap_or_else(|| own_generator(generator, rng))
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Mutation {
-    /// Small random changes to affine coefficients.
-    Affine,
-    /// Change variation amounts/parameters, sometimes swap a variation.
-    Variations,
-    /// New gradient or gradient shift.
-    Colors,
-    /// One of the above, chosen at random.
-    Mixed,
-}
-
-/// Returns a mutated copy of `flame`; `strength` in 0..1.
-pub fn mutate(flame: &Flame, kind: Mutation, strength: f64, rng: &mut Rng) -> Flame {
-    let mut f = flame.clone();
-    let nice = available(NICE);
-    let kind = if kind == Mutation::Mixed { [Mutation::Affine, Mutation::Variations, Mutation::Colors][rng.random_int(3)] } else { kind };
-    let Some(layer) = f.layers.first_mut() else {
-        return f;
-    };
-    match kind {
-        Mutation::Affine => {
-            for xf in &mut layer.xforms {
-                if rng.chance(0.6) {
-                    xf.coefs.rotate(rng.range(-30.0, 30.0) * strength);
-                    xf.coefs.scale(1.0 + rng.range(-0.15, 0.15) * strength);
-                    xf.coefs.translate(rng.range(-0.3, 0.3) * strength, rng.range(-0.3, 0.3) * strength);
-                }
-            }
-        }
-        Mutation::Variations => {
-            if layer.xforms.is_empty() {
-                return f;
-            }
-            let i = rng.random_int(layer.xforms.len());
-            let xf = &mut layer.xforms[i];
-            if rng.chance(0.4) || xf.variations.is_empty() {
-                let name = pick(rng, &nice);
-                if xf.variations.len() > 1 && rng.chance(0.5) {
-                    let j = rng.random_int(xf.variations.len());
-                    let amount = xf.variations[j].amount;
-                    xf.variations[j] = VariationInstance::new(name, amount);
-                } else {
-                    add_var(xf, name, rng.range(0.1, 0.6) * strength.max(0.2), rng);
-                }
-            } else {
-                for v in &mut xf.variations {
-                    v.amount *= 1.0 + rng.range(-0.5, 0.5) * strength;
-                    if let Some(def) = variations::find(&v.name) {
-                        for (k, p) in def.params.iter().enumerate() {
-                            if k < v.params.len() && rng.chance(0.5) {
-                                let span = (p.max - p.min).abs() * 0.2 * strength;
-                                v.params[k] += rng.range(-span, span);
-                                if p.integer {
-                                    v.params[k] = v.params[k].round();
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        Mutation::Colors => {
-            if rng.chance(0.5) {
-                layer.gradient = Gradient::random(rng);
-            } else {
-                layer.gradient.adjust_hsl(rng.range(-0.5, 0.5) * strength, 0.0, 0.0);
-            }
-            for xf in &mut layer.xforms {
-                if rng.chance(0.5) {
-                    xf.color = (xf.color + rng.range(-0.3, 0.3) * strength).rem_euclid(1.0);
-                }
-            }
-        }
-        Mutation::Mixed => unreachable!(),
-    }
-    f
 }
 
 #[cfg(test)]

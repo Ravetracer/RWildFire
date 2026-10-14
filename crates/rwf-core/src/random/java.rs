@@ -46,7 +46,7 @@ pub enum Plane {
     ZX,
 }
 
-fn coefs(xf: &mut XForm, plane: Plane, post: bool) -> &mut Affine {
+pub fn coefs(xf: &mut XForm, plane: Plane, post: bool) -> &mut Affine {
     match (plane, post) {
         (Plane::XY, false) => &mut xf.coefs,
         (Plane::XY, true) => &mut xf.post,
@@ -114,10 +114,15 @@ pub fn local_translate_in(xf: &mut XForm, plane: Plane, dx: f64, dy: f64, post: 
 
 /// `XFormTransformService.globalTranslate`.
 pub fn global_translate(xf: &mut XForm, dx: f64, dy: f64, post: bool) {
+    global_translate_in(xf, Plane::XY, dx, dy, post);
+}
+
+/// `XFormTransformService.globalTranslate` in an edit plane.
+pub fn global_translate_in(xf: &mut XForm, plane: Plane, dx: f64, dy: f64, post: bool) {
     if dx.abs() < SMALL_EPSILON && dy.abs() < SMALL_EPSILON {
         return;
     }
-    let a = coefs(xf, Plane::XY, post);
+    let a = coefs(xf, plane, post);
     a.c20 += dx;
     a.c21 += dy;
 }

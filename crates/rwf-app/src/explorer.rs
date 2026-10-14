@@ -17,14 +17,14 @@
 //
 // SPDX-License-Identifier: LGPL-3.0-or-later
 
-//! Bottom "explore" strip: thumbnails of random flames, mutations or the flames of a file,
-//! generated in background threads.
+//! Bottom "explore" strip: thumbnails of random flames or the flames of a file, generated in
+//! background threads; MutaGen opens from here.
 
 use std::sync::mpsc::{Receiver, Sender, channel};
 
-use egui::{Color32, CornerRadius, RichText, Sense, Stroke, vec2};
+use egui::{Color32, CornerRadius, Sense, Stroke, vec2};
 use rwf_core::Flame;
-use rwf_core::random::{Generator, Mutation, generate, mutate};
+use rwf_core::random::{Generator, generate};
 use rwf_core::rng::Rng;
 
 use crate::{icons, theme};
@@ -32,7 +32,6 @@ use crate::{icons, theme};
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Mode {
     Random,
-    Mutations,
     File,
 }
 
@@ -48,8 +47,8 @@ struct Thumb {
 pub struct Explorer {
     pub mode: Mode,
     pub generator: Generator,
-    pub mutation: Mutation,
-    pub strength: f64,
+    /// The MutaGen button was clicked.
+    pub open_mutagen: bool,
     thumbs: Vec<Option<Thumb>>,
     generation: u64,
     tx: Sender<(u64, usize, Flame, Vec<u8>)>,
@@ -63,8 +62,7 @@ impl Default for Explorer {
         Self {
             mode: Mode::Random,
             generator: Generator::Classic,
-            mutation: Mutation::Mixed,
-            strength: 0.5,
+            open_mutagen: false,
             thumbs: (0..SLOTS).map(|_| None).collect(),
             generation: 0,
             tx,
@@ -93,14 +91,11 @@ impl Explorer {
             let tx = self.tx.clone();
             let mode = self.mode;
             let generator = self.generator;
-            let mutation = self.mutation;
-            let strength = self.strength;
             let base = if mode == Mode::File { library[i].clone() } else { current.clone() };
             std::thread::spawn(move || {
                 let mut rng = Rng::from_entropy();
                 let flame = match mode {
                     Mode::Random => generate(generator, &mut rng),
-                    Mode::Mutations => mutate(&base, mutation, strength, &mut rng),
                     Mode::File => base,
                 };
                 let img = render_thumb(&flame);
@@ -133,7 +128,6 @@ impl Explorer {
             ui.add_space(8.0);
             let before = self.mode;
             ui.selectable_value(&mut self.mode, Mode::Random, "Random");
-            ui.selectable_value(&mut self.mode, Mode::Mutations, "Mutations");
             ui.add_enabled_ui(!library.is_empty(), |ui| {
                 ui.selectable_value(&mut self.mode, Mode::File, format!("File ({})", library.len()));
             });
@@ -146,15 +140,6 @@ impl Explorer {
                         }
                     });
                 }
-                Mode::Mutations => {
-                    egui::ComboBox::from_id_salt("explore-mut").selected_text(format!("{:?}", self.mutation)).show_ui(ui, |ui| {
-                        for m in [Mutation::Mixed, Mutation::Affine, Mutation::Variations, Mutation::Colors] {
-                            ui.selectable_value(&mut self.mutation, m, format!("{m:?}"));
-                        }
-                    });
-                    ui.label(RichText::new("Strength").color(theme::TEXT_MUTED));
-                    ui.add(egui::Slider::new(&mut self.strength, 0.05..=1.0).show_value(false));
-                }
                 Mode::File => {}
             }
             let refresh_label = if self.mode == Mode::File { "Load thumbnails".to_string() } else { format!("{}  New batch", icons::REFRESH) };
@@ -163,6 +148,10 @@ impl Explorer {
             }
             if self.pending > 0 {
                 ui.spinner();
+            }
+            ui.separator();
+            if ui.button(format!("{}  MutaGen…", icons::SPARKLE)).on_hover_text("A grid of mutations of the current flame").clicked() {
+                self.open_mutagen = true;
             }
         });
         ui.add_space(4.0);

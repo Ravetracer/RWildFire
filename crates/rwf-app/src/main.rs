@@ -27,6 +27,7 @@ mod export;
 mod explorer;
 mod gradients;
 mod icons;
+mod mutagen;
 mod preview;
 mod quilt_view;
 mod render_view;
