@@ -1190,7 +1190,12 @@ impl GpuRenderer {
     /// read the result with [`GpuRenderer::tonemap`] + [`GpuRenderer::read_image`],
     /// [`GpuRenderer::read_hdr`] or [`GpuRenderer::read_zbuffer`].
     pub fn accumulate_frame(&mut self, flame: &Flame, frame: f64, w: u32, h: u32, quality: f64) -> Result<(), String> {
-        let packets = rwf_core::render::frame_packets(flame, frame);
+        self.accumulate_packets(&rwf_core::render::frame_packets(flame, frame), w, h, quality)
+    }
+
+    /// Iterates several flame states into one image up to `quality` (motion blur packets,
+    /// `packets[0]` first), blocking.
+    pub fn accumulate_packets(&mut self, packets: &[Flame], w: u32, h: u32, quality: f64) -> Result<(), String> {
         for (i, f) in packets.iter().enumerate() {
             if i == 0 {
                 self.set_flame(f, w, h);

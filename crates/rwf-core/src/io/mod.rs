@@ -110,7 +110,7 @@ fn collect_flames<'a>(el: &'a Element, out: &mut Vec<&'a Element>) {
     }
 }
 
-fn parse_flame(el: &Element) -> Flame {
+pub(crate) fn parse_flame(el: &Element) -> Flame {
     let mut flame = Flame::default();
     // The shape sets its defaults first; explicit attributes override them below.
     if let Some(shape) = el.attr("cam_dof_shape").and_then(crate::render::dof::DofShape::parse) {

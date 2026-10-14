@@ -40,7 +40,7 @@ struct Args {
 
 fn usage() -> ! {
     eprintln!(
-        "usage: rwf-cli render <file.flame> [-o out.png|.jpg|.hdr|.exr] [-w width] [-h height] [-q quality] [-i flame-index] [--gpu] [-t threads] [--zbuffer] [--jpeg-quality 1-100]\n       rwf-cli batch [options] <files or folders...>   (rwf-cli batch for the options)\n       rwf-cli quilt <file.flame> -o out.png -w width [-h height] [-q quality] [--tiles COLSxROWS]\n       rwf-cli random <out-dir> [count] [generator filter] [--symmetry NAME] [--weighting NAME]"
+        "usage: rwf-cli render <file.flame> [-o out.png|.jpg|.hdr|.exr] [-w width] [-h height] [-q quality] [-i flame-index] [--gpu] [-t threads] [--zbuffer] [--jpeg-quality 1-100]\n       rwf-cli batch [options] <files or folders...>   (rwf-cli batch for the options)\n       rwf-cli quilt <file.flame> -o out.png -w width [-h height] [-q quality] [--tiles COLSxROWS]\n       rwf-cli movie <file.jwfmovie> -o out.mp4|.mov|.webm|out-dir [--cpu]\n       rwf-cli random <out-dir> [count] [generator filter] [--symmetry NAME] [--weighting NAME]"
     );
     std::process::exit(2);
 }
@@ -361,7 +361,51 @@ fn quilt_cmd() {
     }
 }
 
+/// `rwf-cli movie <file.jwfmovie> -o out.mp4|.mov|.webm|out-dir [--cpu]`: renders a movie of
+/// the movie maker (a folder gets a PNG sequence).
+fn movie_cmd() {
+    let args: Vec<String> = std::env::args().skip(2).collect();
+    let (mut input, mut output, mut cpu) = (None, None, false);
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "-o" => {
+                i += 1;
+                output = args.get(i).map(PathBuf::from);
+            }
+            "--cpu" => cpu = true,
+            a => input = Some(PathBuf::from(a)),
+        }
+        i += 1;
+    }
+    let (Some(input), Some(output)) = (input, output) else {
+        eprintln!("usage: rwf-cli movie <file.jwfmovie> -o out.mp4|.mov|.webm|out-dir [--cpu]");
+        std::process::exit(2);
+    };
+    let movie = rwf_core::movie::read_movie_file(&input).unwrap_or_else(|e| {
+        eprintln!("failed to read {}: {e}", input.display());
+        std::process::exit(1);
+    });
+    let format = rwf_core::video::VideoFormat::from_path(&output);
+    let gpu = if cpu { None } else { rwf_gpu::GpuContext::new_headless().map_err(|e| eprintln!("no GPU ({e}), rendering on the CPU")).ok() };
+    let started = std::time::Instant::now();
+    let cancel = std::sync::atomic::AtomicBool::new(false);
+    let r = rwf_gpu::movie::render_movie(&movie, &output, format, gpu, &cancel, |i, total, _| {
+        eprint!("\rframe {}/{total}  {:.0} s", i + 1, started.elapsed().as_secs_f64());
+    });
+    eprintln!();
+    if let Err(e) = r {
+        eprintln!("movie failed: {e}");
+        std::process::exit(1);
+    }
+    eprintln!("{}", output.display());
+}
+
 fn main() {
+    if std::env::args().nth(1).as_deref() == Some("movie") {
+        movie_cmd();
+        return;
+    }
     if std::env::args().nth(1).as_deref() == Some("quilt") {
         quilt_cmd();
         return;

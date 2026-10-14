@@ -42,6 +42,7 @@ enum RenderTab {
     Interactive,
     Batch,
     Quilt,
+    Movie,
 }
 
 pub struct RwfApp {
@@ -61,6 +62,7 @@ pub struct RwfApp {
     render: crate::render_view::InteractiveRenderer,
     batch: crate::batch_view::BatchView,
     quilt: crate::quilt_view::QuiltView,
+    movie: crate::movie_view::MovieView,
     render_tab: RenderTab,
     generator: Generator,
     rng: Rng,
@@ -92,6 +94,7 @@ impl RwfApp {
             render: Default::default(),
             batch: Default::default(),
             quilt: Default::default(),
+            movie: Default::default(),
             render_tab: RenderTab::Interactive,
             generator: Generator::Classic,
             rng,
@@ -288,7 +291,7 @@ impl eframe::App for RwfApp {
                 explorer_open: self.explorer_open,
                 timeline_open: self.timeline.open,
                 render_open: self.render.open,
-                render_busy: self.batch.is_running() || self.quilt.is_running(),
+                render_busy: self.batch.is_running() || self.quilt.is_running() || self.movie.is_running(),
                 randomizing: self.randomizing.is_some(),
             };
             if let Some(a) = topbar::show(ui, &info, &mut self.generator, &mut self.explorer.extras) {
@@ -305,6 +308,8 @@ impl eframe::App for RwfApp {
                     ui.selectable_value(&mut self.render_tab, RenderTab::Batch, batch).on_hover_text("Render a queue of flames to files");
                     let quilt = if self.quilt.is_running() { "Quilt •" } else { "Quilt" };
                     ui.selectable_value(&mut self.render_tab, RenderTab::Quilt, quilt).on_hover_text("Very large images, rendered tile by tile");
+                    let movie = if self.movie.is_running() { "Movie •" } else { "Movie" };
+                    ui.selectable_value(&mut self.render_tab, RenderTab::Movie, movie).on_hover_text("A movie from flames that fade or morph into each other");
                 });
             });
             match self.render_tab {
@@ -319,6 +324,13 @@ impl eframe::App for RwfApp {
                 RenderTab::Quilt => {
                     self.quilt.sync_flame(&self.doc);
                     self.quilt.show(ui, &self.doc, self.preview.gpu_available());
+                }
+                RenderTab::Movie => {
+                    if let Some(f) = self.movie.show(ui, &self.doc, self.preview.gpu_context(), (self.generator, self.explorer.extras)) {
+                        self.doc.replace(f);
+                        self.render.open = false;
+                        self.notify("Flame loaded into the editor");
+                    }
                 }
             }
         }

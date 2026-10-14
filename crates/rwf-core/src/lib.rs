@@ -32,6 +32,7 @@ pub mod math;
 pub mod mesh;
 pub mod mixer;
 pub mod model;
+pub mod movie;
 pub mod output;
 pub mod random;
 pub mod render;

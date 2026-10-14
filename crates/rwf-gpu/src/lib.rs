@@ -20,6 +20,7 @@
 //! GPU (wgpu compute) renderer for flames.
 
 pub mod batch;
+pub mod movie;
 pub mod codegen;
 pub mod quilt;
 pub mod renderer;
