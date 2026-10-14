@@ -53,6 +53,9 @@ pub struct RwfApp {
     explorer: Explorer,
     explorer_open: bool,
     mutagen: crate::mutagen::MutaGen,
+    curves: crate::curve_editor::CurveEditor,
+    /// The curve editor changed keys; re-evaluate the frame once the pointer is released.
+    curves_changed: bool,
     timeline: crate::timeline::Timeline,
     export: ExportDialog,
     render: crate::render_view::InteractiveRenderer,
@@ -82,6 +85,8 @@ impl RwfApp {
             explorer: Explorer::default(),
             explorer_open: false,
             mutagen: Default::default(),
+            curves: Default::default(),
+            curves_changed: false,
             timeline: Default::default(),
             export: ExportDialog::default(),
             render: Default::default(),
@@ -336,6 +341,9 @@ impl eframe::App for RwfApp {
                 self.timeline.show(ui, &mut self.doc);
             });
         }
+        if let Some(path) = self.timeline.curve_request.take() {
+            self.curves.open_with(path);
+        }
 
         if !self.render.open {
             // ---- left: transforms ----
@@ -357,6 +365,12 @@ impl eframe::App for RwfApp {
         }
 
         self.export.show(&ctx, &self.doc.flame, self.preview.gpu_context());
+        let mut playhead = self.timeline.current_frame();
+        self.curves_changed |= self.curves.show(&ctx, &mut self.doc.flame, &mut playhead);
+        if playhead != self.timeline.current_frame() {
+            self.timeline.frame = playhead;
+            self.timeline.playing = false;
+        }
         if let Some(f) = self.mutagen.show(&ctx, &self.doc.flame) {
             self.doc.replace(f);
             self.notify("Flame loaded into the editor");
@@ -386,6 +400,10 @@ impl eframe::App for RwfApp {
 
         // History + window title
         let pointer_down = ctx.input(|i| i.pointer.any_down());
+        if self.curves_changed && !pointer_down {
+            self.curves_changed = false;
+            self.timeline.invalidate();
+        }
         self.timeline.auto_key(&mut self.doc, pointer_down);
         self.doc.commit_if_settled(pointer_down);
         let title = format!("{} — RWildFire", self.doc.title());

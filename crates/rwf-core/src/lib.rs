@@ -20,6 +20,7 @@
 //! Core of RWildFire (a Rust port of JWildfire): flame model, file IO, variations and the CPU renderer.
 
 pub mod animation;
+pub mod audio;
 pub mod formula;
 pub mod brush;
 pub mod curves;

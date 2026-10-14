@@ -74,12 +74,11 @@ Each variation is a `VarDef` with a CPU function and a WGSL snippet that read th
 
 ## Status / roadmap
 
-Done: core editor, file compatibility, CPU and GPU renderer, 1010 variations (incl. prepost, image and mesh resources, formula plots and curves, SVG and text, sub-flames), gradient editing, 54 of JWildfire's random flame generators (all but Duckies, Color map, Wikimedia Commons and the script generator), JWildfire's random gradient, symmetry and weighting field generators (top bar, Explore strip and `rwf-cli random --symmetry/--weighting`), MutaGen with all 19 mutation types (no user lists, no morph amount), PNG export, density estimation, DOF, layers, animation and video export, adaptive filter, post blur, AI denoiser, solid rendering, xform weighting fields, channel mixer, background xforms, JPEG/HDR/OpenEXR and z-buffer output (CPU and GPU), interactive renderer (long progressive GPU renders with pause, resume and saved render state), batch renderer (render queue in the app and `rwf-cli batch`), quilt renderer (images larger than the GPU can render at once, in seamless tiles; app and `rwf-cli quilt`).
+Done: core editor, file compatibility, CPU and GPU renderer, 1010 variations (incl. prepost, image and mesh resources, formula plots and curves, SVG and text, sub-flames), gradient editing, 54 of JWildfire's random flame generators (all but Duckies, Color map, Wikimedia Commons and the script generator), JWildfire's random gradient, symmetry and weighting field generators (top bar, Explore strip and `rwf-cli random --symmetry/--weighting`), MutaGen with all 19 mutation types (no user lists, no morph amount), PNG export, density estimation, DOF, layers, animation and video export, curve editor for animation tracks with envelopes from audio files (MP3, WAV, FLAC, Ogg: loudness of a frequency band per frame), adaptive filter, post blur, AI denoiser, solid rendering, xform weighting fields, channel mixer, background xforms, JPEG/HDR/OpenEXR and z-buffer output (CPU and GPU), interactive renderer (long progressive GPU renders with pause, resume and saved render state), batch renderer (render queue in the app and `rwf-cli batch`), quilt renderer (images larger than the GPU can render at once, in seamless tiles; app and `rwf-cli quilt`).
 
 Planned, by priority:
 
 1. Creative tools
-   - Motion curve / envelope editor, incl. audio (MP3) envelopes
    - Easy movie maker (movies from a sequence of morphing flames)
    - Mesh generator (flame to sliced 3D mesh, OBJ export)
 2. Optional / later

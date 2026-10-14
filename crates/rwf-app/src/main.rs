@@ -22,6 +22,7 @@
 mod app;
 mod batch_view;
 mod canvas;
+mod curve_editor;
 mod doc;
 mod export;
 mod explorer;

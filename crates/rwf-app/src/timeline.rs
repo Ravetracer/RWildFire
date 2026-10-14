@@ -35,11 +35,22 @@ pub struct Timeline {
     last_tick: Instant,
     selected: Option<(String, f64)>,
     shown_frame: Option<f64>,
+    /// The curve editor should open (on the given track).
+    pub curve_request: Option<Option<String>>,
 }
 
 impl Default for Timeline {
     fn default() -> Self {
-        Self { open: false, frame: 0.0, playing: false, auto_key: false, last_tick: Instant::now(), selected: None, shown_frame: None }
+        Self {
+            open: false,
+            frame: 0.0,
+            playing: false,
+            auto_key: false,
+            last_tick: Instant::now(),
+            selected: None,
+            shown_frame: None,
+            curve_request: None,
+        }
     }
 }
 
@@ -78,6 +89,12 @@ impl Timeline {
             }
             self.shown_frame = Some(f);
         }
+    }
+
+    /// Re-evaluates the animation at the current frame on the next update (after its keys
+    /// changed).
+    pub fn invalidate(&mut self) {
+        self.shown_frame = None;
     }
 
     pub fn current_frame(&self) -> f64 {
@@ -187,6 +204,9 @@ impl Timeline {
                 });
                 ui.label(RichText::new("Applied when exporting animations.").small().color(theme::TEXT_MUTED));
             });
+            if ui.button("Curves…").on_hover_text("Edit a track as a curve, or create one from audio (double-click a track name)").clicked() {
+                self.curve_request = Some(self.selected.as_ref().map(|(p, _)| p.clone()));
+            }
             if let Some((path, frame)) = self.selected.clone() {
                 ui.separator();
                 if let Some(t) = doc.flame.animation.tracks.iter_mut().find(|t| t.path == path) {
@@ -246,6 +266,9 @@ impl Timeline {
                 }
                 let lbl = animation::label(&doc.flame, path);
                 p.text(pos2(rect.left() + 6.0, y), Align2::LEFT_CENTER, lbl, FontId::proportional(11.0), theme::TEXT_MUTED);
+                if resp.double_clicked() && pointer.is_some_and(|pp| pp.x < lane_x0 && (pp.y - y).abs() < ROW_H / 2.0) {
+                    self.curve_request = Some(Some(path.clone()));
+                }
                 for fr in frames {
                     let c = pos2(fx(*fr), y);
                     let sel = self.selected.as_ref().is_some_and(|(sp, sf)| sp == path && (sf - fr).abs() < 1e-6);

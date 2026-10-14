@@ -112,6 +112,26 @@ impl Track {
         }
     }
 
+    /// `Envelope.smooth(3)`: every key value becomes the mean of itself and its neighbours
+    /// (only when there are more than three keys).
+    pub fn smooth(&mut self) {
+        if self.keys.len() <= 3 {
+            return;
+        }
+        let old: Vec<f64> = self.keys.iter().map(|k| k.value).collect();
+        for (i, k) in self.keys.iter_mut().enumerate() {
+            let w = &old[i.saturating_sub(1)..(i + 2).min(old.len())];
+            k.value = w.iter().sum::<f64>() / w.len() as f64;
+        }
+    }
+
+    /// Scales all key values around `pivot` and adds `offset`.
+    pub fn scale_values(&mut self, pivot: f64, scale: f64, offset: f64) {
+        for k in &mut self.keys {
+            k.value = pivot + (k.value - pivot) * scale + offset;
+        }
+    }
+
     pub fn remove_key_at(&mut self, frame: f64) -> bool {
         let n = self.keys.len();
         self.keys.retain(|k| (k.frame - frame).abs() >= 1e-6);
@@ -572,6 +592,17 @@ pub fn jwf_curve_track(attrs: &[(String, String)], prefix: &str, path: &str) -> 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn smoothing_averages_neighbours() {
+        let keys = [0.0, 3.0, 0.0, 3.0, 0.0].iter().enumerate().map(|(i, &value)| Key { frame: i as f64, value }).collect();
+        let mut t = Track { path: "brightness".into(), interp: Interp::Linear, keys };
+        t.smooth();
+        let v: Vec<f64> = t.keys.iter().map(|k| k.value).collect();
+        assert_eq!(v, vec![1.5, 1.0, 2.0, 1.0, 1.5]);
+        t.scale_values(1.0, 2.0, 0.5);
+        assert_eq!(t.keys[1].value, 1.5);
+    }
+
     use super::*;
 
     #[test]
