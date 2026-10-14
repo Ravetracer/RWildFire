@@ -189,13 +189,16 @@ fn render_anim_cmd() {
     let mut gpu_renderer = gpu.then(|| rwf_gpu::GpuRenderer::new(rwf_gpu::GpuContext::new_headless().expect("GPU")));
     let t0 = Instant::now();
     for frame in from..=to {
+        let mut denoised = None;
         let mut img = match &mut gpu_renderer {
             Some(r) => {
                 r.set_with_alpha(false);
-                r.render_frame(&flame, frame as f64, w, h, q).unwrap_or_else(|e| {
+                let mut img = r.render_frame(&flame, frame as f64, w, h, q).unwrap_or_else(|e| {
                     eprintln!("{e}");
                     std::process::exit(1);
-                })
+                });
+                denoised = Some(r.apply_post_denoiser(&flame, &mut img, w, h));
+                img
             }
             None => {
                 let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
@@ -204,7 +207,7 @@ fn render_anim_cmd() {
                     .image(false)
             }
         };
-        if let Err(e) = rwf_core::render::denoise::apply_post_denoiser(&flame, &mut img, w, h, gpu) {
+        if let Err(e) = denoised.unwrap_or_else(|| rwf_core::render::denoise::apply_post_denoiser(&flame, &mut img, w, h, gpu)) {
             eprintln!("warning: denoiser failed: {e}");
         }
         sink.write_frame(frame - from, &img).expect("write frame");
@@ -568,9 +571,11 @@ fn main() {
     let t0 = Instant::now();
     let mut zbuffer = None;
     let mut hdr = None;
+    let mut gpu_denoise_note = None;
     let rgba = if gpu {
         let result = (|| -> Result<Vec<u8>, String> {
             let mut r = rwf_gpu::GpuRenderer::new(rwf_gpu::GpuContext::new_headless()?);
+            gpu_denoise_note = None;
             r.set_with_alpha(flame.bg_transparency);
             r.set_zbuffer(args.zbuffer);
             r.set_flame(flame, w, h);
@@ -586,7 +591,9 @@ fn main() {
                 return Ok(Vec::new());
             }
             r.tonemap();
-            r.read_image().ok_or_else(|| "readback failed".to_string())
+            let mut img = r.read_image().ok_or_else(|| "readback failed".to_string())?;
+            gpu_denoise_note = Some(r.apply_post_denoiser(flame, &mut img, w, h));
+            Ok(img)
         })();
         match result {
             Ok(img) => img,
@@ -615,7 +622,8 @@ fn main() {
     };
     let mut rgba = rgba;
     if hdr.is_none() {
-        match rwf_core::render::denoise::apply_post_denoiser(flame, &mut rgba, w, h, gpu) {
+        let outcome = gpu_denoise_note.take().unwrap_or_else(|| rwf_core::render::denoise::apply_post_denoiser(flame, &mut rgba, w, h, gpu));
+        match outcome {
             Ok(o) if o.denoised() || flame.ai_post_denoiser != rwf_core::render::denoise::Denoiser::None => eprintln!("{}", o.describe()),
             Ok(_) => {}
             Err(e) => eprintln!("warning: denoiser failed: {e}"),

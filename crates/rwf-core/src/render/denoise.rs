@@ -76,6 +76,14 @@ pub fn find_tool() -> Option<PathBuf> {
     std::env::split_paths(&std::env::var_os("PATH")?).map(|d| d.join(exe)).find(|p| p.is_file())
 }
 
+/// Helper images for the denoiser, per pixel RGB floats: the albedo (0..1) and, for solid
+/// flames, the surface normals (-1..1).
+#[derive(Clone, Debug, Default)]
+pub struct DenoiseAux {
+    pub albedo: Vec<f32>,
+    pub normal: Option<Vec<f32>>,
+}
+
 /// What [`apply_post_denoiser`] did.
 #[derive(Clone, Debug, PartialEq)]
 pub enum DenoiseOutcome {
@@ -117,14 +125,25 @@ pub fn skip_reason(flame: &Flame, gpu_render: bool) -> Option<&'static str> {
 /// and tells what happened: skipped if the flame has no denoiser, it is disabled for GPU
 /// renders, the blend leaves the image unchanged, or no denoiser is installed.
 pub fn apply_post_denoiser(flame: &Flame, rgba: &mut [u8], width: u32, height: u32, gpu_render: bool) -> Result<DenoiseOutcome, String> {
+    apply_post_denoiser_with(flame, rgba, width, height, gpu_render, None)
+}
+
+/// [`apply_post_denoiser`] with helper images (see [`DenoiseAux`]); they are used by the OIDN
+/// library, not by the `oidnDenoise` tool.
+pub fn apply_post_denoiser_with(flame: &Flame, rgba: &mut [u8], width: u32, height: u32, gpu_render: bool, aux: Option<&DenoiseAux>) -> Result<DenoiseOutcome, String> {
     if let Some(why) = skip_reason(flame, gpu_render) {
         return Ok(DenoiseOutcome::Skipped(why.into()));
     }
     let prefer = if flame.ai_post_denoiser == Denoiser::Optix { DeviceType::Cuda } else { DeviceType::Default };
     let library = oidn::library();
     if library.is_ok() {
-        let used = denoise_with_library(rgba, width, height, flame.post_denoiser_blend, prefer)?;
+        let used = denoise_with_library(rgba, width, height, flame.post_denoiser_blend, prefer, aux)?;
         let mut how = format!("OIDN on {}", used.label());
+        match aux {
+            Some(DenoiseAux { normal: Some(_), .. }) => how.push_str(", with albedo and normals"),
+            Some(_) => how.push_str(", with albedo"),
+            None => {}
+        }
         if prefer == DeviceType::Cuda && used != DeviceType::Cuda {
             how.push_str(" (no usable NVIDIA GPU)");
         }
@@ -151,13 +170,15 @@ pub fn backend() -> Result<String, String> {
 
 /// Denoises the color channels of an RGBA8 image in place with the OIDN library, keeping
 /// alpha; `blend` as in [`denoise`]. Returns the device type used.
-pub fn denoise_with_library(rgba: &mut [u8], width: u32, height: u32, blend: f64, prefer: DeviceType) -> Result<DeviceType, String> {
+pub fn denoise_with_library(rgba: &mut [u8], width: u32, height: u32, blend: f64, prefer: DeviceType, aux: Option<&DenoiseAux>) -> Result<DeviceType, String> {
     let n = width as usize * height as usize;
     if rgba.len() != n * 4 {
         return Err("image size mismatch".into());
     }
     let mut color: Vec<f32> = rgba.chunks_exact(4).flat_map(|p| [p[0], p[1], p[2]]).map(|c| c as f32 / 255.0).collect();
-    let used = oidn::denoise(&mut color, width as usize, height as usize, false, true, prefer)?;
+    let albedo = aux.map(|a| a.albedo.as_slice());
+    let normal = aux.and_then(|a| a.normal.as_deref());
+    let used = oidn::denoise(&mut color, width as usize, height as usize, false, true, prefer, albedo, normal)?;
     blend_back(rgba, &color, blend);
     Ok(used)
 }

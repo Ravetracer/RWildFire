@@ -140,6 +140,14 @@ impl Preview {
         }
     }
 
+    /// The denoiser helper images of the GPU preview.
+    pub fn read_denoise_aux(&mut self) -> Option<rwf_core::render::denoise::DenoiseAux> {
+        match self.backend {
+            Backend::Gpu => self.gpu.as_mut()?.read_denoise_aux(),
+            Backend::Cpu => None,
+        }
+    }
+
     pub fn is_converged(&self) -> bool {
         self.density() >= self.target_quality
     }

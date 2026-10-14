@@ -149,6 +149,11 @@ impl Default for InteractiveRenderer {
     }
 }
 
+/// Whether the denoiser will run with the OIDN library (which uses helper images).
+fn wants_aux(flame: &Flame) -> bool {
+    rwf_core::render::denoise::skip_reason(flame, true).is_none() && rwf_core::render::oidn::library().is_ok()
+}
+
 fn format_duration(d: Duration) -> String {
     let s = d.as_secs();
     format!("{}:{:02}:{:02}", s / 3600, s / 60 % 60, s % 60)
@@ -304,7 +309,8 @@ impl InteractiveRenderer {
         if self.denoised.wants(key, interval)
             && let (Some(img), Some((w, h))) = (r.read_image(), r.output_size())
         {
-            self.denoised.start(key, flame, img, w, h, true);
+            let aux = wants_aux(flame).then(|| r.read_denoise_aux()).flatten();
+            self.denoised.start(key, flame, img, w, h, true, aux);
         }
     }
 
@@ -691,6 +697,7 @@ impl InteractiveRenderer {
             return;
         };
         let zbuf = if self.zbuffer { r.read_zbuffer() } else { None };
+        let aux = (!format.is_hdr() && wants_aux(&flame)).then(|| r.read_denoise_aux()).flatten();
         let (w, h) = self.render_size;
         let (tx, rx) = channel();
         std::thread::spawn(move || {
@@ -701,7 +708,8 @@ impl InteractiveRenderer {
                         "not denoised: HDR images are saved as rendered".to_string()
                     }
                     Pixels::Rgba(mut img) => {
-                        let outcome = crate::export::denoise(&flame, &mut img, w, h, true)?;
+                        let outcome = rwf_core::render::denoise::apply_post_denoiser_with(&flame, &mut img, w, h, true, aux.as_ref())
+                            .map_err(|e| format!("denoiser: {e}"))?;
                         rwf_core::output::write_rgba8(&path, format, w, h, &img, jpeg_quality)?;
                         outcome.describe()
                     }

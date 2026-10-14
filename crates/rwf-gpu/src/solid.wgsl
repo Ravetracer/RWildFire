@@ -592,6 +592,45 @@ fn sld_shade_hdr(@builtin(global_invocation_id) gid: vec3<u32>) {
     hdr_out[i + 2u] = rgb.z;
 }
 
+// Denoiser helper images (6 floats per pixel): albedo (object color without lighting,
+// background where there is no surface) and the view space normal, averaged over the
+// pixel's raster cells.
+@compute @workgroup_size(16, 16)
+fn sld_aux(@builtin(global_invocation_id) gid: vec3<u32>) {
+    if (gid.x >= S.image_w || gid.y >= S.image_h) { return; }
+    let bg = background(gid.x, gid.y) / 255.0;
+    let os = i32(S.os);
+    let b = i32(S.border);
+    var albedo = vec3<f32>(0.0);
+    var normal = vec3<f32>(0.0);
+    for (var sx = 0; sx < os; sx++) {
+        for (var sy = 0; sy < os; sy++) {
+            let rx = i32(gid.x) * os + sx + b;
+            let ry = i32(gid.y) * os + sy + b;
+            var a = bg;
+            if (inside(rx, ry)) {
+                let c = cidx(rx, ry);
+                let nn = normals[c];
+                if (nn.w >= 0.5) {
+                    a = vec3<f32>(sattr[c * 8u + 3u], sattr[c * 8u + 4u], sattr[c * 8u + 5u]) * S.bal.xyz / 255.0;
+                    normal += nn.xyz;
+                }
+            }
+            albedo += a;
+        }
+    }
+    albedo = clamp(albedo / f32(os * os), vec3<f32>(0.0), vec3<f32>(1.0));
+    let len = length(normal);
+    if (len > EPS) { normal /= len; }
+    let i = (gid.y * S.image_w + gid.x) * 6u;
+    hdr_out[i] = albedo.x;
+    hdr_out[i + 1u] = albedo.y;
+    hdr_out[i + 2u] = albedo.z;
+    hdr_out[i + 3u] = normal.x;
+    hdr_out[i + 4u] = normal.y;
+    hdr_out[i + 5u] = normal.z;
+}
+
 @compute @workgroup_size(16, 16)
 fn sld_output(@builtin(global_invocation_id) gid: vec3<u32>) {
     if (gid.x >= S.image_w || gid.y >= S.image_h) { return; }

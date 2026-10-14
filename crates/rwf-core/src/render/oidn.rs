@@ -223,9 +223,70 @@ impl Oidn {
         DeviceType::from_raw(unsafe { (self.api.get_device_int)(device, name.as_ptr()) }).unwrap_or(DeviceType::Default)
     }
 
+    /// Runs one `RT` filter on `device`: the named float3 `inputs`, the result into `output`.
+    fn run_filter(
+        &self,
+        device: Device,
+        inputs: &[(&str, &[f32])],
+        output: &mut [f32],
+        width: usize,
+        height: usize,
+        flags: &[(&str, bool)],
+    ) -> Result<(), String> {
+        let bytes = std::mem::size_of_val(output);
+        let api = &self.api;
+        let c = |s: &str| CString::new(s).unwrap();
+        unsafe {
+            let filter = (api.new_filter)(device, c("RT").as_ptr());
+            let out_buf = (api.new_buffer)(device, bytes);
+            let mut buffers = vec![out_buf];
+            let result = (|| {
+                if filter.is_null() || out_buf.is_null() {
+                    return Err(self.error(device).unwrap_or_else(|| "OIDN: out of memory".into()));
+                }
+                for (name, data) in inputs {
+                    if data.len() != output.len() {
+                        return Err(format!("OIDN: {name} image has the wrong size"));
+                    }
+                    let b = (api.new_buffer)(device, bytes);
+                    if b.is_null() {
+                        return Err(self.error(device).unwrap_or_else(|| "OIDN: out of memory".into()));
+                    }
+                    buffers.push(b);
+                    (api.write_buffer)(b, 0, bytes, data.as_ptr().cast());
+                    (api.set_filter_image)(filter, c(name).as_ptr(), b, FORMAT_FLOAT3, width, height, 0, 0, 0);
+                }
+                (api.set_filter_image)(filter, c("output").as_ptr(), out_buf, FORMAT_FLOAT3, width, height, 0, 0, 0);
+                for (name, v) in flags {
+                    (api.set_filter_bool)(filter, c(name).as_ptr(), *v);
+                }
+                (api.commit_filter)(filter);
+                if let Some(e) = self.error(device) {
+                    return Err(e);
+                }
+                (api.execute_filter)(filter);
+                if let Some(e) = self.error(device) {
+                    return Err(e);
+                }
+                (api.read_buffer)(out_buf, 0, bytes, output.as_mut_ptr().cast());
+                self.error(device).map_or(Ok(()), Err)
+            })();
+            if !filter.is_null() {
+                (api.release_filter)(filter);
+            }
+            for b in buffers.into_iter().filter(|b| !b.is_null()) {
+                (api.release_buffer)(b);
+            }
+            result
+        }
+    }
+
     /// Denoises `color` (RGB, `width` × `height`, top to bottom) in place with the `RT`
     /// filter. `hdr`: linear values ≥ 0, otherwise 0..1 (`srgb`: sRGB/gamma encoded).
-    /// Returns the device type used.
+    /// `albedo` (RGB 0..1) and `normal` (needs `albedo`) help to keep edges and textures; they
+    /// are denoised first (OIDN's recommendation for noisy helper images). Returns the device
+    /// type used.
+    #[allow(clippy::too_many_arguments)]
     pub fn denoise(
         &mut self,
         color: &mut [f32],
@@ -234,6 +295,8 @@ impl Oidn {
         hdr: bool,
         srgb: bool,
         prefer: DeviceType,
+        albedo: Option<&[f32]>,
+        normal: Option<&[f32]>,
     ) -> Result<DeviceType, String> {
         if color.len() != width * height * 3 {
             return Err("image size mismatch".into());
@@ -243,43 +306,24 @@ impl Oidn {
             Err(_) if prefer != DeviceType::Cpu => self.device(DeviceType::Cpu)?,
             Err(e) => return Err(e),
         };
-        let bytes = std::mem::size_of_val(color);
-        let api = &self.api;
-        let c = |s: &str| CString::new(s).unwrap();
-        unsafe {
-            let input = (api.new_buffer)(device, bytes);
-            let output = (api.new_buffer)(device, bytes);
-            let filter = (api.new_filter)(device, c("RT").as_ptr());
-            let result = (|| {
-                if input.is_null() || output.is_null() || filter.is_null() {
-                    return Err(self.error(device).unwrap_or_else(|| "OIDN: out of memory".into()));
-                }
-                (api.write_buffer)(input, 0, bytes, color.as_ptr().cast());
-                (api.set_filter_image)(filter, c("color").as_ptr(), input, FORMAT_FLOAT3, width, height, 0, 0, 0);
-                (api.set_filter_image)(filter, c("output").as_ptr(), output, FORMAT_FLOAT3, width, height, 0, 0, 0);
-                (api.set_filter_bool)(filter, c("hdr").as_ptr(), hdr);
-                (api.set_filter_bool)(filter, c("srgb").as_ptr(), srgb && !hdr);
-                (api.commit_filter)(filter);
-                if let Some(e) = self.error(device) {
-                    return Err(e);
-                }
-                (api.execute_filter)(filter);
-                if let Some(e) = self.error(device) {
-                    return Err(e);
-                }
-                (api.read_buffer)(output, 0, bytes, color.as_mut_ptr().cast());
-                self.error(device).map_or(Ok(()), Err)
-            })();
-            if !filter.is_null() {
-                (api.release_filter)(filter);
-            }
-            for b in [input, output] {
-                if !b.is_null() {
-                    (api.release_buffer)(b);
-                }
-            }
-            result?;
+        let mut clean_albedo = albedo.map(|_| vec![0f32; color.len()]);
+        if let (Some(a), Some(out)) = (albedo, clean_albedo.as_mut()) {
+            self.run_filter(device, &[("albedo", a)], out, width, height, &[])?;
         }
+        let mut clean_normal = normal.filter(|_| albedo.is_some()).map(|_| vec![0f32; color.len()]);
+        if let (Some(n), Some(out)) = (normal, clean_normal.as_mut()) {
+            self.run_filter(device, &[("normal", n)], out, width, height, &[])?;
+        }
+        let input = color.to_vec();
+        let mut inputs: Vec<(&str, &[f32])> = vec![("color", &input)];
+        if let Some(a) = &clean_albedo {
+            inputs.push(("albedo", a));
+        }
+        if let Some(n) = &clean_normal {
+            inputs.push(("normal", n));
+        }
+        let flags = [("hdr", hdr), ("srgb", srgb && !hdr), ("cleanAux", clean_albedo.is_some())];
+        self.run_filter(device, &inputs, color, width, height, &flags)?;
         Ok(self.device_type(device))
     }
 
@@ -304,9 +348,19 @@ pub fn library() -> Result<PathBuf, String> {
 }
 
 /// [`Oidn::denoise`] with the shared library instance.
-pub fn denoise(color: &mut [f32], width: usize, height: usize, hdr: bool, srgb: bool, prefer: DeviceType) -> Result<DeviceType, String> {
+#[allow(clippy::too_many_arguments)]
+pub fn denoise(
+    color: &mut [f32],
+    width: usize,
+    height: usize,
+    hdr: bool,
+    srgb: bool,
+    prefer: DeviceType,
+    albedo: Option<&[f32]>,
+    normal: Option<&[f32]>,
+) -> Result<DeviceType, String> {
     match &mut *global().lock().unwrap_or_else(|e| e.into_inner()) {
-        Ok(o) => o.denoise(color, width, height, hdr, srgb, prefer),
+        Ok(o) => o.denoise(color, width, height, hdr, srgb, prefer, albedo, normal),
         Err(e) => Err(e.clone()),
     }
 }
@@ -352,7 +406,7 @@ mod tests {
         let (clean, noisy) = noisy(w, h);
         for prefer in [DeviceType::Cpu, DeviceType::Default, DeviceType::Cuda] {
             let mut img = noisy.clone();
-            match denoise(&mut img, w, h, false, false, prefer) {
+            match denoise(&mut img, w, h, false, false, prefer, None, None) {
                 Ok(used) => {
                     let (before, after) = (rms(&noisy, &clean), rms(&img, &clean));
                     eprintln!("{prefer:?} -> {used:?}: rms {before:.3} -> {after:.3}");

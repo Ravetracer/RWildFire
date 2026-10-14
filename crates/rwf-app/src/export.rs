@@ -141,7 +141,7 @@ fn save_gpu(r: &mut GpuRenderer, run: &SaveJob) -> Result<String, String> {
     } else {
         r.tonemap();
         let mut img = r.read_image().ok_or("readback failed")?;
-        let outcome = denoise(&run.flame, &mut img, w, h, true)?;
+        let outcome = r.apply_post_denoiser(&run.flame, &mut img, w, h).map_err(|e| format!("denoiser: {e}"))?;
         rwf_core::output::write_rgba8(&run.path, run.format, w, h, &img, run.jpeg_quality)?;
         outcome.describe()
     };
@@ -306,8 +306,13 @@ impl ExportDialog {
                         let _ = sink.finish();
                         return Err("Cancelled".into());
                     }
+                    let mut gpu_note = None;
                     let mut img = match &mut gpu_r {
-                        Some(r) => r.render_frame(&flame, frame as f64, w, h, q)?,
+                        Some(r) => {
+                            let mut img = r.render_frame(&flame, frame as f64, w, h, q)?;
+                            gpu_note = Some(r.apply_post_denoiser(&flame, &mut img, w, h).map_err(|e| format!("denoiser: {e}"))?.describe());
+                            img
+                        }
                         None => {
                             let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
                             CpuRender::start_frame(&flame, frame as f64, RenderOptions { width: w, height: h, threads, max_density: Some(q), seed: 0x5EED + frame as u64, zbuffer: false })
@@ -315,7 +320,10 @@ impl ExportDialog {
                                 .image(false)
                         }
                     };
-                    note = denoise(&flame, &mut img, w, h, gpu_r.is_some())?.describe();
+                    note = match gpu_note {
+                        Some(n) => n,
+                        None => denoise(&flame, &mut img, w, h, false)?.describe(),
+                    };
                     sink.write_frame(i as u32, &img).map_err(|e| e.to_string())?;
                     d2.fetch_add(1, Ordering::Relaxed);
                 }

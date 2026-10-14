@@ -387,7 +387,7 @@ pub fn show(ui: &mut egui::Ui, frame: &eframe::Frame, doc: &mut Document, state:
 
 /// Runs the denoiser on the finished preview while "Denoised" is on; returns the denoised
 /// image when it belongs to the current flame.
-fn update_denoised(ctx: &egui::Context, doc: &Document, state: &mut CanvasState, preview: &Preview, size: Option<(u32, u32)>) -> Option<egui::TextureId> {
+fn update_denoised(ctx: &egui::Context, doc: &Document, state: &mut CanvasState, preview: &mut Preview, size: Option<(u32, u32)>) -> Option<egui::TextureId> {
     state.denoised.poll(ctx);
     if !state.show_denoised {
         state.denoised.clear();
@@ -405,7 +405,10 @@ fn update_denoised(ctx: &egui::Context, doc: &Document, state: &mut CanvasState,
         && state.denoised.wants(key, std::time::Duration::ZERO)
         && let Some((img, w, h, on_gpu)) = preview.read_image()
     {
-        state.denoised.start(key, &doc.flame, img, w, h, on_gpu);
+        let aux = (on_gpu && rwf_core::render::denoise::skip_reason(&doc.flame, true).is_none() && rwf_core::render::oidn::library().is_ok())
+            .then(|| preview.read_denoise_aux())
+            .flatten();
+        state.denoised.start(key, &doc.flame, img, w, h, on_gpu, aux);
     }
     state.denoised.is_current(key).then(|| state.denoised.texture()).flatten()
 }

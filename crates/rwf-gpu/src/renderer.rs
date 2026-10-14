@@ -249,6 +249,7 @@ pub struct GpuRenderer {
     resolve_pipeline: wgpu::ComputePipeline,
     tonemap_pipeline: wgpu::ComputePipeline,
     tonemap_hdr_pipeline: wgpu::ComputePipeline,
+    tonemap_aux_pipeline: wgpu::ComputePipeline,
     de_pipeline: wgpu::ComputePipeline,
     de_uniforms: wgpu::Buffer,
     pipelines: Option<Pipelines>,
@@ -349,6 +350,7 @@ impl GpuRenderer {
         let resolve_pipeline = mk("resolve");
         let tonemap_pipeline = mk("tonemap");
         let tonemap_hdr_pipeline = mk("tonemap_hdr");
+        let tonemap_aux_pipeline = mk("tonemap_aux");
         let de_pipeline = mk("density_estimate");
         let thread_count = 64 * 1024;
         Self {
@@ -363,6 +365,7 @@ impl GpuRenderer {
             resolve_pipeline,
             tonemap_pipeline,
             tonemap_hdr_pipeline,
+            tonemap_aux_pipeline,
             de_pipeline,
             pipelines: None,
             pipeline_cache: Vec::new(),
@@ -960,7 +963,7 @@ impl GpuRenderer {
 
     /// Writes the current image into the output texture.
     pub fn tonemap(&mut self) {
-        self.tonemap_into(None);
+        self.tonemap_into(None, false);
     }
 
     /// Tonemaps into linear float RGB (`transformPointHDR`, 1.0 = 8-bit full scale, three
@@ -969,9 +972,32 @@ impl GpuRenderer {
         let (w, h) = self.output_size()?;
         let size = w as u64 * h as u64 * 12;
         let buf = storage_buffer(&self.ctx.device, "hdr-out", size);
-        self.tonemap_into(Some(&buf));
+        self.tonemap_into(Some(&buf), false);
         let bytes = self.read_buffer(&buf, size)?;
         Some(bytemuck::pod_collect_to_vec(&bytes))
+    }
+
+    /// The flame's post denoiser on `img` (read from this renderer), with the renderer's helper
+    /// images when the OIDN library is used.
+    pub fn apply_post_denoiser(&mut self, flame: &Flame, img: &mut [u8], w: u32, h: u32) -> Result<rwf_core::render::denoise::DenoiseOutcome, String> {
+        use rwf_core::render::denoise;
+        let aux = if denoise::skip_reason(flame, true).is_none() && rwf_core::render::oidn::library().is_ok() { self.read_denoise_aux() } else { None };
+        denoise::apply_post_denoiser_with(flame, img, w, h, true, aux.as_ref())
+    }
+
+    /// Helper images for the denoiser: albedo (RGB 0..1 per pixel) and, for solid flames, the
+    /// surface normals (view space, zero without a surface).
+    pub fn read_denoise_aux(&mut self) -> Option<rwf_core::render::denoise::DenoiseAux> {
+        let (w, h) = self.output_size()?;
+        let size = w as u64 * h as u64 * 24;
+        let buf = storage_buffer(&self.ctx.device, "aux-out", size);
+        self.tonemap_into(Some(&buf), true);
+        let bytes = self.read_buffer(&buf, size)?;
+        let data: Vec<f32> = bytemuck::pod_collect_to_vec(&bytes);
+        let albedo = data.chunks_exact(6).flat_map(|p| [p[0], p[1], p[2]]).collect();
+        let solid = self.flame.as_ref().is_some_and(|f| f.solid.enabled);
+        let normal = solid.then(|| data.chunks_exact(6).flat_map(|p| [p[3], p[4], p[5]]).collect());
+        Some(rwf_core::render::denoise::DenoiseAux { albedo, normal })
     }
 
     /// 16-bit gray depth image mapped by the flame's z-buffer settings (`None` unless the
@@ -1014,7 +1040,9 @@ impl GpuRenderer {
     }
 
     /// Tonemaps into the output texture, or with `hdr` into that float buffer.
-    fn tonemap_into(&mut self, hdr: Option<&wgpu::Buffer>) {
+    /// Tonemaps into the output texture, or into `hdr` as float RGB (or, with `aux`, the
+    /// denoiser helper images).
+    fn tonemap_into(&mut self, hdr: Option<&wgpu::Buffer>, aux: bool) {
         let with_backdrop = self.update_backdrop();
         let (Some(flame), Some(view), Some(bufs), Some(filter)) = (&self.flame, &self.view, &self.buffers, &self.filter) else {
             return;
@@ -1023,7 +1051,7 @@ impl GpuRenderer {
             let (flame, view, output) = (flame.clone(), view.clone(), bufs.output_view.clone());
             let backdrop = self.backdrop.as_ref().filter(|_| with_backdrop).map(|b| b.colors.as_slice());
             let region = self.region(view.image_width, view.image_height);
-            self.solid.render(&self.ctx.device, &self.ctx.queue, &flame, &view, &output, self.with_alpha, backdrop, hdr, region);
+            self.solid.render(&self.ctx.device, &self.ctx.queue, &flame, &view, &output, self.with_alpha, backdrop, hdr, aux, region);
             return;
         }
         let Some(mut tone) = self.tone_base else {
@@ -1091,7 +1119,11 @@ impl GpuRenderer {
             }
             None => &bufs.accum,
         };
-        let pipeline = if hdr.is_some() { &self.tonemap_hdr_pipeline } else { &self.tonemap_pipeline };
+        let pipeline = match (hdr.is_some(), aux) {
+            (true, true) => &self.tonemap_aux_pipeline,
+            (true, false) => &self.tonemap_hdr_pipeline,
+            _ => &self.tonemap_pipeline,
+        };
         let target = match hdr {
             Some(b) => wgpu::BindGroupEntry { binding: 6, resource: b.as_entire_binding() },
             None => wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&bufs.output_view) },

@@ -131,6 +131,7 @@ struct Passes {
     vis: wgpu::ComputePipeline,
     shade: wgpu::ComputePipeline,
     shade_hdr: wgpu::ComputePipeline,
+    aux: wgpu::ComputePipeline,
     output: wgpu::ComputePipeline,
     dof_splat: wgpu::ComputePipeline,
     dof_resolve: wgpu::ComputePipeline,
@@ -189,6 +190,7 @@ impl SolidGpu {
                 vis: mk("sld_shadow_vis"),
                 shade: mk("sld_shade"),
                 shade_hdr: mk("sld_shade_hdr"),
+                aux: mk("sld_aux"),
                 output: mk("sld_output"),
                 dof_splat: mk("sld_dof_splat"),
                 dof_resolve: mk("sld_dof_resolve"),
@@ -252,6 +254,7 @@ impl SolidGpu {
         with_alpha: bool,
         backdrop: Option<&[[i32; 3]]>,
         hdr_out: Option<&wgpu::Buffer>,
+        aux: bool,
         region: [u32; 4],
     ) {
         if self.buffers.is_none() {
@@ -499,7 +502,9 @@ impl SolidGpu {
             run(&mut enc, &p.accel, &[0, 1, 2, 3, 7, 9], (rg.0, rg.1, nl));
             run(&mut enc, &p.vis, &[0, 7, 8, 9], (rg.0, rg.1, nl));
         }
-        if hdr_out.is_some() {
+        if aux && hdr_out.is_some() {
+            run(&mut enc, &p.aux, &[0, 2, 4, 14, 15], ig);
+        } else if hdr_out.is_some() {
             run(&mut enc, &p.shade_hdr, &[0, 2, 4, 6, 8, 9, 14, 15], ig);
         } else {
             run(&mut enc, &p.shade, &[0, 2, 4, 6, 8, 9, 10, 11, 14], ig);

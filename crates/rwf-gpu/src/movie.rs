@@ -34,20 +34,22 @@ pub fn render_movie_frame(movie: &Movie, frame: u32, gpu: Option<&mut GpuRendere
     let packets = movie.packets(frame as f64);
     let first = packets.first().ok_or("the movie has no parts")?;
     let (w, h, q) = (movie.width.max(1), movie.height.max(1), movie.quality.max(1.0));
-    let on_gpu = gpu.is_some();
-    let mut img = match gpu {
+    let img = match gpu {
         Some(r) => {
             r.accumulate_packets(&packets, w, h, q)?;
             r.tonemap();
-            r.read_image().ok_or("readback failed")?
+            let mut img = r.read_image().ok_or("readback failed")?;
+            r.apply_post_denoiser(first, &mut img, w, h).map_err(|e| format!("denoiser: {e}"))?;
+            img
         }
         None => {
             let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
             let opts = RenderOptions { width: w, height: h, threads, max_density: Some(q), seed: 0x5EED + frame as u64, zbuffer: false };
-            CpuRender::start_packets(&packets, opts).wait().image(false)
+            let mut img = CpuRender::start_packets(&packets, opts).wait().image(false);
+            rwf_core::render::denoise::apply_post_denoiser(first, &mut img, w, h, false).map_err(|e| format!("denoiser: {e}"))?;
+            img
         }
     };
-    rwf_core::render::denoise::apply_post_denoiser(first, &mut img, w, h, on_gpu).map_err(|e| format!("denoiser: {e}"))?;
     Ok(img)
 }
 

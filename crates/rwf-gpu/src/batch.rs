@@ -289,7 +289,7 @@ pub fn render_job(
             }
             r.tonemap();
             let mut img = r.read_image().ok_or("readback failed")?;
-            rwf_core::render::denoise::apply_post_denoiser(&flame, &mut img, w, h, true).map_err(|e| format!("denoiser: {e}"))?;
+            r.apply_post_denoiser(&flame, &mut img, w, h).map_err(|e| format!("denoiser: {e}"))?;
             sink.write_frame(frame, &img).map_err(|e| e.to_string())?;
         }
         sink.finish().map_err(|e| e.to_string())?;
@@ -303,7 +303,7 @@ pub fn render_job(
         } else {
             r.tonemap();
             let mut img = r.read_image().ok_or("readback failed")?;
-            rwf_core::render::denoise::apply_post_denoiser(&flame, &mut img, w, h, true).map_err(|e| format!("denoiser: {e}"))?;
+            r.apply_post_denoiser(&flame, &mut img, w, h).map_err(|e| format!("denoiser: {e}"))?;
             rwf_core::output::write_rgba8(&path, s.format, w, h, &img, s.jpeg_quality)?;
         }
         if s.zbuffer

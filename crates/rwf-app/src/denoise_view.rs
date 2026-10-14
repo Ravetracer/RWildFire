@@ -23,7 +23,7 @@ use std::time::{Duration, Instant};
 
 use egui::{Color32, FontId, Painter, Pos2, Rect, vec2};
 use rwf_core::Flame;
-use rwf_core::render::denoise::{DenoiseOutcome, apply_post_denoiser};
+use rwf_core::render::denoise::{DenoiseAux, DenoiseOutcome, apply_post_denoiser_with};
 
 use crate::theme;
 
@@ -39,7 +39,6 @@ pub struct DenoisedView {
     outcome: Option<Result<(DenoiseOutcome, Duration), String>>,
     last_start: Option<Instant>,
 }
-
 
 /// A key for an image `revision` with the denoiser settings of `flame`.
 pub fn key(revision: u64, flame: &Flame, gpu_render: bool) -> u64 {
@@ -60,13 +59,15 @@ impl DenoisedView {
         self.job.is_none() && current != Some(key) && self.last_start.is_none_or(|t| t.elapsed() >= min_interval)
     }
 
-    /// Denoises `rgba` in the background with the settings of `flame`.
-    pub fn start(&mut self, key: u64, flame: &Flame, mut rgba: Vec<u8>, w: u32, h: u32, gpu_render: bool) {
+    /// Denoises `rgba` in the background with the settings of `flame` (and the renderer's
+    /// helper images, if any).
+    #[allow(clippy::too_many_arguments)]
+    pub fn start(&mut self, key: u64, flame: &Flame, mut rgba: Vec<u8>, w: u32, h: u32, gpu_render: bool, aux: Option<DenoiseAux>) {
         let (tx, rx) = channel();
         let flame = flame.clone();
         std::thread::spawn(move || {
             let t0 = Instant::now();
-            let r = apply_post_denoiser(&flame, &mut rgba, w, h, gpu_render).map(|o| (o, rgba, t0.elapsed()));
+            let r = apply_post_denoiser_with(&flame, &mut rgba, w, h, gpu_render, aux.as_ref()).map(|o| (o, rgba, t0.elapsed()));
             let _ = tx.send(r);
         });
         self.job = Some((key, rx));

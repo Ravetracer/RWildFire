@@ -345,6 +345,27 @@ fn tonemap_hdr(@builtin(global_invocation_id) gid: vec3<u32>) {
     hdr_out[i + 2u] = rgb.z;
 }
 
+// Denoiser helper images (6 floats per pixel): albedo = the average color of the samples
+// (independent of their density, which acts like lighting), background color without hits;
+// no normals for flat flames.
+@compute @workgroup_size(16, 16)
+fn tonemap_aux(@builtin(global_invocation_id) gid: vec3<u32>) {
+    if (gid.x >= T.image_w || gid.y >= T.image_h) { return; }
+    let fp = filtered(i32(gid.x), i32(gid.y));
+    var albedo = background(gid.x, gid.y) / 255.0;
+    if (fp.x > 0.0) {
+        albedo = fp.yzw / fp.x * T.white_level / 255.0;
+    }
+    let i = (gid.y * T.image_w + gid.x) * 6u;
+    let a = clamp(albedo, vec3<f32>(0.0), vec3<f32>(1.0));
+    hdr_out[i] = a.x;
+    hdr_out[i + 1u] = a.y;
+    hdr_out[i + 2u] = a.z;
+    hdr_out[i + 3u] = 0.0;
+    hdr_out[i + 4u] = 0.0;
+    hdr_out[i + 5u] = 0.0;
+}
+
 // ---- density estimation (port of DeCalculator) ----
 struct DeU { raster_w: u32, raster_h: u32, radius: i32, show_splitter: u32, curve: f32, splitter_pos: i32, _p0: u32, _p1: u32 }
 
