@@ -19,14 +19,16 @@
 
 //! AI post denoiser (port of `org.jwildfire.create.tina.render.denoiser`).
 //!
-//! Like JWildfire, the denoising itself is done by an external command line tool: Intel Open
-//! Image Denoise's `oidnDenoise` (found via `JWF_OIDN_DENOISE` or `PATH`). Images are exchanged
-//! as PFM files. `Optix` flames are denoised with OIDN as well.
+//! The denoising is done by Intel Open Image Denoise: the library loaded at runtime (see
+//! [`super::oidn`]), or else, like JWildfire, its command line tool `oidnDenoise` (found via
+//! `JWF_OIDN_DENOISE` or `PATH`; images are exchanged as PFM files). `Optix` flames are
+//! denoised with OIDN on an NVIDIA GPU (CUDA) when there is one.
 
 use std::io::{BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use super::oidn::{self, DeviceType};
 use crate::model::Flame;
 
 /// `AIPostDenoiserType`
@@ -53,7 +55,7 @@ impl Denoiser {
         match self {
             Denoiser::None => "Off",
             Denoiser::Oidn => "OIDN",
-            Denoiser::Optix => "OptiX (via OIDN)",
+            Denoiser::Optix => "OIDN on NVIDIA GPU",
         }
     }
 
@@ -81,11 +83,51 @@ pub fn apply_post_denoiser(flame: &Flame, rgba: &mut [u8], width: u32, height: u
     if flame.ai_post_denoiser == Denoiser::None || (gpu_render && flame.post_denoiser_only_for_cpu) || flame.post_denoiser_blend >= 1.0 {
         return Ok(false);
     }
+    let prefer = if flame.ai_post_denoiser == Denoiser::Optix { DeviceType::Cuda } else { DeviceType::Default };
+    if oidn::library().is_ok() {
+        denoise_with_library(rgba, width, height, flame.post_denoiser_blend, prefer)?;
+        return Ok(true);
+    }
     let Some(tool) = find_tool() else {
         return Ok(false);
     };
     denoise(&tool, rgba, width, height, flame.post_denoiser_blend)?;
     Ok(true)
+}
+
+/// What denoises images: the OIDN library, the `oidnDenoise` tool, or `Err` with a hint.
+pub fn backend() -> Result<String, String> {
+    match oidn::library() {
+        Ok(p) => Ok(format!("Open Image Denoise ({})", p.display())),
+        Err(e) => match find_tool() {
+            Some(t) => Ok(format!("oidnDenoise tool ({})", t.display())),
+            None => Err(format!("Open Image Denoise not found ({e}); run tools/fetch_oidn.py or set {}", oidn::DIR_ENV)),
+        },
+    }
+}
+
+/// Denoises the color channels of an RGBA8 image in place with the OIDN library, keeping
+/// alpha; `blend` as in [`denoise`]. Returns the device type used.
+pub fn denoise_with_library(rgba: &mut [u8], width: u32, height: u32, blend: f64, prefer: DeviceType) -> Result<DeviceType, String> {
+    let n = width as usize * height as usize;
+    if rgba.len() != n * 4 {
+        return Err("image size mismatch".into());
+    }
+    let mut color: Vec<f32> = rgba.chunks_exact(4).flat_map(|p| [p[0], p[1], p[2]]).map(|c| c as f32 / 255.0).collect();
+    let used = oidn::denoise(&mut color, width as usize, height as usize, false, true, prefer)?;
+    blend_back(rgba, &color, blend);
+    Ok(used)
+}
+
+/// Writes the denoised RGB (0..1) into the RGBA8 image, mixing `blend` of the original back in.
+fn blend_back(rgba: &mut [u8], denoised: &[f32], blend: f64) {
+    let b = blend.clamp(0.0, 1.0) as f32;
+    for (px, d) in rgba.chunks_exact_mut(4).zip(denoised.chunks_exact(3)) {
+        for c in 0..3 {
+            let v = d[c] * 255.0 * (1.0 - b) + px[c] as f32 * b;
+            px[c] = (v + 0.5).clamp(0.0, 255.0) as u8;
+        }
+    }
 }
 
 /// Denoises the color channels of an RGBA8 image in place, keeping alpha. `blend` mixes the
@@ -117,13 +159,7 @@ pub fn denoise(tool: &Path, rgba: &mut [u8], width: u32, height: u32, blend: f64
         if w != width || h != height {
             return Err("denoised image has a different size".into());
         }
-        let b = blend.clamp(0.0, 1.0) as f32;
-        for (px, d) in rgba.chunks_exact_mut(4).zip(denoised.chunks_exact(3)) {
-            for c in 0..3 {
-                let v = d[c] * 255.0 * (1.0 - b) + px[c] as f32 * b;
-                px[c] = (v + 0.5).clamp(0.0, 255.0) as u8;
-            }
-        }
+        blend_back(rgba, &denoised, blend);
         Ok(())
     })();
     let _ = std::fs::remove_file(&input);

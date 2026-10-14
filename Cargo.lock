@@ -2647,6 +2647,7 @@ dependencies = [
  "ab_glyph",
  "flate2",
  "image",
+ "libloading",
  "naga",
  "png",
  "rayon",

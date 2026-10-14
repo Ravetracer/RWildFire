@@ -36,3 +36,13 @@ Third-party data
 ----------------
 The gradient files in assets/gradients/ and the example flames in
 testdata/ are taken from the JWildfire distribution.
+
+Intel Open Image Denoise (optional)
+-----------------------------------
+RWildFire can use Intel Open Image Denoise (OIDN), which it loads at
+runtime if present; it is not part of the source code. When OIDN is
+distributed with RWildFire (tools/fetch_oidn.py), its license (Apache
+License 2.0) and third-party notices are placed in oidn-license/ next
+to the libraries.
+Copyright 2018 Intel Corporation
+https://github.com/RenderKit/oidn

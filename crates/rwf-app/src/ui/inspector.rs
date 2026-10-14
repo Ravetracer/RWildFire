@@ -554,10 +554,15 @@ fn render_tab(ui: &mut Ui, doc: &mut Document, preview: &mut Preview, canvas: &m
             ui.end_row();
         }
     });
-    if f.ai_post_denoiser != Denoiser::None && denoise::find_tool().is_none() {
-        ui.label(
-            RichText::new(format!("oidnDenoise not found (PATH or {}); exports stay un-denoised", denoise::TOOL_ENV)).small().color(theme::WARN),
-        );
+    if f.ai_post_denoiser != Denoiser::None {
+        match denoise::backend() {
+            Ok(b) => {
+                ui.add(egui::Label::new(RichText::new(format!("Used for exports and renders: {b}")).small().color(theme::TEXT_MUTED)).truncate());
+            }
+            Err(e) => {
+                ui.label(RichText::new(format!("{e}; exports stay un-denoised")).small().color(theme::WARN));
+            }
+        }
     }
 
     theme::section_label(ui, "Density estimation");

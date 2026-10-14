@@ -25,6 +25,7 @@ pub mod cpu;
 pub mod de;
 pub mod denoise;
 pub mod dof;
+pub mod oidn;
 pub mod filter;
 pub mod prepared;
 pub mod solid;

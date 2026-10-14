@@ -55,7 +55,7 @@ Each variation is a `VarDef` with a CPU function and a WGSL snippet that read th
 - Post symmetry, 3D camera, anti-aliasing, filter kernels
 - Adaptive filter (`MITCHELL_SINEPOW`): per-pixel kernel choice by edge strength and density, with JWildfire's indicator view
 - Post blur (radius, fade, falloff)
-- AI post denoiser: runs Intel Open Image Denoise's `oidnDenoise` (found in `PATH` or via `JWF_OIDN_DENOISE`) on exported images and video frames
+- AI post denoiser: Intel Open Image Denoise (OIDN 2.5) on exported images and video frames, on the CPU or on NVIDIA (CUDA) and AMD (HIP) GPUs. The library is loaded at runtime, so RWildFire builds and runs without it. `python3 tools/fetch_oidn.py` downloads the official release (SHA-256 checked) into `oidn/` (about 72 MB: core with the network weights, CPU, CUDA and HIP devices, oneTBB, licenses). Search order: `RWF_OIDN_DIR`, next to the executable (`lib/` on Linux and macOS, the executable's folder on Windows; `tools/fetch_oidn.py --dest <app dir>` fills it for a package), `oidn/` of the source tree, the system library path. Without the library the `oidnDenoise` tool is used if it is in `PATH` (or `JWF_OIDN_DENOISE`). AMD GPUs need the ROCm HIP runtime installed; NVIDIA GPUs only the driver
 - Solid rendering, CPU and GPU: z-buffer with surface normals, distant lights, materials (per-transform material index, blended between neighbours, optional PNG/JPEG reflection maps), ambient occlusion, fast or smooth shadow maps, and post DOF with bokeh. Material, light color and AO changes re-shade without restarting the render. `plane_wf` can act as a shadow-only ground plane; light altitude/azimuth/intensity are animatable (JWildfire light curves are imported)
 
 ## Gradients
