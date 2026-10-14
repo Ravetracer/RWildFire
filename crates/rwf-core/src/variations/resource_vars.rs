@@ -366,7 +366,7 @@ fn wrap_tile(i: i32, n: i32) -> i32 {
 }
 
 /// `colormap_wf` data: 15 parameters, image, alpha plane (only with `with_alpha`).
-const CM_IMG: usize = 15;
+pub(super) const CM_IMG: usize = 15;
 const CM_ALPHA: usize = CM_IMG + IMG;
 
 const COLORMAP_PARAMS: [ParamDef; 15] = [
@@ -406,8 +406,8 @@ fn colormap_load(d: &mut Vec<f64>, res: &[Vec<u8>], env: &LoadEnv) {
 }
 
 /// `AbstractColorMapWFFunc.transform`: colors (and optionally lifts or hides) the point by the
-/// image pixel at `(inx, iny)`.
-fn colormap_apply(d: &[f64], ctx: &mut Ctx, v: &mut Pt, inx: f64, iny: f64) {
+/// image pixel at `(inx, iny)`. `dc_color`: 0 true color, 1 palette index, 2 both (`wangtiles`).
+pub(super) fn colormap_apply(d: &[f64], ctx: &mut Ctx, v: &mut Pt, inx: f64, iny: f64) {
     // d = [scale_x, scale_y, scale_z, offset_x, offset_y, offset_z, tile_x, tile_y, reset_z,
     //      dc_color, blend_colormap, with_alpha, is_sequence, sequence_start, sequence_digits,
     //      image (3), alpha (3), ..]
@@ -442,7 +442,7 @@ fn colormap_apply(d: &[f64], ctx: &mut Ctx, v: &mut Pt, inx: f64, iny: f64) {
         [0.0; 4]
     };
     let dc_color = d[9] as i32;
-    if dc_color == 0 {
+    if dc_color != 1 {
         v.rgb_color = true;
         v.red = c[0];
         v.green = c[1];

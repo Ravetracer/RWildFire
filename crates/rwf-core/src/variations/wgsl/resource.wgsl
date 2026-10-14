@@ -138,7 +138,8 @@ fn res_cm_rgba(base: u32, ix: i32, iy: i32, with_alpha: bool) -> vec4<f32> {
   return vec4<f32>(res_pixel(base, 15u, ix, iy), a);
 }
 
-// AbstractColorMapWFFunc.transform: params at base, image block at base + 15.
+// AbstractColorMapWFFunc.transform: params at base, image block at base + 15. dc_color: 0 true
+// color, 1 palette index, 2 both (wangtiles).
 fn res_colormap(base: u32, inx: f32, iny: f32, v_in: Pt) -> Pt {
   var v = v_in;
   let w = i32(prm[base + 15u]);
@@ -168,7 +169,7 @@ fn res_colormap(base: u32, inx: f32, iny: f32, v_in: Pt) -> Pt {
     }
   }
   let dc_color = i32(prm[base + 9u]);
-  if (dc_color == 0) { v.rgbc = 1.0; v.r = c.x; v.g = c.y; v.b = c.z; }
+  if (dc_color != 1) { v.rgbc = 1.0; v.r = c.x; v.g = c.y; v.b = c.z; }
   if (with_alpha && c.w <= 0.1) { v.hide = 1.0; } else { v.hide = 0.0; }
   var dz = prm[base + 5u];
   if (abs(prm[base + 2u]) > EPSILON) { dz += prm[base + 2u] * (0.299 * c.x + 0.588 * c.y + 0.113 * c.z) / 255.0; }
