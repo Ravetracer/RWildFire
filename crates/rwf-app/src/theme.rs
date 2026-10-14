@@ -100,6 +100,9 @@ pub fn apply(ctx: &egui::Context) {
     style.spacing.menu_margin = Margin::same(6);
     style.spacing.combo_width = 150.0;
     style.spacing.indent = 14.0;
+    // Scrollbars get their own strip instead of floating over the content (they covered
+    // controls at the right edge, e.g. the last point of a mixer curve).
+    style.spacing.scroll = egui::style::ScrollStyle::solid();
 
     style.text_styles = [
         (TextStyle::Small, FontId::new(11.0, FontFamily::Proportional)),
