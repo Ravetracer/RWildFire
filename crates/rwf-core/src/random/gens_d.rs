@@ -82,18 +82,18 @@ const BW_BASE: &[Generator] = &[
 ];
 
 /// Prepares a flame with a base generator chosen once per sample (`initState`).
-fn wrapped(st: &mut State, base: &[Generator], extra: &[Generator]) -> Flame {
-    let g = *st.sub.get_or_insert_with(|| {
+fn wrapped(st: &mut State, owner: Generator, base: &[Generator], extra: &[Generator]) -> Flame {
+    let g = st.choice(owner, |r| {
         let n = base.len() + extra.len();
-        let i = ((st.rng.random() * n as f64) as usize).min(n - 1);
+        let i = ((r.random() * n as f64) as usize).min(n - 1);
         if i < base.len() { base[i] } else { extra[i - base.len()] }
     });
-    g.prepare(&mut State { rng: &mut *st.rng, sub: None, simple: false })
+    g.prepare(st)
 }
 
 /// `BlackAndWhiteRandomFlameGenerator` ("Black&White").
 pub fn black_and_white(st: &mut State) -> Flame {
-    wrapped(st, BW_BASE, super::SOLID_GENERATORS)
+    wrapped(st, Generator::BlackAndWhite, BW_BASE, super::SOLID_GENERATORS)
 }
 
 /// `BlackAndWhiteRandomFlameGenerator.postProcessFlameBeforeRendering`: white on dark or
@@ -133,17 +133,17 @@ pub fn black_and_white_post(st: &mut State, flame: &mut Flame) {
 
 /// `BokehRandomFlameGenerator`: the Black&White base flames with a bokeh.
 pub fn bokeh(st: &mut State) -> Flame {
-    black_and_white(st)
+    wrapped(st, Generator::Bokeh, BW_BASE, super::SOLID_GENERATORS)
 }
 
 /// `FlameWithBackgroundRandomFlameGenerator` ("Flame with Background").
 pub fn flame_with_background(st: &mut State) -> Flame {
-    wrapped(st, BW_BASE, super::SOLID_GENERATORS)
+    wrapped(st, Generator::FlameWithBackground, BW_BASE, super::SOLID_GENERATORS)
 }
 
 /// `PainterlyRandomFlameGenerator`: like Black&White's base list, plus Black&White itself.
 pub fn painterly(st: &mut State) -> Flame {
-    wrapped(st, BW_BASE, &[Generator::BlackAndWhite])
+    wrapped(st, Generator::Painterly, BW_BASE, &[Generator::BlackAndWhite])
 }
 
 /// `LayersRandomFlameGenerator`: two or three quick samples of simple generators as layers.

@@ -57,9 +57,15 @@ pub(super) fn add_prio(xf: &mut XForm, amount: f64, name: &str, priority: i32) {
 
 /// `AbstractAffine3DRandomFlameGenerator.prepareFlame`: a 2D generator's flame seen through
 /// a random 3D camera.
-fn affine3d_wrapper(st: &mut State, select: fn(&mut Rng) -> Generator, pre: fn(&mut Flame), post: fn(&mut Flame, &mut Rng)) -> Flame {
-    let g = *st.sub.get_or_insert_with(|| select(st.rng));
-    let mut flame = g.prepare(&mut State { rng: &mut *st.rng, sub: None, simple: false });
+fn affine3d_wrapper(
+    st: &mut State,
+    owner: Generator,
+    select: fn(&mut Rng) -> Generator,
+    pre: fn(&mut Flame),
+    post: fn(&mut Flame, &mut Rng),
+) -> Flame {
+    let g = st.choice(owner, select);
+    let mut flame = g.prepare(st);
     pre(&mut flame);
     let r = &mut *st.rng;
     flame.cam_roll = 0.0;
@@ -104,6 +110,7 @@ fn keep_two_xforms(flame: &mut Flame) {
 pub fn spirals3d(st: &mut State) -> Flame {
     affine3d_wrapper(
         st,
+        Generator::Spirals3D,
         |_| Generator::Spirals,
         keep_two_xforms,
         |f, r| {
@@ -125,6 +132,7 @@ pub fn spirals3d(st: &mut State) -> Flame {
 pub fn gnarl3d(st: &mut State) -> Flame {
     affine3d_wrapper(
         st,
+        Generator::Gnarl3D,
         |r| if r.random() > 0.33 { Generator::Gnarl } else { Generator::ExperimentalGnarl },
         keep_two_xforms,
         |f, r| {
@@ -138,6 +146,7 @@ pub fn gnarl3d(st: &mut State) -> Flame {
 pub fn brokat3d(st: &mut State) -> Flame {
     affine3d_wrapper(
         st,
+        Generator::Brokat3D,
         |_| Generator::Brokat,
         |_| {},
         |f, r| {

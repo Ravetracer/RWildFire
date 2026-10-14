@@ -538,8 +538,8 @@ const SHADOWS_BASE: &[Generator] = &[
 
 /// `SolidShadowsRandomFlameGenerator` ("Solid (shadows)").
 pub fn solid_shadows(st: &mut State) -> Flame {
-    let g = *st.sub.get_or_insert_with(|| SHADOWS_BASE[((st.rng.random() * SHADOWS_BASE.len() as f64) as usize).min(SHADOWS_BASE.len() - 1)]);
-    g.prepare(&mut State { rng: &mut *st.rng, sub: None, simple: false })
+    let g = st.choice(Generator::SolidShadows, |r| SHADOWS_BASE[((r.random() * SHADOWS_BASE.len() as f64) as usize).min(SHADOWS_BASE.len() - 1)]);
+    g.prepare(st)
 }
 
 /// `SolidShadowsRandomFlameGenerator.postProcessFlameAfterRendering`: a lower camera and a

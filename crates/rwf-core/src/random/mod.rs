@@ -41,10 +41,28 @@ use crate::{solid, variations};
 /// (`RandomFlameGeneratorState`).
 pub struct State<'a> {
     pub rng: &'a mut Rng,
-    /// Generator chosen once per sample by "(All)" and the 3D wrappers.
-    pub(crate) sub: Option<Generator>,
+    /// The base generator each wrapper ("(All)", the 3D and Black&White wrappers, ...) chose,
+    /// kept for all attempts of a sample (JWildfire keeps them as separate state parameters).
+    pub(crate) subs: Vec<(Generator, Generator)>,
     /// "(All)" chooses among the simple generators only (no layers, sub-flames, solid).
     pub(crate) simple: bool,
+}
+
+impl State<'_> {
+    /// The base generator `owner` chose (choosing it with `pick` the first time).
+    pub(crate) fn choice(&mut self, owner: Generator, pick: impl FnOnce(&mut Rng) -> Generator) -> Generator {
+        if let Some(&(_, g)) = self.subs.iter().find(|(o, _)| *o == owner) {
+            return g;
+        }
+        let g = pick(self.rng);
+        self.subs.push((owner, g));
+        g
+    }
+
+    /// The base generator `owner` chose, if any.
+    pub(crate) fn chosen(&self, owner: Generator) -> Option<Generator> {
+        self.subs.iter().find(|(o, _)| *o == owner).map(|&(_, g)| g)
+    }
 }
 
 /// Coverage a sample must reach and the number of attempts (`RandomBatchQuality`).
@@ -174,12 +192,11 @@ impl Generator {
         match self {
             Generator::All => {
                 let simple = st.simple;
-                let g = *st.sub.get_or_insert_with(|| {
+                let g = st.choice(Generator::All, |r| {
                     let c = Generator::all_candidates(simple);
-                    c[st.rng.random_int(c.len())]
+                    c[r.random_int(c.len())]
                 });
-                let mut sub = State { rng: &mut *st.rng, sub: None, simple: false };
-                let mut f = g.prepare(&mut sub);
+                let mut f = g.prepare(st);
                 f.name = g.label().to_string();
                 f
             }
@@ -243,7 +260,7 @@ impl Generator {
     /// `isUseFilter`: judge the preview by its edges instead of its area.
     fn use_filter(self, st: &mut State) -> bool {
         match self {
-            Generator::All => st.sub.is_some_and(|g| g.use_filter(st)),
+            Generator::All => st.chosen(Generator::All).is_some_and(|g| g.use_filter(st)),
             Generator::Affine3D => st.rng.random() > 0.42,
             Generator::Rays => st.rng.random() > 0.5,
             Generator::Bubbles
@@ -276,7 +293,7 @@ impl Generator {
     fn post_process(self, st: &mut State, flame: &mut Flame) {
         match self {
             Generator::All => {
-                if let Some(g) = st.sub {
+                if let Some(g) = st.chosen(self) {
                     g.post_process(st, flame);
                 }
             }
@@ -285,7 +302,7 @@ impl Generator {
                 gens_e::solid_post(flame, st.rng)
             }
             Generator::SolidShadows => {
-                if let Some(g) = st.sub {
+                if let Some(g) = st.chosen(self) {
                     g.post_process(st, flame);
                 }
                 flame.post_symmetry.kind = PostSymmetryType::None;
@@ -304,7 +321,7 @@ impl Generator {
     fn post_process_after(self, st: &mut State, flame: &mut Flame) {
         match self {
             Generator::All => {
-                if let Some(g) = st.sub {
+                if let Some(g) = st.chosen(self) {
                     g.post_process_after(st, flame);
                 }
             }
@@ -453,7 +470,7 @@ pub fn generate(generator: Generator, rng: &mut Rng) -> Flame {
 /// uses the simple generators only; `finish`: name it and bring it to the 720 pixel frame
 /// (not for flames that become part of another one).
 pub(crate) fn sample(generator: Generator, rng: &mut Rng, quality: Quality, simple: bool, finish: bool) -> Flame {
-    let mut st = State { rng, sub: None, simple };
+    let mut st = State { rng, subs: Vec::new(), simple };
     let mut best: Option<(f64, Flame)> = None;
     for _ in 0..quality.max_samples {
         let mut flame = generator.prepare(&mut st);
@@ -519,7 +536,7 @@ mod tests {
         for &g in Generator::ALL {
             for seed in 0..3 {
                 let mut rng = Rng::new(seed * 7919 + 1);
-                let mut st = State { rng: &mut rng, sub: None, simple: false };
+                let mut st = State { rng: &mut rng, subs: Vec::new(), simple: false };
                 let flame = g.prepare(&mut st);
                 assert!(flame.layers.iter().any(|l| !l.xforms.is_empty()), "{} produced no transforms", g.label());
                 for l in &flame.layers {
@@ -531,6 +548,21 @@ mod tests {
                 }
             }
             assert_eq!(Generator::by_label(g.label()), Some(g));
+        }
+    }
+
+    /// "(All)" with every generator as its choice: the post-processing chain must end (it
+    /// once recursed forever when "(All)" and "Solid (shadows)" shared one choice).
+    #[test]
+    fn all_runs_every_generator_through_post_processing() {
+        for &g in Generator::all_candidates(false).iter().filter(|g| **g != Generator::Layers) {
+            let mut rng = Rng::new(17);
+            let mut st = State { rng: &mut rng, subs: vec![(Generator::All, g)], simple: false };
+            let mut flame = Generator::All.prepare(&mut st);
+            Generator::All.post_process(&mut st, &mut flame);
+            Generator::All.post_process_after(&mut st, &mut flame);
+            assert_eq!(st.chosen(Generator::All), Some(g));
+            assert!(!flame.layers.is_empty(), "{}", g.label());
         }
     }
 }
