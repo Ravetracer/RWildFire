@@ -24,6 +24,7 @@ pub mod audio;
 pub mod formula;
 pub mod brush;
 pub mod curves;
+pub mod dance;
 pub mod fastnoise;
 pub mod gradient;
 pub mod gradient_io;

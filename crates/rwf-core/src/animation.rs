@@ -327,6 +327,14 @@ fn xform_path(path: &str) -> Option<(usize, XFormKind, usize, &str)> {
     XFormKind::ALL.into_iter().find_map(|k| Some((l, k, index_after(x, k.path_prefix())?, rest)))
 }
 
+/// The xform of a path prefix like `layer0.xf2` or `layer1.final0`.
+pub fn xform_at_mut<'a>(flame: &'a mut Flame, path: &str) -> Option<&'a mut XForm> {
+    let (l, x) = path.split_once('.')?;
+    let li = index_after(l, "layer")?;
+    let (kind, xi) = XFormKind::ALL.into_iter().find_map(|k| Some((k, index_after(x, k.path_prefix())?)))?;
+    flame.layers.get_mut(li)?.xforms_of_mut(kind).get_mut(xi)
+}
+
 fn get_xform_prop(xf: &XForm, rest: &str) -> Option<f64> {
     if let Some(name) = rest.strip_prefix("wfield.") {
         return wfield_get(&xf.weighting, name);

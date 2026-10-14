@@ -41,6 +41,27 @@ pub struct Audio {
     pub rate: u32,
 }
 
+/// Decoded audio with all channels (interleaved), for playback.
+#[derive(Clone, Debug)]
+pub struct Pcm {
+    pub samples: Vec<f32>,
+    pub channels: usize,
+    pub rate: u32,
+}
+
+impl Pcm {
+    /// Mixes the channels down to one.
+    pub fn mono(&self) -> Audio {
+        let c = self.channels.max(1);
+        Audio { samples: self.samples.chunks(c).map(|f| f.iter().sum::<f32>() / c as f32).collect(), rate: self.rate }
+    }
+
+    /// Length in seconds.
+    pub fn duration(&self) -> f64 {
+        self.samples.len() as f64 / self.channels.max(1) as f64 / self.rate.max(1) as f64
+    }
+}
+
 /// What an envelope measures.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Band {
@@ -66,6 +87,13 @@ const FFT_SIZE: usize = 2048;
 impl Audio {
     /// Decodes an audio file (MP3, WAV, FLAC, Ogg Vorbis).
     pub fn load(path: impl AsRef<Path>) -> Result<Audio, AudioError> {
+        Ok(Pcm::load(path)?.mono())
+    }
+}
+
+impl Pcm {
+    /// Decodes an audio file (MP3, WAV, FLAC, Ogg Vorbis).
+    pub fn load(path: impl AsRef<Path>) -> Result<Pcm, AudioError> {
         use symphonia::core::audio::SampleBuffer;
         use symphonia::core::codecs::{CODEC_TYPE_NULL, DecoderOptions};
         use symphonia::core::errors::Error;
@@ -91,6 +119,7 @@ impl Audio {
         let mut rate = track.codec_params.sample_rate.unwrap_or(44_100);
         let mut decoder = symphonia::default::get_codecs().make(&track.codec_params, &DecoderOptions::default()).map_err(decode_err)?;
         let mut samples = Vec::new();
+        let mut channels = 0usize;
         loop {
             let packet = match format.next_packet() {
                 Ok(p) => p,
@@ -105,19 +134,32 @@ impl Audio {
                 Ok(buf) => {
                     let spec = *buf.spec();
                     rate = spec.rate;
-                    let channels = spec.channels.count().max(1);
+                    let c = spec.channels.count().max(1);
                     let mut sb = SampleBuffer::<f32>::new(buf.capacity() as u64, spec);
                     sb.copy_interleaved_ref(buf);
-                    samples.extend(sb.samples().chunks(channels).map(|f| f.iter().sum::<f32>() / channels as f32));
+                    if channels == 0 {
+                        channels = c;
+                    }
+                    if c == channels {
+                        samples.extend_from_slice(sb.samples());
+                    } else {
+                        // Channel layout changed mid-stream: mix down / spread to the first layout.
+                        for f in sb.samples().chunks(c) {
+                            let m = f.iter().sum::<f32>() / c as f32;
+                            samples.extend(std::iter::repeat_n(m, channels));
+                        }
+                    }
                 }
                 // Skip damaged frames, as players do.
                 Err(Error::DecodeError(_)) => continue,
                 Err(e) => return Err(decode_err(e)),
             }
         }
-        Ok(Audio { samples, rate })
+        Ok(Pcm { samples, channels: channels.max(1), rate })
     }
+}
 
+impl Audio {
     /// Length in seconds.
     pub fn duration(&self) -> f64 {
         self.samples.len() as f64 / self.rate.max(1) as f64
@@ -155,12 +197,12 @@ impl Audio {
     }
 }
 
-fn hann(n: usize) -> Vec<f32> {
+pub(crate) fn hann(n: usize) -> Vec<f32> {
     (0..n).map(|i| 0.5 - 0.5 * (std::f32::consts::TAU * i as f32 / n as f32).cos()).collect()
 }
 
 /// In-place iterative radix-2 FFT (`buf.len()` must be a power of two).
-fn fft(buf: &mut [(f32, f32)]) {
+pub(crate) fn fft(buf: &mut [(f32, f32)]) {
     let n = buf.len();
     let mut j = 0;
     for i in 1..n {

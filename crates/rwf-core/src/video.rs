@@ -89,6 +89,12 @@ pub enum VideoSink {
 
 impl VideoSink {
     pub fn new(path: &Path, format: VideoFormat, w: u32, h: u32, fps: f64) -> std::io::Result<Self> {
+        Self::with_audio(path, format, w, h, fps, None)
+    }
+
+    /// Like [`Self::new`], with the sound file `audio.0` from `audio.1` seconds on as the
+    /// audio track (ignored for PNG sequences); the video ends with the shorter stream.
+    pub fn with_audio(path: &Path, format: VideoFormat, w: u32, h: u32, fps: f64, audio: Option<(&Path, f64)>) -> std::io::Result<Self> {
         if format == VideoFormat::PngSequence {
             std::fs::create_dir_all(path)?;
             return Ok(VideoSink::Png { dir: path.to_path_buf(), w, h });
@@ -103,6 +109,15 @@ impl VideoSink {
         let size = format!("{w}x{h}");
         let mut cmd = Command::new("ffmpeg");
         cmd.args(["-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "rgba", "-s", &size, "-r", &format!("{fps}"), "-i", "-"]);
+        if let Some((sound, start)) = audio {
+            cmd.args(["-ss", &format!("{:.3}", start.max(0.0))]).arg("-i").arg(sound);
+            let acodec = match format {
+                VideoFormat::WebM => "libopus",
+                VideoFormat::ProRes => "pcm_s16le",
+                _ => "aac",
+            };
+            cmd.args(["-map", "0:v", "-map", "1:a", "-c:a", acodec, "-shortest"]);
+        }
         cmd.args(["-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2"]);
         cmd.args(codec);
         cmd.arg(path);

@@ -219,6 +219,9 @@ impl GpuContext {
     }
 }
 
+/// Number of compiled pipelines kept besides the current one.
+const PIPELINE_CACHE_SIZE: usize = 12;
+
 struct Pipelines {
     signature: String,
     iterate: wgpu::ComputePipeline,
@@ -246,6 +249,9 @@ pub struct GpuRenderer {
     de_pipeline: wgpu::ComputePipeline,
     de_uniforms: wgpu::Buffer,
     pipelines: Option<Pipelines>,
+    /// Recently used pipelines (most recent last), so switching back to a flame does not
+    /// compile its shader again.
+    pipeline_cache: Vec<Pipelines>,
     buffers: Option<Buffers>,
     iter_uniforms: wgpu::Buffer,
     resolve_uniforms: wgpu::Buffer,
@@ -353,6 +359,7 @@ impl GpuRenderer {
             tonemap_hdr_pipeline,
             de_pipeline,
             pipelines: None,
+            pipeline_cache: Vec::new(),
             buffers: None,
             prm: None,
             nxt: None,
@@ -491,6 +498,18 @@ impl GpuRenderer {
         let program = Program::new_scaled(flame, &prepared, view.ppu_scale, self.zbuffer);
 
         // Pipeline
+        if self.pipelines.as_ref().map(|p| p.signature.as_str()) != Some(program.signature.as_str()) {
+            if let Some(old) = self.pipelines.take() {
+                self.pipeline_cache.push(old);
+                if self.pipeline_cache.len() > PIPELINE_CACHE_SIZE {
+                    self.pipeline_cache.remove(0);
+                }
+            }
+            if let Some(i) = self.pipeline_cache.iter().position(|p| p.signature == program.signature) {
+                self.pipelines = Some(self.pipeline_cache.remove(i));
+                self.last_error = None;
+            }
+        }
         if self.pipelines.as_ref().map(|p| p.signature.as_str()) != Some(program.signature.as_str()) {
             let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
             let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
