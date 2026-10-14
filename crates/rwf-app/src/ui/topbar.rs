@@ -47,6 +47,8 @@ pub struct TopBarInfo<'a> {
     pub explorer_open: bool,
     pub timeline_open: bool,
     pub render_open: bool,
+    /// A batch render is running.
+    pub render_busy: bool,
 }
 
 pub fn show(ui: &mut Ui, info: &TopBarInfo, generator: &mut Generator) -> Option<Action> {
@@ -120,7 +122,8 @@ pub fn show(ui: &mut Ui, info: &TopBarInfo, generator: &mut Generator) -> Option
         }
 
         let mut ir = info.render_open;
-        if ui.toggle_value(&mut ir, format!("{}  Render", icons::RENDER)).on_hover_text("Interactive renderer: long renders with pause, resume and saved render state").clicked() {
+        let label = if info.render_busy { format!("{}  Render •", icons::RENDER) } else { format!("{}  Render", icons::RENDER) };
+        if ui.toggle_value(&mut ir, label).on_hover_text("Interactive renderer: long renders with pause, resume and saved render state").clicked() {
             action = Some(Action::ToggleRender);
         }
 

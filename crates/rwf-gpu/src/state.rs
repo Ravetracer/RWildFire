@@ -153,8 +153,7 @@ mod tests {
 
     #[test]
     fn roundtrip() {
-        let mut flame = Flame::default();
-        flame.brightness = 3.5;
+        let flame = Flame { brightness: 3.5, ..Flame::default() };
         let st = RenderState {
             flame,
             width: 640,

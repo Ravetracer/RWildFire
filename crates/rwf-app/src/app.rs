@@ -37,6 +37,12 @@ use crate::ui::inspector::{self, InspectorState};
 use crate::ui::topbar::{self, Action, TopBarInfo};
 use crate::ui::transforms::{self, TransformsState};
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RenderTab {
+    Interactive,
+    Batch,
+}
+
 pub struct RwfApp {
     doc: Document,
     preview: Preview,
@@ -48,6 +54,8 @@ pub struct RwfApp {
     timeline: crate::timeline::Timeline,
     export: ExportDialog,
     render: crate::render_view::InteractiveRenderer,
+    batch: crate::batch_view::BatchView,
+    render_tab: RenderTab,
     generator: Generator,
     rng: Rng,
     toast: Option<(String, Instant)>,
@@ -71,6 +79,8 @@ impl RwfApp {
             timeline: Default::default(),
             export: ExportDialog::default(),
             render: Default::default(),
+            batch: Default::default(),
+            render_tab: RenderTab::Interactive,
             generator: Generator::Classic,
             rng,
             toast: None,
@@ -225,9 +235,13 @@ impl eframe::App for RwfApp {
 
         // Dropped files
         let dropped: Vec<PathBuf> = ctx.input(|i| i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).filter(|p| !p.as_os_str().is_empty()).collect());
-        if let Some(p) = dropped.first() {
+        if self.render.open && self.render_tab == RenderTab::Batch && !dropped.is_empty() {
+            let flames: Vec<PathBuf> = dropped.iter().filter(|p| crate::batch_view::is_flame_file(p)).cloned().collect();
+            self.batch.add_paths(&flames);
+        } else if let Some(p) = dropped.first() {
             self.open_path(p);
         }
+        self.batch.poll(&ctx);
 
         let mut action = self.shortcuts(&ctx);
         self.timeline.update(&ctx, &mut self.doc);
@@ -242,6 +256,7 @@ impl eframe::App for RwfApp {
                 explorer_open: self.explorer_open,
                 timeline_open: self.timeline.open,
                 render_open: self.render.open,
+                render_busy: self.batch.is_running(),
             };
             if let Some(a) = topbar::show(ui, &info, &mut self.generator) {
                 action = Some(a);
@@ -250,10 +265,22 @@ impl eframe::App for RwfApp {
 
         // ---- interactive renderer (replaces the editor panels) ----
         if self.render.open {
-            if let Some(f) = self.render.show(ui, frame, &self.doc.flame, self.preview.gpu_context()) {
-                self.doc.replace(f);
-                self.render.open = false;
-                self.notify("Flame loaded into the editor");
+            egui::Panel::top("render-tabs").exact_size(36.0).frame(egui::Frame::new().fill(theme::PANEL).inner_margin(egui::Margin::symmetric(12, 4))).show(ui, |ui| {
+                ui.horizontal_centered(|ui| {
+                    ui.selectable_value(&mut self.render_tab, RenderTab::Interactive, "Interactive").on_hover_text("One flame, progressive, with pause and resume");
+                    let batch = if self.batch.is_running() { "Batch •" } else { "Batch" };
+                    ui.selectable_value(&mut self.render_tab, RenderTab::Batch, batch).on_hover_text("Render a queue of flames to files");
+                });
+            });
+            match self.render_tab {
+                RenderTab::Interactive => {
+                    if let Some(f) = self.render.show(ui, frame, &self.doc.flame, self.preview.gpu_context()) {
+                        self.doc.replace(f);
+                        self.render.open = false;
+                        self.notify("Flame loaded into the editor");
+                    }
+                }
+                RenderTab::Batch => self.batch.show(ui, &self.doc, self.preview.gpu_available()),
             }
         }
 

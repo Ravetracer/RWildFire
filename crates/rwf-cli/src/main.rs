@@ -40,7 +40,7 @@ struct Args {
 
 fn usage() -> ! {
     eprintln!(
-        "usage: rwf-cli render <file.flame> [-o out.png|.jpg|.hdr|.exr] [-w width] [-h height] [-q quality] [-i flame-index] [--gpu] [-t threads] [--zbuffer] [--jpeg-quality 1-100]"
+        "usage: rwf-cli render <file.flame> [-o out.png|.jpg|.hdr|.exr] [-w width] [-h height] [-q quality] [-i flame-index] [--gpu] [-t threads] [--zbuffer] [--jpeg-quality 1-100]\n       rwf-cli batch [options] <files or folders...>   (rwf-cli batch for the options)"
     );
     std::process::exit(2);
 }
@@ -179,7 +179,99 @@ fn render_anim_cmd() {
     eprintln!("rendered {} frames in {:.1}s -> {}", to - from + 1, t0.elapsed().as_secs_f64(), output.display());
 }
 
+/// `rwf-cli batch [options] <files or folders...>`: renders every flame of the given files
+/// (folders: all `.flame` files in them) on the GPU.
+fn batch_cmd() {
+    use rwf_gpu::batch::{BatchJob, BatchSettings, SizeMode};
+    let batch_usage = || -> ! {
+        eprintln!(
+            "usage: rwf-cli batch [--size flame|N|WxH] [-q quality] [-f png|jpg|hdr|exr] [--jpeg-quality 1-100] [--zbuffer]\n                 [--animations mp4|mov|webm|png] [-o out-dir] [--overwrite] [--no-denoise] <files or folders...>"
+        );
+        std::process::exit(2);
+    };
+    let mut s = BatchSettings::default();
+    let mut inputs = Vec::new();
+    let mut it = std::env::args().skip(2);
+    while let Some(a) = it.next() {
+        let mut val = || it.next().unwrap_or_else(|| batch_usage());
+        match a.as_str() {
+            "--size" => {
+                let v = val();
+                s.size = match v.split_once('x') {
+                    _ if v == "flame" => SizeMode::Flame,
+                    Some((w, h)) => SizeMode::Fixed(w.parse().unwrap_or_else(|_| batch_usage()), h.parse().unwrap_or_else(|_| batch_usage())),
+                    None => SizeMode::LongEdge(v.parse().unwrap_or_else(|_| batch_usage())),
+                };
+            }
+            "-q" => s.quality = val().parse().unwrap_or_else(|_| batch_usage()),
+            "-f" => s.format = rwf_core::output::ImageFormat::from_path(std::path::Path::new(&format!("x.{}", val()))).unwrap_or_else(|| batch_usage()),
+            "--jpeg-quality" => s.jpeg_quality = val().parse().unwrap_or(95),
+            "--zbuffer" => s.zbuffer = true,
+            "--animations" => {
+                s.animations = true;
+                s.video_format = rwf_core::video::VideoFormat::from_path(std::path::Path::new(&format!("x.{}", val())));
+            }
+            "-o" => s.out_dir = Some(PathBuf::from(val())),
+            "--overwrite" => s.overwrite = true,
+            "--no-denoise" => s.denoise = false,
+            _ if a.starts_with('-') => batch_usage(),
+            _ => inputs.push(PathBuf::from(a)),
+        }
+    }
+    if inputs.is_empty() {
+        batch_usage();
+    }
+    let mut jobs = Vec::new();
+    for input in inputs {
+        let files = if input.is_dir() {
+            let mut files: Vec<PathBuf> = std::fs::read_dir(&input)
+                .map(|d| d.filter_map(|e| e.ok().map(|e| e.path())).filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("flame"))).collect())
+                .unwrap_or_default();
+            files.sort();
+            files
+        } else {
+            vec![input]
+        };
+        for f in files {
+            match BatchJob::from_file(&f) {
+                Ok(j) => jobs.extend(j),
+                Err(e) => eprintln!("skipped: {e}"),
+            }
+        }
+    }
+    let mut r = rwf_gpu::GpuRenderer::new(rwf_gpu::GpuContext::new_headless().unwrap_or_else(|e| {
+        eprintln!("{e}");
+        std::process::exit(1);
+    }));
+    let t0 = Instant::now();
+    let mut failed = 0;
+    for (i, job) in jobs.iter().enumerate() {
+        let t = Instant::now();
+        match rwf_gpu::batch::render_job(&mut r, job, &s, &mut |_, _| true) {
+            Ok(out) if out.skipped => eprintln!("[{}/{}] {}: exists, skipped ({})", i + 1, jobs.len(), job.name, out.path.display()),
+            Ok(out) => {
+                eprintln!("[{}/{}] {} -> {} ({:.1}s)", i + 1, jobs.len(), job.name, out.path.display(), t.elapsed().as_secs_f64());
+                if let Some(w) = out.warning {
+                    eprintln!("    warning: {w}");
+                }
+            }
+            Err(e) => {
+                failed += 1;
+                eprintln!("[{}/{}] {}: {e}", i + 1, jobs.len(), job.name);
+            }
+        }
+    }
+    eprintln!("{} jobs in {:.1}s, {failed} failed", jobs.len(), t0.elapsed().as_secs_f64());
+    if failed > 0 {
+        std::process::exit(1);
+    }
+}
+
 fn main() {
+    if std::env::args().nth(1).as_deref() == Some("batch") {
+        batch_cmd();
+        return;
+    }
     if std::env::args().nth(1).as_deref() == Some("render-anim") {
         render_anim_cmd();
         return;

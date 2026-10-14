@@ -19,6 +19,7 @@
 
 //! GPU (wgpu compute) renderer for flames.
 
+pub mod batch;
 pub mod codegen;
 pub mod renderer;
 mod solid;
