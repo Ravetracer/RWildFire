@@ -86,8 +86,7 @@ impl View {
             (1.0, 0.0, -cam_x0, -cam_y0)
         };
 
-        let deg = std::f64::consts::PI / 180.0;
-        let matrix = projection_matrix(-flame.cam_yaw * deg, flame.cam_pitch * deg, flame.cam_bank * deg, flame.cam_roll * deg);
+        let matrix = camera_matrix(flame.cam_yaw, flame.cam_pitch, flame.cam_bank, flame.cam_roll);
 
         Self {
             image_width,
@@ -250,6 +249,14 @@ mod tests {
         // Outside the window: not projected.
         assert!(tile.project(-3.0, -3.0, 0.0, &mut ctx).is_none());
     }
+}
+
+/// The 3D camera rotation for the flame angles in degrees. A world point `w` maps to camera
+/// space as `c[j] = sum_i m[i][j] * w[i]`; camera x/y follow the image axes (y down) and a
+/// larger camera z is closer to the viewer.
+pub fn camera_matrix(yaw: f64, pitch: f64, bank: f64, roll: f64) -> [[f64; 3]; 3] {
+    let deg = std::f64::consts::PI / 180.0;
+    projection_matrix(-yaw * deg, pitch * deg, bank * deg, roll * deg)
 }
 
 fn projection_matrix(yaw: f64, pitch: f64, bank: f64, roll: f64) -> [[f64; 3]; 3] {

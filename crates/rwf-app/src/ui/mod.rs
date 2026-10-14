@@ -19,6 +19,7 @@
 
 //! UI panels.
 
+pub mod camera_gizmo;
 pub mod inspector;
 pub mod mixer;
 pub mod solid;

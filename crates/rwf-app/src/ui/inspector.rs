@@ -260,14 +260,14 @@ fn transform_tab(ui: &mut Ui, doc: &mut Document, st: &mut InspectorState) {
 }
 
 fn camera_tab(ui: &mut Ui, doc: &mut Document) {
+    use super::camera_gizmo::{self as gizmo, Wheel};
     let f = &mut doc.flame;
     theme::section_label(ui, "View");
     grid(ui, "cam", |ui| {
         drag(ui, "Center X", &mut f.centre_x, 0.005);
         drag(ui, "Center Y", &mut f.centre_y, 0.005);
-        slider_log(ui, "Scale", &mut f.pixels_per_unit, 1.0..=5000.0);
-        slider_log(ui, "Zoom", &mut f.cam_zoom, 0.05..=20.0);
-        slider(ui, "Rotation", &mut f.cam_roll, -180.0..=180.0);
+        gizmo::wheel_row(ui, "Scale", &mut f.pixels_per_unit, Wheel::Log(150.0), 0.01..=1e6, 50.0, 3);
+        gizmo::wheel_row(ui, "Zoom", &mut f.cam_zoom, Wheel::Log(150.0), 0.001..=1000.0, 1.0, 3);
     });
     if ui.button(format!("{}  Fit flame to view", icons::FIT)).clicked() {
         let mut c = f.clone();
@@ -275,15 +275,17 @@ fn camera_tab(ui: &mut Ui, doc: &mut Document) {
             *f = c;
         }
     }
+    theme::section_label(ui, "Orientation");
+    ui.vertical_centered(|ui| {
+        gizmo::orbit_globe(ui, f, 74.0, false);
+        gizmo::angle_fields(ui, f);
+    });
     theme::section_label(ui, "3D camera");
     grid(ui, "cam3d", |ui| {
-        slider(ui, "Pitch", &mut f.cam_pitch, -180.0..=180.0);
-        slider(ui, "Yaw", &mut f.cam_yaw, -180.0..=180.0);
-        slider(ui, "Bank", &mut f.cam_bank, -180.0..=180.0);
-        slider(ui, "Perspective", &mut f.cam_perspective, 0.0..=1.0);
+        gizmo::wheel_row(ui, "Perspective", &mut f.cam_perspective, Wheel::Linear(0.002), 0.0..=10.0, 0.0, 4);
+        gizmo::wheel_row(ui, "Dolly", &mut f.cam_pos_z, Wheel::Linear(0.01), f64::MIN..=f64::MAX, 0.0, 4).on_hover_text("Camera position Z");
         drag(ui, "Position X", &mut f.cam_pos_x, 0.01);
         drag(ui, "Position Y", &mut f.cam_pos_y, 0.01);
-        drag(ui, "Position Z", &mut f.cam_pos_z, 0.01);
         slider(ui, "Depth fade", &mut f.dimish_z, 0.0..=4.0);
         drag(ui, "Fade distance", &mut f.dim_z_distance, 0.01);
     });

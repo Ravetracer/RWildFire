@@ -58,6 +58,8 @@ struct Drag {
 
 pub struct CanvasState {
     pub show_handles: bool,
+    /// Small orbit globe in the top-right corner of the canvas.
+    pub show_camera_gizmo: bool,
     /// Fraction of the canvas resolution used for rendering (performance knob).
     pub resolution_scale: f32,
     drag: Option<Drag>,
@@ -65,7 +67,7 @@ pub struct CanvasState {
 
 impl Default for CanvasState {
     fn default() -> Self {
-        Self { show_handles: true, resolution_scale: 1.0, drag: None }
+        Self { show_handles: true, show_camera_gizmo: true, resolution_scale: 1.0, drag: None }
     }
 }
 
@@ -385,6 +387,7 @@ fn overlay(ui: &mut egui::Ui, avail: Rect, doc: &mut Document, state: &mut Canva
             ui.selectable_value(&mut doc.edit_post, false, "Pre").on_hover_text("Edit the pre-affine transform");
             ui.selectable_value(&mut doc.edit_post, true, "Post").on_hover_text("Edit the post-affine transform");
         });
+        ui.toggle_value(&mut state.show_camera_gizmo, format!("{} Camera", icons::GLOBE)).on_hover_text("Show the camera orbit globe on the canvas");
         ui.separator();
         if ui.button(format!("{} Fit", icons::FIT)).on_hover_text("Center and fit the flame (F)").clicked() {
             let mut f = doc.flame.clone();
@@ -393,6 +396,10 @@ fn overlay(ui: &mut egui::Ui, avail: Rect, doc: &mut Document, state: &mut Canva
             }
         }
     });
+
+    if state.show_camera_gizmo {
+        crate::ui::camera_gizmo::overlay_globe(ui, pos2(avail.max.x - 104.0, avail.min.y + 46.0), &mut doc.flame);
+    }
 
     // Status chip (bottom-left).
     let density = preview.density();
