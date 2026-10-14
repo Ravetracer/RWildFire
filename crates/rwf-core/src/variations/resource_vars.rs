@@ -205,7 +205,7 @@ pub(super) const VREC: usize = 6;
 pub(super) const FREC: usize = 4;
 
 /// Limits the shared parameters (starting at `p`) and reserves the resource header.
-fn mesh_prepare(params: &[f64], p: usize) -> Vec<f64> {
+pub(super) fn mesh_prepare(params: &[f64], p: usize) -> Vec<f64> {
     let mut d = params.to_vec();
     d[p + 6] = ftoi_limit(params[p + 6], 0, 6);
     d[p + 7] = ftoi_limit(params[p + 7], 0, 24);
@@ -249,12 +249,13 @@ pub(super) fn pack_mesh(d: &mut Vec<f64>, o: usize, m: &Mesh) {
     }
 }
 
-/// `AbstractOBJMeshWFFunc.transform`; `p` = index of `scale_x`.
-fn mesh_apply(d: &[f64], p: usize, ctx: &mut Ctx, v: &mut Pt, amount: f64) {
+/// `AbstractOBJMeshWFFunc.transform`; `p` = index of `scale_x`. Returns the index of the face
+/// it sampled.
+pub(super) fn mesh_apply(d: &[f64], p: usize, ctx: &mut Ctx, v: &mut Pt, amount: f64) -> Option<usize> {
     let o = p + MESH_PARAMS.len();
     let total = d[o + M_TOTAL] as usize;
     if total == 0 {
-        return;
+        return None;
     }
     // Face `k` of the (virtually) expanded face list.
     let k = ctx.random_int(total) as f64;
@@ -313,6 +314,7 @@ fn mesh_apply(d: &[f64], p: usize, ctx: &mut Ctx, v: &mut Pt, amount: f64) {
     if d[p + 13] as i32 == 1 {
         v.receive_only_shadows = true;
     }
+    Some(lo)
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1427,7 +1429,9 @@ v.z += AMOUNT * z;",
         params: &MESH_PARAMS,
         kind: VarKind::Normal,
         is_3d: true,
-        apply: |d, ctx, _, v, amount| mesh_apply(d, 0, ctx, v, amount),
+        apply: |d, ctx, _, v, amount| {
+            mesh_apply(d, 0, ctx, v, amount);
+        },
         prepare: Some(|p, _| mesh_prepare(p, 0)),
         wgsl: "v = res_mesh(base, 0u, v, AMOUNT);",
     },
@@ -1436,7 +1440,9 @@ v.z += AMOUNT * z;",
         params: &PRIMITIVE_PARAMS,
         kind: VarKind::Normal,
         is_3d: true,
-        apply: |d, ctx, _, v, amount| mesh_apply(d, 1, ctx, v, amount),
+        apply: |d, ctx, _, v, amount| {
+            mesh_apply(d, 1, ctx, v, amount);
+        },
         prepare: Some(|p, _| {
             let mut d = mesh_prepare(p, 1);
             d[0] = ftoi(p[0]) as f64;
@@ -1791,7 +1797,9 @@ if (i32(D(3)) == 0) {
         params: &KNOTS_PARAMS,
         kind: VarKind::Normal,
         is_3d: true,
-        apply: |d, ctx, _, v, amount| mesh_apply(d, 12, ctx, v, amount),
+        apply: |d, ctx, _, v, amount| {
+            mesh_apply(d, 12, ctx, v, amount);
+        },
         prepare: Some(|p, _| {
             let mut d = mesh_prepare(p, 12);
             d[0] = ftoi(p[0]) as f64;
@@ -1827,7 +1835,9 @@ if (i32(D(4)) == 1) { v.color = v.y % 1.0; }",
         params: &SATTRACTOR_PARAMS,
         kind: VarKind::Normal,
         is_3d: true,
-        apply: |d, ctx, _, v, amount| mesh_apply(d, 17, ctx, v, amount),
+        apply: |d, ctx, _, v, amount| {
+            mesh_apply(d, 17, ctx, v, amount);
+        },
         prepare: Some(|p, _| {
             let mut d = mesh_prepare(p, 17);
             d[0] = ftoi(p[0]) as f64;

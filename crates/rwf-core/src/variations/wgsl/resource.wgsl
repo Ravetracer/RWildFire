@@ -60,6 +60,9 @@ fn res_nearest_color_idx(t: vec3<f32>) -> f32 {
 // the colormap and displacement image blocks and the mesh header
 // [vertices, faces, expanded face count, vertex start, face start];
 // vertex = [x, y, z, u, v, has_uv], face = [v1, v2, v3, cumulative count].
+// Face the last res_mesh call sampled (lsystem3D_js reads its color).
+var<private> res_mesh_face: u32;
+
 fn res_mesh(base: u32, p: u32, v_in: Pt, amount: f32) -> Pt {
   var v = v_in;
   let o = base + p + 14u;
@@ -76,6 +79,7 @@ fn res_mesh(base: u32, p: u32, v_in: Pt, amount: f32) -> Pt {
     if (prm[fs + mid * 4u + 3u] > k) { hi = mid; } else { lo = mid + 1u; }
   }
   let f = fs + lo * 4u;
+  res_mesh_face = lo;
   let i1 = vs + u32(prm[f]) * 6u;
   let i2 = vs + u32(prm[f + 1u]) * 6u;
   let i3 = vs + u32(prm[f + 2u]) * 6u;
