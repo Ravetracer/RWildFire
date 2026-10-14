@@ -28,6 +28,7 @@ mod export;
 mod explorer;
 mod gradients;
 mod icons;
+mod mesh_view;
 mod movie_view;
 mod mutagen;
 mod preview;

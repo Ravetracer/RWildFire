@@ -40,7 +40,7 @@ struct Args {
 
 fn usage() -> ! {
     eprintln!(
-        "usage: rwf-cli render <file.flame> [-o out.png|.jpg|.hdr|.exr] [-w width] [-h height] [-q quality] [-i flame-index] [--gpu] [-t threads] [--zbuffer] [--jpeg-quality 1-100]\n       rwf-cli batch [options] <files or folders...>   (rwf-cli batch for the options)\n       rwf-cli quilt <file.flame> -o out.png -w width [-h height] [-q quality] [--tiles COLSxROWS]\n       rwf-cli movie <file.jwfmovie> -o out.mp4|.mov|.webm|out-dir [--cpu]\n       rwf-cli random <out-dir> [count] [generator filter] [--symmetry NAME] [--weighting NAME]"
+        "usage: rwf-cli render <file.flame> [-o out.png|.jpg|.hdr|.exr] [-w width] [-h height] [-q quality] [-i flame-index] [--gpu] [-t threads] [--zbuffer] [--jpeg-quality 1-100]\n       rwf-cli batch [options] <files or folders...>   (rwf-cli batch for the options)\n       rwf-cli quilt <file.flame> -o out.png -w width [-h height] [-q quality] [--tiles COLSxROWS]\n       rwf-cli mesh <file.flame> -o out.obj|out.ply [--resolution N] [--quality Q] [--threshold T] [--blur B] [--smooth N]\n       rwf-cli movie <file.jwfmovie> -o out.mp4|.mov|.webm|out-dir [--cpu]\n       rwf-cli random <out-dir> [count] [generator filter] [--symmetry NAME] [--weighting NAME]"
     );
     std::process::exit(2);
 }
@@ -401,7 +401,69 @@ fn movie_cmd() {
     eprintln!("{}", output.display());
 }
 
+/// `rwf-cli mesh <file.flame> -o out.obj|out.ply [--resolution N] [--quality Q] [--threshold T]
+/// [--blur B] [--smooth PASSES] [--no-colors]`: a 3D mesh of the flame (mesh generator).
+fn mesh_cmd() {
+    let args: Vec<String> = std::env::args().skip(2).collect();
+    let (mut input, mut output, mut colors) = (None, None, true);
+    let mut opts: Vec<(String, f64)> = Vec::new();
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "-o" => {
+                i += 1;
+                output = args.get(i).map(PathBuf::from);
+            }
+            "--no-colors" => colors = false,
+            o @ ("--resolution" | "--quality" | "--threshold" | "--blur" | "--smooth") => {
+                i += 1;
+                let v = args.get(i).and_then(|v| v.parse().ok()).unwrap_or_else(|| {
+                    eprintln!("{o} needs a number");
+                    std::process::exit(2);
+                });
+                opts.push((o.to_string(), v));
+            }
+            a => input = Some(PathBuf::from(a)),
+        }
+        i += 1;
+    }
+    let (Some(input), Some(output)) = (input, output) else {
+        eprintln!("usage: rwf-cli mesh <file.flame> -o out.obj|out.ply [--resolution N] [--quality Q] [--threshold T] [--blur B] [--smooth PASSES] [--no-colors]");
+        std::process::exit(2);
+    };
+    let flame = read_flames_from_file(&input).ok().and_then(|f| f.into_iter().next()).unwrap_or_else(|| {
+        eprintln!("failed to read {}", input.display());
+        std::process::exit(1);
+    });
+    let flame = flame.at_frame(0.0);
+    let mut s = rwf_core::meshgen::MeshSettings::new(rwf_core::meshgen::auto_bounds(&flame));
+    for (o, v) in opts {
+        match o.as_str() {
+            "--resolution" => s.resolution = v.clamp(8.0, 2048.0) as u32,
+            "--quality" => s.quality = v.max(0.1),
+            "--threshold" => s.threshold = v.clamp(0.0, 1.0),
+            "--blur" => s.blur = v.max(0.0),
+            _ => s.smooth_passes = v.max(0.0) as u32,
+        }
+    }
+    let started = std::time::Instant::now();
+    let progress = std::sync::atomic::AtomicU64::new(0);
+    let Some((_, mut mesh)) = rwf_core::meshgen::generate(&flame, &s, &progress, &std::sync::atomic::AtomicBool::new(false)) else { return };
+    if !colors {
+        mesh.colors.clear();
+    }
+    if let Err(e) = mesh.save(&output, colors, true) {
+        eprintln!("cannot write {}: {e}", output.display());
+        std::process::exit(1);
+    }
+    eprintln!("{} ({} vertices, {} triangles, {:.1} s)", output.display(), mesh.positions.len(), mesh.triangles.len(), started.elapsed().as_secs_f64());
+}
+
 fn main() {
+    if std::env::args().nth(1).as_deref() == Some("mesh") {
+        mesh_cmd();
+        return;
+    }
     if std::env::args().nth(1).as_deref() == Some("movie") {
         movie_cmd();
         return;

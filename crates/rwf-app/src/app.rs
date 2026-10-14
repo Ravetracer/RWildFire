@@ -43,6 +43,7 @@ enum RenderTab {
     Batch,
     Quilt,
     Movie,
+    Mesh,
 }
 
 pub struct RwfApp {
@@ -63,6 +64,7 @@ pub struct RwfApp {
     batch: crate::batch_view::BatchView,
     quilt: crate::quilt_view::QuiltView,
     movie: crate::movie_view::MovieView,
+    mesh: crate::mesh_view::MeshView,
     render_tab: RenderTab,
     generator: Generator,
     rng: Rng,
@@ -95,6 +97,7 @@ impl RwfApp {
             batch: Default::default(),
             quilt: Default::default(),
             movie: Default::default(),
+            mesh: Default::default(),
             render_tab: RenderTab::Interactive,
             generator: Generator::Classic,
             rng,
@@ -291,7 +294,7 @@ impl eframe::App for RwfApp {
                 explorer_open: self.explorer_open,
                 timeline_open: self.timeline.open,
                 render_open: self.render.open,
-                render_busy: self.batch.is_running() || self.quilt.is_running() || self.movie.is_running(),
+                render_busy: self.batch.is_running() || self.quilt.is_running() || self.movie.is_running() || self.mesh.is_running(),
                 randomizing: self.randomizing.is_some(),
             };
             if let Some(a) = topbar::show(ui, &info, &mut self.generator, &mut self.explorer.extras) {
@@ -310,6 +313,8 @@ impl eframe::App for RwfApp {
                     ui.selectable_value(&mut self.render_tab, RenderTab::Quilt, quilt).on_hover_text("Very large images, rendered tile by tile");
                     let movie = if self.movie.is_running() { "Movie •" } else { "Movie" };
                     ui.selectable_value(&mut self.render_tab, RenderTab::Movie, movie).on_hover_text("A movie from flames that fade or morph into each other");
+                    let mesh = if self.mesh.is_running() { "Mesh •" } else { "Mesh" };
+                    ui.selectable_value(&mut self.render_tab, RenderTab::Mesh, mesh).on_hover_text("A 3D mesh (OBJ, PLY) of the flame");
                 });
             });
             match self.render_tab {
@@ -325,6 +330,7 @@ impl eframe::App for RwfApp {
                     self.quilt.sync_flame(&self.doc);
                     self.quilt.show(ui, &self.doc, self.preview.gpu_available());
                 }
+                RenderTab::Mesh => self.mesh.show(ui, &self.doc),
                 RenderTab::Movie => {
                     if let Some(f) = self.movie.show(ui, &self.doc, self.preview.gpu_context(), (self.generator, self.explorer.extras)) {
                         self.doc.replace(f);
