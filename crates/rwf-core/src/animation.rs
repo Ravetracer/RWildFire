@@ -26,6 +26,7 @@
 //! * variation: `layer0.xf2.var1.amount`, `layer0.xf2.var1.p.power`
 
 use crate::model::{Affine, Flame, XForm, XFormKind};
+use crate::weighting::{FieldType, WeightingField};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum Interp {
@@ -213,6 +214,69 @@ const AFFINE_FIELDS: [&str; 6] = ["c00", "c01", "c10", "c11", "c20", "c21"];
 const AFFINES: [&str; 6] = ["coefs", "post", "yz_coefs", "yz_post", "zx_coefs", "zx_post"];
 const XFORM_SCALARS: [&str; 5] = ["weight", "color", "color_symmetry", "opacity", "material"];
 
+/// Animatable weighting field settings of an xform (`wfield.<name>`) with the name of their
+/// JWildfire motion curve.
+const WFIELD_PROPS: [(&str, &str); 15] = [
+    ("color_intensity", "weightingFieldColorIntensity"),
+    ("var_amount_intensity", "weightingFieldVarAmountIntensity"),
+    ("param1_intensity", "weightingFieldVarParam1Intensity"),
+    ("param2_intensity", "weightingFieldVarParam2Intensity"),
+    ("param3_intensity", "weightingFieldVarParam3Intensity"),
+    ("jitter_intensity", "weightingFieldJitterIntensity"),
+    ("cmap_x_size", "weightingFieldColorMapXSize"),
+    ("cmap_y_size", "weightingFieldColorMapYSize"),
+    ("cmap_x_centre", "weightingFieldColorMapXCentre"),
+    ("cmap_y_centre", "weightingFieldColorMapYCentre"),
+    ("noise_seed", "weightingFieldNoiseSeed"),
+    ("noise_frequency", "weightingFieldNoiseFrequency"),
+    ("fractal_octaves", "weightingFieldFractalNoiseOctaves"),
+    ("fractal_gain", "weightingFieldFractalNoiseGain"),
+    ("fractal_lacunarity", "weightingFieldFractalNoiseLacunarity"),
+];
+
+fn wfield_get(w: &WeightingField, name: &str) -> Option<f64> {
+    Some(match name {
+        "color_intensity" => w.color_intensity,
+        "var_amount_intensity" => w.var_amount_intensity,
+        "param1_intensity" => w.var_params[0].intensity,
+        "param2_intensity" => w.var_params[1].intensity,
+        "param3_intensity" => w.var_params[2].intensity,
+        "jitter_intensity" => w.jitter_intensity,
+        "cmap_x_size" => w.cmap_x_size,
+        "cmap_y_size" => w.cmap_y_size,
+        "cmap_x_centre" => w.cmap_x_centre,
+        "cmap_y_centre" => w.cmap_y_centre,
+        "noise_seed" => w.noise_seed as f64,
+        "noise_frequency" => w.noise_frequency,
+        "fractal_octaves" => w.fractal_octaves as f64,
+        "fractal_gain" => w.fractal_gain,
+        "fractal_lacunarity" => w.fractal_lacunarity,
+        _ => return None,
+    })
+}
+
+fn wfield_set(w: &mut WeightingField, name: &str, v: f64) -> bool {
+    match name {
+        "color_intensity" => w.color_intensity = v,
+        "var_amount_intensity" => w.var_amount_intensity = v,
+        "param1_intensity" => w.var_params[0].intensity = v,
+        "param2_intensity" => w.var_params[1].intensity = v,
+        "param3_intensity" => w.var_params[2].intensity = v,
+        "jitter_intensity" => w.jitter_intensity = v,
+        "cmap_x_size" => w.cmap_x_size = v,
+        "cmap_y_size" => w.cmap_y_size = v,
+        "cmap_x_centre" => w.cmap_x_centre = v,
+        "cmap_y_centre" => w.cmap_y_centre = v,
+        "noise_seed" => w.noise_seed = v.round() as i32,
+        "noise_frequency" => w.noise_frequency = v,
+        "fractal_octaves" => w.fractal_octaves = v.round() as i32,
+        "fractal_gain" => w.fractal_gain = v,
+        "fractal_lacunarity" => w.fractal_lacunarity = v,
+        _ => return false,
+    }
+    true
+}
+
 fn affine_mut<'a>(xf: &'a mut XForm, name: &str) -> Option<&'a mut Affine> {
     Some(match name {
         "coefs" => &mut xf.coefs,
@@ -264,6 +328,9 @@ fn xform_path(path: &str) -> Option<(usize, XFormKind, usize, &str)> {
 }
 
 fn get_xform_prop(xf: &XForm, rest: &str) -> Option<f64> {
+    if let Some(name) = rest.strip_prefix("wfield.") {
+        return wfield_get(&xf.weighting, name);
+    }
     if let Some((a, f)) = rest.split_once('.')
         && let Some(af) = affine_ref(xf, a)
     {
@@ -289,6 +356,9 @@ fn get_xform_prop(xf: &XForm, rest: &str) -> Option<f64> {
 }
 
 fn set_xform_prop(xf: &mut XForm, rest: &str, v: f64) -> bool {
+    if let Some(name) = rest.strip_prefix("wfield.") {
+        return wfield_set(&mut xf.weighting, name, v);
+    }
     if let Some((a, f)) = rest.split_once('.')
         && let Some(af) = affine_mut(xf, a)
     {
@@ -410,6 +480,11 @@ pub fn all_props(flame: &Flame) -> Vec<(String, f64)> {
                         out.push((format!("{p}.{a}.{f}"), af.as_array()[i]));
                     }
                 }
+                if xf.weighting.field_type != FieldType::None {
+                    for (n, _) in WFIELD_PROPS {
+                        out.push((format!("{p}.wfield.{n}"), wfield_get(&xf.weighting, n).unwrap_or(0.0)));
+                    }
+                }
                 for (vi, var) in xf.variations.iter().enumerate() {
                     out.push((format!("{p}.var{vi}.amount"), var.amount));
                     if let Some(def) = crate::variations::find(&var.name) {
@@ -442,6 +517,8 @@ pub fn label(flame: &Flame, path: &str) -> String {
                 .map(|v| v.name.clone())
                 .unwrap_or_else(|| format!("var{vi}"));
             format!("{var_name} {}", tail.trim_start_matches("p."))
+        } else if let Some(w) = rest.strip_prefix("wfield.") {
+            format!("weighting {}", w.replace('_', " "))
         } else {
             rest.to_string()
         };
@@ -558,6 +635,9 @@ pub fn jwf_xform_curve_suffix(name: &str) -> Option<String> {
     if let Some(s) = simple {
         return Some(s.to_string());
     }
+    if let Some((ours, _)) = WFIELD_PROPS.iter().find(|(_, jwf)| *jwf == name) {
+        return Some(format!("wfield.{ours}"));
+    }
     for (jwf, ours) in [("xyCoeff", "coefs"), ("xyPostCoeff", "post"), ("yzCoeff", "yz_coefs"), ("yzPostCoeff", "yz_post"), ("zxCoeff", "zx_coefs"), ("zxPostCoeff", "zx_post")] {
         if let Some(idx) = name.strip_prefix(jwf)
             && idx.len() == 2
@@ -592,6 +672,23 @@ pub fn jwf_curve_track(attrs: &[(String, String)], prefix: &str, path: &str) -> 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn weighting_field_props() {
+        use super::*;
+        let mut flame = Flame::default();
+        flame.layers[0].xforms.push(XForm::default());
+        let path = "layer0.xf0.wfield.noise_frequency";
+        assert!(!all_props(&flame).iter().any(|(p, _)| p == path), "listed without a field");
+        flame.layers[0].xforms[0].weighting.field_type = FieldType::PerlinNoise;
+        assert!(all_props(&flame).iter().any(|(p, _)| p == path));
+        assert!(set_prop(&mut flame, path, 2.5));
+        assert_eq!(get_prop(&flame, path), Some(2.5));
+        assert!(set_prop(&mut flame, "layer0.xf0.wfield.noise_seed", 41.6));
+        assert_eq!(flame.layers[0].xforms[0].weighting.noise_seed, 42);
+        assert_eq!(jwf_xform_curve_suffix("weightingFieldVarParam2Intensity").as_deref(), Some("wfield.param2_intensity"));
+        assert_eq!(label(&flame, path), "Transform 1 · weighting noise frequency");
+    }
+
     #[test]
     fn smoothing_averages_neighbours() {
         let keys = [0.0, 3.0, 0.0, 3.0, 0.0].iter().enumerate().map(|(i, &value)| Key { frame: i as f64, value }).collect();

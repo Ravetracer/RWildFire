@@ -290,10 +290,76 @@ fn wf_len(xf: &PreparedXForm) -> usize {
                 Field::Image { img, .. } => (img.width * img.height) as usize,
                 _ => 0,
             };
-            wfo::STEPS + wfo::STEP_LEN * steps(xf).count() + pixels
+            wfo::STEPS + wfo::STEP_LEN * steps(xf).count() + pixels + step_tables(xf).iter().flatten().map(StepTable::len).sum::<usize>()
         }
         None => 0,
     }
+}
+
+/// Weighting field modulated parameters of a variation with a `prepare` step, whose data
+/// cannot be derived on the GPU: the prepared data at `levels` field values from `lo` to `hi`.
+/// The shader picks one per sample, randomly between the two nearest levels.
+struct StepTable {
+    levels: usize,
+    stride: usize,
+    lo: f64,
+    hi: f64,
+    data: Vec<f32>,
+}
+
+impl StepTable {
+    /// Header (`lo`, levels per field unit) and the data blocks.
+    fn len(&self) -> usize {
+        2 + self.levels * self.stride
+    }
+}
+
+const STEP_TABLE_LEVELS: usize = 64;
+const STEP_TABLE_MIN_LEVELS: usize = 8;
+/// Maximum size of one table in floats.
+const STEP_TABLE_BUDGET: usize = 1 << 14;
+
+fn step_table(xf: &PreparedXForm, s: &VarStep) -> Option<StepTable> {
+    let w = xf.weighting.as_ref()?;
+    let sw = s.weighting.as_ref()?;
+    if s.def.prepare.is_none() || !s.def.supports_gpu() || matches!(s.mode, StepMode::Enforced | StepMode::EnforcedPost) || sw.params.iter().all(|q| q.param.is_none())
+    {
+        return None;
+    }
+    let (lo, hi) = w.field.value_range();
+    if hi - lo < 1e-9 {
+        return None;
+    }
+    let stride = [lo, hi].iter().map(|v| sw.modulated_data(s.def, *v).len()).max()?.max(s.data.len()).max(1);
+    let levels = STEP_TABLE_LEVELS.min(STEP_TABLE_BUDGET / stride);
+    if levels < STEP_TABLE_MIN_LEVELS {
+        return None;
+    }
+    let mut data = vec![0.0f32; levels * stride];
+    for l in 0..levels {
+        let wmv = lo + (hi - lo) * l as f64 / (levels - 1) as f64;
+        for (i, v) in sw.modulated_data(s.def, wmv).iter().take(stride).enumerate() {
+            data[l * stride + i] = *v as f32;
+        }
+    }
+    Some(StepTable { levels, stride, lo, hi, data })
+}
+
+/// The [`step_table`] of every step of an xform (in [`steps`] order).
+fn step_tables(xf: &PreparedXForm) -> Vec<Option<StepTable>> {
+    if xf.weighting.is_none() {
+        return Vec::new();
+    }
+    steps(xf).map(|s| step_table(xf, s)).collect()
+}
+
+/// Start of the step tables relative to the weighting field block.
+fn step_tables_offset(xf: &PreparedXForm) -> usize {
+    let pixels = match xf.weighting.as_ref().map(|w| &w.field) {
+        Some(Field::Image { img, .. }) => (img.width * img.height) as usize,
+        _ => 0,
+    };
+    wfo::STEPS + wfo::STEP_LEN * steps(xf).count() + pixels
 }
 
 /// Parameters of a step a weighting field scales on the GPU (`(index, integer)`): only for
@@ -399,13 +465,15 @@ fn emit_xform(out: &mut String, fname: &str, xf: &PreparedXForm, base: usize, la
     let mut off = xo::VARS;
     let mut si = 0usize;
     let weighted = xf.weighting.is_some();
+    let tables = step_tables(xf);
+    let mut table_off = wf + step_tables_offset(xf);
     let mut emit_steps = |out: &mut String, list: &[VarStep]| {
         for s in list {
             let f = var_fn_name(s.def);
             let call_base = off + 1;
             // Weighting field: amount scaled by the field value (not for the enforced steps,
-            // which see no field value in JWildfire). Modulated parameters are not supported on
-            // the GPU.
+            // which see no field value in JWildfire). Modulated parameters are scaled in the
+            // shader, or come from a step table for variations with a `prepare` step.
             let so = wf + wfo::STEPS + wfo::STEP_LEN * si;
             let amt = if weighted && !matches!(s.mode, StepMode::Enforced | StepMode::EnforcedPost) {
                 format!("(prm[B + {off}u] * wamt * (1.0 + wmv * prm[B + {so}u]))")
@@ -419,16 +487,25 @@ fn emit_xform(out: &mut String, fname: &str, xf: &PreparedXForm, base: usize, la
                 let extra: String = (0..wp.len()).map(|n| format!(", 1.0 + wmv * prm[B + {}u]", so + 1 + n)).collect();
                 (weighted_fn_name(s.def, &wp), format!("{amt}{extra}"))
             };
+            // Prepared data at the field value from a step table.
+            let call_base = match tables.get(si).and_then(Option::as_ref) {
+                Some(t) => {
+                    let base = format!("B + {}u + {}u * wf_level(wmv, B + {table_off}u, {}u)", table_off + 2, t.stride, t.levels);
+                    table_off += t.len();
+                    base
+                }
+                None => format!("B + {call_base}u"),
+            };
             si += 1;
             match s.mode {
                 StepMode::Pre | StepMode::Normal | StepMode::Post => {
-                    let _ = writeln!(out, "  {{ let r = {f}(a, v, B + {call_base}u, {amt}); a = r.a; v = r.v; }}");
+                    let _ = writeln!(out, "  {{ let r = {f}(a, v, {call_base}, {amt}); a = r.a; v = r.v; }}");
                 }
                 StepMode::EnforcedPre => {
-                    let _ = writeln!(out, "  {{ let r = {f}(a, a, B + {call_base}u, {amt}); a = r.v; }}");
+                    let _ = writeln!(out, "  {{ let r = {f}(a, a, {call_base}, {amt}); a = r.v; }}");
                 }
                 StepMode::Enforced | StepMode::EnforcedPost => {
-                    let _ = writeln!(out, "  {{ let r = {f}(v, v, B + {call_base}u, {amt}); v = r.v; }}");
+                    let _ = writeln!(out, "  {{ let r = {f}(v, v, {call_base}, {amt}); v = r.v; }}");
                 }
             }
             off += 1 + s.data.len();
@@ -550,6 +627,9 @@ impl Layout {
                     let _ = write!(sig, "w{}{}t{code},", wf_len(xf), w.input == FieldInput::Position);
                     wf_types.insert(code);
                     any_weighting = true;
+                }
+                for t in step_tables(xf).iter().flatten() {
+                    let _ = write!(sig, "T{}x{},", t.levels, t.stride);
                 }
                 for s in steps(xf) {
                     let wp = gpu_weighted_params(s);
@@ -1067,6 +1147,13 @@ fn pack_xform(p: &mut [f32], base: usize, xf: &PreparedXForm) {
                     p[b + rel + i] = (px >> 16 & 255) as f32;
                 }
             }
+        }
+        let mut t_off = b + step_tables_offset(xf);
+        for t in step_tables(xf).iter().flatten() {
+            p[t_off] = t.lo as f32;
+            p[t_off + 1] = ((t.levels - 1) as f64 / (t.hi - t.lo)) as f32;
+            p[t_off + 2..t_off + t.len()].copy_from_slice(&t.data);
+            t_off += t.len();
         }
         for (si, s) in steps(xf).enumerate() {
             let o = b + wfo::STEPS + wfo::STEP_LEN * si;

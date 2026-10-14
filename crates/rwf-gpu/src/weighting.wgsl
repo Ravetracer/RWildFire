@@ -258,3 +258,10 @@ fn wf_image(b: u32, x_in: f32, y_in: f32) -> f32 {
   let bottom = wf_lerp(wf_image_red(b, ix, iy + 1), wf_image_red(b, ix + 1, iy + 1), px);
   return 0.5 - wf_lerp(top, bottom, py) / 255.0;
 }
+
+// Level of a step table (see `StepTable` in codegen.rs) for the field value `wmv`: one of
+// the two nearest levels, picked at random by the distance to them.
+fn wf_level(wmv: f32, t: u32, n: u32) -> u32 {
+  let x = clamp((wmv - prm[t]) * prm[t + 1u], 0.0, f32(n - 1u));
+  return min(u32(x + rnd()), n - 1u);
+}

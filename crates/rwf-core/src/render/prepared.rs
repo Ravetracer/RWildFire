@@ -414,25 +414,33 @@ fn run_step(step: &VarStep, ctx: &mut Ctx, a: &mut Pt, v: &mut Pt, wmv: f64, var
         return;
     }
     // modulated parameters: the variation is prepared again (JWildfire: init per sample)
-    let mut inst = w.inst.clone();
-    inst.params.resize(step.def.params.len().max(inst.params.len()), 0.0);
-    for (i, d) in step.def.params.iter().enumerate() {
-        if i >= w.inst.params.len() {
-            inst.params[i] = d.default;
-        }
-    }
-    for p in &w.params {
-        if let Some(i) = p.param {
-            let factor = 1.0 + wmv * p.intensity;
-            inst.params[i] = if p.integer { ftoi(inst.params[i].round() * factor) as f64 } else { inst.params[i] * factor };
-        }
-    }
     let v_amount = match w.params.iter().find(|p| p.param.is_none()) {
         Some(p) => amount * (1.0 + wmv * p.intensity),
         None => amount,
     };
-    let data = variations::prepare_instance(step.def, &inst, &w.coefs, w.frame);
+    let data = w.modulated_data(step.def, wmv);
     call_step(step, &data, ctx, a, v, v_amount);
+}
+
+impl StepWeighting {
+    /// The prepared data of the variation with its parameters modulated by the weighting
+    /// field value `wmv`.
+    pub fn modulated_data(&self, def: &VarDef, wmv: f64) -> Vec<f64> {
+        let mut inst = self.inst.clone();
+        inst.params.resize(def.params.len().max(inst.params.len()), 0.0);
+        for (i, d) in def.params.iter().enumerate() {
+            if i >= self.inst.params.len() {
+                inst.params[i] = d.default;
+            }
+        }
+        for p in &self.params {
+            if let Some(i) = p.param {
+                let factor = 1.0 + wmv * p.intensity;
+                inst.params[i] = if p.integer { ftoi(inst.params[i].round() * factor) as f64 } else { inst.params[i] * factor };
+            }
+        }
+        variations::prepare_instance(def, &inst, &self.coefs, self.frame)
+    }
 }
 
 impl PreparedXForm {

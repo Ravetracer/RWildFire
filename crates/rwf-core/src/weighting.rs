@@ -417,6 +417,35 @@ pub enum Field {
 }
 
 impl Field {
+    /// The range of values the field takes: exact for image maps, sampled for noise.
+    pub fn value_range(&self) -> (f64, f64) {
+        match self {
+            Field::Empty => (0.0, 0.0),
+            Field::Image { .. } => (-0.5, 0.5),
+            Field::Noise(_) => {
+                let (mut lo, mut hi) = (f64::MAX, f64::MIN);
+                let n = 12;
+                for i in 0..n {
+                    for j in 0..n {
+                        for k in 0..n {
+                            let c = |t: usize| -4.0 + 8.0 * (t as f64 + 0.37) / n as f64;
+                            let v = self.value(c(i), c(j), c(k));
+                            if v.is_finite() {
+                                lo = lo.min(v);
+                                hi = hi.max(v);
+                            }
+                        }
+                    }
+                }
+                if lo > hi {
+                    return (0.0, 0.0);
+                }
+                let margin = (hi - lo) * 0.02;
+                (lo - margin, hi + margin)
+            }
+        }
+    }
+
     /// `WeightingField.getValue`.
     pub fn value(&self, x: f64, y: f64, z: f64) -> f64 {
         match self {
