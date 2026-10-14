@@ -43,6 +43,7 @@ enum RenderTab {
     Batch,
     Quilt,
     Movie,
+    Dance,
     Mesh,
 }
 
@@ -65,6 +66,7 @@ pub struct RwfApp {
     quilt: crate::quilt_view::QuiltView,
     movie: crate::movie_view::MovieView,
     mesh: crate::mesh_view::MeshView,
+    dance: crate::dance_view::DanceView,
     render_tab: RenderTab,
     generator: Generator,
     rng: Rng,
@@ -98,6 +100,7 @@ impl RwfApp {
             quilt: Default::default(),
             movie: Default::default(),
             mesh: Default::default(),
+            dance: Default::default(),
             render_tab: RenderTab::Interactive,
             generator: Generator::Classic,
             rng,
@@ -116,6 +119,16 @@ impl RwfApp {
     }
 
     fn open_path(&mut self, path: &Path) {
+        if path.extension().is_some_and(|e| e == "rwfdance") {
+            match self.dance.open_file(path) {
+                Ok(()) => {
+                    self.render.open = true;
+                    self.render_tab = RenderTab::Dance;
+                }
+                Err(e) => self.notify(format!("Could not open file: {e}")),
+            }
+            return;
+        }
         match rwf_core::io::read_flames_from_file(path) {
             Ok(flames) if !flames.is_empty() => {
                 let n = flames.len();
@@ -294,7 +307,7 @@ impl eframe::App for RwfApp {
                 explorer_open: self.explorer_open,
                 timeline_open: self.timeline.open,
                 render_open: self.render.open,
-                render_busy: self.batch.is_running() || self.quilt.is_running() || self.movie.is_running() || self.mesh.is_running(),
+                render_busy: self.batch.is_running() || self.quilt.is_running() || self.movie.is_running() || self.mesh.is_running() || self.dance.is_running(),
                 randomizing: self.randomizing.is_some(),
             };
             if let Some(a) = topbar::show(ui, &info, &mut self.generator, &mut self.explorer.extras) {
@@ -313,6 +326,8 @@ impl eframe::App for RwfApp {
                     ui.selectable_value(&mut self.render_tab, RenderTab::Quilt, quilt).on_hover_text("Very large images, rendered tile by tile");
                     let movie = if self.movie.is_running() { "Movie •" } else { "Movie" };
                     ui.selectable_value(&mut self.render_tab, RenderTab::Movie, movie).on_hover_text("A movie from flames that fade or morph into each other");
+                    let dance = if self.dance.is_running() { "Dance •" } else { "Dance" };
+                    ui.selectable_value(&mut self.render_tab, RenderTab::Dance, dance).on_hover_text("Dancing flames: a pool of flames moved by music in real time");
                     let mesh = if self.mesh.is_running() { "Mesh •" } else { "Mesh" };
                     ui.selectable_value(&mut self.render_tab, RenderTab::Mesh, mesh).on_hover_text("A 3D mesh (OBJ, PLY) of the flame");
                 });
@@ -331,6 +346,13 @@ impl eframe::App for RwfApp {
                     self.quilt.show(ui, &self.doc, self.preview.gpu_available());
                 }
                 RenderTab::Mesh => self.mesh.show(ui, &self.doc),
+                RenderTab::Dance => {
+                    if let Some(f) = self.dance.show(ui, frame, &self.doc.flame, self.preview.gpu_context(), (self.generator, self.explorer.extras)) {
+                        self.doc.replace(f);
+                        self.render.open = false;
+                        self.notify("Flame loaded into the editor");
+                    }
+                }
                 RenderTab::Movie => {
                     if let Some(f) = self.movie.show(ui, &self.doc, self.preview.gpu_context(), (self.generator, self.explorer.extras)) {
                         self.doc.replace(f);

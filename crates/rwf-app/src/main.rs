@@ -20,9 +20,11 @@
 //! RWildFire — desktop fractal flame editor.
 
 mod app;
+mod audio_player;
 mod batch_view;
 mod canvas;
 mod curve_editor;
+mod dance_view;
 mod doc;
 mod export;
 mod explorer;

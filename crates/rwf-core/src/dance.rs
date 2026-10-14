@@ -98,13 +98,15 @@ impl Spectrum {
                 });
             }
         });
-        // Per band: map the 10th..99.5th percentile of the levels to 0..1.
+        // Per band: map the 10th..99.5th percentile of the levels to 0..1, at most 60 dB below
+        // the peak (nearly silent bands stay quiet instead of being stretched).
         for b in 0..BANDS {
             let mut v: Vec<f32> = rows.iter().map(|r| r[b]).collect();
             v.sort_by(f32::total_cmp);
             let at = |q: f64| v[((v.len() - 1) as f64 * q) as usize];
-            let (lo, hi) = (at(0.10), at(0.995));
-            let span = (hi - lo).max(6.0);
+            let hi = at(0.995);
+            let lo = at(0.10).max(hi - 60.0);
+            let span = (hi - lo).max(20.0);
             for r in &mut rows {
                 r[b] = ((r[b] - lo) / span).clamp(0.0, 1.0);
             }
@@ -385,14 +387,12 @@ impl DanceProject {
         }
     }
 
-    /// The flame of the recorded performance at `frame` (at [`Self::fps`]).
+    /// The flame of the recorded performance at `frame` (at [`Self::fps`]). Rendered at the
+    /// project size, the flame keeps its framing (the view scales with its own size).
     pub fn performance_flame(&self, spectrum: Option<&Spectrum>, frame: u32) -> Option<Flame> {
         let t = self.performance.start + frame as f64 / self.fps.max(1.0);
         let state = self.performance.state_at(t, self.morph_seconds())?;
-        let mut f = self.flame_at(state, spectrum, t)?;
-        f.width = self.width;
-        f.height = self.height;
-        Some(f)
+        self.flame_at(state, spectrum, t)
     }
 
     /// Number of frames of the recorded performance.
