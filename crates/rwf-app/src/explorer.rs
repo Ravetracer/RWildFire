@@ -22,11 +22,12 @@
 
 use std::sync::mpsc::{Receiver, Sender, channel};
 
-use egui::{Color32, CornerRadius, Sense, Stroke, vec2};
+use egui::{Color32, CornerRadius, RichText, Sense, Stroke, vec2};
 use rwf_core::Flame;
-use rwf_core::random::{Generator, generate};
+use rwf_core::random::{Extras, Generator, generate_with};
 use rwf_core::rng::Rng;
 
+use crate::ui::widgets;
 use crate::{icons, theme};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -47,6 +48,8 @@ struct Thumb {
 pub struct Explorer {
     pub mode: Mode,
     pub generator: Generator,
+    /// Random symmetry and weighting fields (also used by the "Random flame" button).
+    pub extras: Extras,
     /// The MutaGen button was clicked.
     pub open_mutagen: bool,
     thumbs: Vec<Option<Thumb>>,
@@ -62,6 +65,7 @@ impl Default for Explorer {
         Self {
             mode: Mode::Random,
             generator: Generator::Classic,
+            extras: Extras::default(),
             open_mutagen: false,
             thumbs: (0..SLOTS).map(|_| None).collect(),
             generation: 0,
@@ -90,12 +94,12 @@ impl Explorer {
         for i in 0..count {
             let tx = self.tx.clone();
             let mode = self.mode;
-            let generator = self.generator;
+            let (generator, extras) = (self.generator, self.extras);
             let base = if mode == Mode::File { library[i].clone() } else { current.clone() };
             std::thread::spawn(move || {
                 let mut rng = Rng::from_entropy();
                 let flame = match mode {
-                    Mode::Random => generate(generator, &mut rng),
+                    Mode::Random => generate_with(generator, extras, &mut rng),
                     Mode::File => base,
                 };
                 let img = render_thumb(&flame);
@@ -139,6 +143,10 @@ impl Explorer {
                             ui.selectable_value(&mut self.generator, *g, g.label());
                         }
                     });
+                    ui.label(RichText::new("Symmetry").color(theme::TEXT_MUTED));
+                    widgets::symmetry_combo(ui, "explore-symmetry", &mut self.extras.symmetry);
+                    ui.label(RichText::new("Weighting").color(theme::TEXT_MUTED));
+                    widgets::weighting_combo(ui, "explore-weighting", &mut self.extras.weighting);
                 }
                 Mode::File => {}
             }

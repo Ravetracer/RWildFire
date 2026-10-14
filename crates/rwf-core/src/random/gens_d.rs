@@ -22,7 +22,7 @@
 
 use super::gens_b::affine;
 use super::java::{add, set, xform};
-use super::{Generator, Quality, State, sample};
+use super::{Extras, Generator, Quality, State, sample};
 use crate::gradient::Gradient;
 use crate::model::{BgColorType, Flame};
 
@@ -148,10 +148,10 @@ pub fn painterly(st: &mut State) -> Flame {
 
 /// `LayersRandomFlameGenerator`: two or three quick samples of simple generators as layers.
 pub fn layers(st: &mut State) -> Flame {
-    let mut flame = sample(Generator::All, st.rng, Quality::LOW, true, false);
+    let mut flame = sample(Generator::All, st.rng, Quality::LOW, true, false, Extras::NONE);
     let count = 2 + usize::from(st.rng.random() > 0.66);
     for _ in 1..count {
-        let sub = sample(Generator::All, st.rng, Quality::LOW, true, false);
+        let sub = sample(Generator::All, st.rng, Quality::LOW, true, false, Extras::NONE);
         flame.layers.extend(sub.layers.into_iter().take(1));
         flame.layers[0].weight = 0.85 + st.rng.random() * 0.3;
     }
@@ -162,7 +162,7 @@ pub fn layers(st: &mut State) -> Flame {
 /// `SubFlameRandomFlameGenerator`: a quick sample of a simple generator embedded with
 /// `subflame_wf`.
 pub fn sub_flame(st: &mut State) -> Flame {
-    let sub = sample(Generator::All, st.rng, Quality::LOW, true, false);
+    let sub = sample(Generator::All, st.rng, Quality::LOW, true, false, Extras::NONE);
     let r = &mut *st.rng;
     let mut flame = sub.clone();
     let layer = flame.first_layer_mut();

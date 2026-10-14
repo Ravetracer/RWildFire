@@ -117,3 +117,21 @@ pub fn segmented<T: PartialEq + Copy>(ui: &mut Ui, value: &mut T, options: &[(T,
 pub fn icon_button(ui: &mut Ui, icon: &str, tip: &str) -> Response {
     ui.add(egui::Button::new(egui::RichText::new(icon).size(14.0)).frame(false).min_size(vec2(24.0, 24.0))).on_hover_text(tip)
 }
+
+/// Combo box of the random symmetry generators.
+pub fn symmetry_combo(ui: &mut Ui, id: &str, value: &mut rwf_core::random::SymmetryGen) {
+    egui::ComboBox::from_id_salt(id).width(120.0).selected_text(value.label()).show_ui(ui, |ui| {
+        for g in rwf_core::random::SymmetryGen::ALL {
+            ui.selectable_value(value, *g, g.label());
+        }
+    });
+}
+
+/// Combo box of the random weighting field generators.
+pub fn weighting_combo(ui: &mut Ui, id: &str, value: &mut rwf_core::random::WeightingGen) {
+    egui::ComboBox::from_id_salt(id).width(120.0).selected_text(value.label()).show_ui(ui, |ui| {
+        for g in rwf_core::random::WeightingGen::ALL {
+            ui.selectable_value(value, *g, g.label());
+        }
+    });
+}

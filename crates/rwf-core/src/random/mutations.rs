@@ -24,6 +24,7 @@ use crate::model::{Flame, Layer, VariationInstance, XForm};
 use crate::render::dof::DofShape;
 use crate::rng::Rng;
 use crate::variations;
+use crate::weighting::FieldType;
 
 use super::java::{self, Plane};
 
@@ -543,7 +544,7 @@ pub fn random_bg_color(flame: &mut Flame, rng: &mut Rng) {
 
 /// `RandomFlameMutation`: replaces the layer with one of a new random flame.
 pub fn random_flame(layer: &mut Layer, rng: &mut Rng) {
-    let flame = super::sample(super::Generator::All, rng, super::Quality::NORMAL, false, false);
+    let flame = super::sample(super::Generator::All, rng, super::Quality::NORMAL, false, false, super::Extras::default());
     if let Some(l) = flame.layers.into_iter().next() {
         *layer = l;
     }
@@ -552,6 +553,11 @@ pub fn random_flame(layer: &mut Layer, rng: &mut Rng) {
 /// `WeightingFieldMutation`: random weighting fields on some transforms (the heavier ones
 /// more likely), none on the others.
 pub fn weighting_field(layer: &mut Layer, strength: f64, rng: &mut Rng) {
+    weighting_field_of(layer, strength, &DEFAULT_FIELD_TYPES, rng);
+}
+
+/// [`weighting_field`] with field types chosen from `types` (`setWeightingFieldTypeList`).
+pub fn weighting_field_of(layer: &mut Layer, strength: f64, types: &[FieldType], rng: &mut Rng) {
     let n = layer.xforms.len();
     if n == 0 {
         return;
@@ -576,40 +582,47 @@ pub fn weighting_field(layer: &mut Layer, strength: f64, rng: &mut Rng) {
     }
     for (xf, chosen) in layer.xforms.iter_mut().zip(chosen) {
         if chosen {
-            random_weighting_field(xf, strength, rng);
+            random_weighting_field_of(xf, strength, types, rng);
         } else {
             xf.weighting.field_type = crate::weighting::FieldType::None;
         }
     }
 }
 
+/// `DEFAULT_WEIGHTING_FIELD_TYPE_LIST` (repeated entries are chosen more often).
+pub const DEFAULT_FIELD_TYPES: [FieldType; 19] = [
+    FieldType::CellularNoise,
+    FieldType::CellularNoise,
+    FieldType::CellularNoise,
+    FieldType::CubicNoise,
+    FieldType::CubicFractalNoise,
+    FieldType::CubicFractalNoise,
+    FieldType::PerlinNoise,
+    FieldType::PerlinFractalNoise,
+    FieldType::PerlinFractalNoise,
+    FieldType::PerlinFractalNoise,
+    FieldType::PerlinFractalNoise,
+    FieldType::PerlinFractalNoise,
+    FieldType::WhiteNoise,
+    FieldType::SimplexNoise,
+    FieldType::SimplexFractalNoise,
+    FieldType::SimplexFractalNoise,
+    FieldType::ValueNoise,
+    FieldType::ValueFractalNoise,
+    FieldType::ValueFractalNoise,
+];
+
 /// `WeightingFieldMutation.applyRandomWeightField`.
 pub fn random_weighting_field(xf: &mut XForm, strength: f64, rng: &mut Rng) {
+    random_weighting_field_of(xf, strength, &DEFAULT_FIELD_TYPES, rng);
+}
+
+/// [`random_weighting_field`] with the field type chosen from `types`.
+pub fn random_weighting_field_of(xf: &mut XForm, strength: f64, types: &[FieldType], rng: &mut Rng) {
     use crate::fastnoise::{CellularDistance, CellularReturn, FractalType};
     use crate::weighting::{FieldInput, FieldType::*, VarParamWeight};
-    const TYPES: [crate::weighting::FieldType; 19] = [
-        CellularNoise,
-        CellularNoise,
-        CellularNoise,
-        CubicNoise,
-        CubicFractalNoise,
-        CubicFractalNoise,
-        PerlinNoise,
-        PerlinFractalNoise,
-        PerlinFractalNoise,
-        PerlinFractalNoise,
-        PerlinFractalNoise,
-        PerlinFractalNoise,
-        WhiteNoise,
-        SimplexNoise,
-        SimplexFractalNoise,
-        SimplexFractalNoise,
-        ValueNoise,
-        ValueFractalNoise,
-        ValueFractalNoise,
-    ];
     let pick = |rng: &mut Rng, n: usize| ((rng.random() * n as f64) as usize).min(n - 1);
-    let field_type = TYPES[pick(rng, TYPES.len())];
+    let field_type = types[pick(rng, types.len())];
     let names: Vec<(String, Vec<&'static str>)> = xf
         .variations
         .iter()

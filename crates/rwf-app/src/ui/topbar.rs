@@ -20,7 +20,7 @@
 //! Top bar: file actions, history, random generator, explore toggle, export.
 
 use egui::{RichText, Ui};
-use rwf_core::random::Generator;
+use rwf_core::random::{Extras, Generator};
 
 use super::widgets;
 use crate::{icons, theme};
@@ -53,7 +53,7 @@ pub struct TopBarInfo<'a> {
     pub randomizing: bool,
 }
 
-pub fn show(ui: &mut Ui, info: &TopBarInfo, generator: &mut Generator) -> Option<Action> {
+pub fn show(ui: &mut Ui, info: &TopBarInfo, generator: &mut Generator, extras: &mut Extras) -> Option<Action> {
     let mut action = None;
     ui.horizontal_centered(|ui| {
         ui.spacing_mut().item_spacing.x = 6.0;
@@ -110,6 +110,19 @@ pub fn show(ui: &mut Ui, info: &TopBarInfo, generator: &mut Generator) -> Option
                 ui.selectable_value(generator, *g, g.label());
             }
         });
+        let label = |ui: &mut Ui, t: &str| ui.label(RichText::new(t).color(theme::TEXT_MUTED));
+        ui.menu_button(icons::SLIDERS, |ui| {
+            egui::Grid::new("random-extras").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
+                label(ui, "Symmetry");
+                widgets::symmetry_combo(ui, "top-symmetry", &mut extras.symmetry);
+                ui.end_row();
+                label(ui, "Weighting field");
+                widgets::weighting_combo(ui, "top-weighting", &mut extras.weighting);
+                ui.end_row();
+            });
+        })
+        .response
+        .on_hover_text("Random symmetry and weighting fields");
         if info.randomizing {
             ui.add_enabled(false, egui::Button::new(RichText::new(format!("{}  Generating…", icons::DICE)).strong()).fill(theme::ACCENT_DIM));
             ui.spinner();

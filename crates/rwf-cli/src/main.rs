@@ -40,7 +40,7 @@ struct Args {
 
 fn usage() -> ! {
     eprintln!(
-        "usage: rwf-cli render <file.flame> [-o out.png|.jpg|.hdr|.exr] [-w width] [-h height] [-q quality] [-i flame-index] [--gpu] [-t threads] [--zbuffer] [--jpeg-quality 1-100]\n       rwf-cli batch [options] <files or folders...>   (rwf-cli batch for the options)\n       rwf-cli quilt <file.flame> -o out.png -w width [-h height] [-q quality] [--tiles COLSxROWS]"
+        "usage: rwf-cli render <file.flame> [-o out.png|.jpg|.hdr|.exr] [-w width] [-h height] [-q quality] [-i flame-index] [--gpu] [-t threads] [--zbuffer] [--jpeg-quality 1-100]\n       rwf-cli batch [options] <files or folders...>   (rwf-cli batch for the options)\n       rwf-cli quilt <file.flame> -o out.png -w width [-h height] [-q quality] [--tiles COLSxROWS]\n       rwf-cli random <out-dir> [count] [generator filter] [--symmetry NAME] [--weighting NAME]"
     );
     std::process::exit(2);
 }
@@ -97,10 +97,38 @@ fn write_png(path: &PathBuf, w: u32, h: u32, rgba: &[u8]) -> std::io::Result<()>
     Ok(())
 }
 
-/// `rwf-cli random <out-dir> [count] [generator filter]`: generates random flames (.flame +
-/// preview .png), cycling through the generators whose name contains the filter.
+/// `rwf-cli random <out-dir> [count] [generator filter] [--symmetry NAME] [--weighting NAME]`:
+/// generates random flames (.flame + preview .png), cycling through the generators whose name
+/// contains the filter. The symmetry and weighting field generators default to
+/// "(All, sparse)".
 fn random_cmd() {
-    let mut it = std::env::args().skip(2);
+    use rwf_core::random::{Extras, SymmetryGen, WeightingGen};
+    let mut extras = Extras::default();
+    let mut positional = Vec::new();
+    let mut args = std::env::args().skip(2);
+    while let Some(a) = args.next() {
+        match a.as_str() {
+            "--symmetry" | "--weighting" => {
+                let name = args.next().unwrap_or_else(|| usage());
+                let ok = if a == "--symmetry" {
+                    SymmetryGen::by_label(&name).map(|g| extras.symmetry = g).is_some()
+                } else {
+                    WeightingGen::by_label(&name).map(|g| extras.weighting = g).is_some()
+                };
+                if !ok {
+                    let names: Vec<&str> = if a == "--symmetry" {
+                        SymmetryGen::ALL.iter().map(|g| g.label()).collect()
+                    } else {
+                        WeightingGen::ALL.iter().map(|g| g.label()).collect()
+                    };
+                    eprintln!("unknown {a} {name:?}, one of: {}", names.join(", "));
+                    std::process::exit(2);
+                }
+            }
+            _ => positional.push(a),
+        }
+    }
+    let mut it = positional.into_iter();
     let dir = PathBuf::from(it.next().unwrap_or_else(|| usage()));
     let count: usize = it.next().and_then(|s| s.parse().ok()).unwrap_or(8);
     let filter = it.next().unwrap_or_default().to_lowercase();
@@ -113,7 +141,7 @@ fn random_cmd() {
     let mut rng = rwf_core::rng::Rng::from_entropy();
     for i in 0..count {
         let generator = generators[i % generators.len()];
-        let flame = rwf_core::random::generate(generator, &mut rng);
+        let flame = rwf_core::random::generate_with(generator, extras, &mut rng);
         let base = dir.join(format!("random_{i:02}_{}", generator.label().replace([' ', '(', ')'], "_")));
         rwf_core::io::write_flame_to_file(&flame, base.with_extension("flame")).expect("write flame");
         let (w, h) = (480, 270);

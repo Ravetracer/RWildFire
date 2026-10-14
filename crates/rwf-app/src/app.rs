@@ -24,7 +24,7 @@ use std::time::Instant;
 
 use egui::RichText;
 use rwf_core::Flame;
-use rwf_core::random::{Generator, generate};
+use rwf_core::random::{Generator, generate, generate_with};
 use rwf_core::rng::Rng;
 
 use crate::canvas::{self, CanvasState};
@@ -166,9 +166,9 @@ impl RwfApp {
                 // Some generators render several previews (seconds): keep the UI responsive.
                 if self.randomizing.is_none() {
                     let (tx, rx) = std::sync::mpsc::channel();
-                    let (generator, seed) = (self.generator, self.rng.next_u64());
+                    let (generator, extras, seed) = (self.generator, self.explorer.extras, self.rng.next_u64());
                     std::thread::spawn(move || {
-                        let _ = tx.send(generate(generator, &mut Rng::new(seed)));
+                        let _ = tx.send(generate_with(generator, extras, &mut Rng::new(seed)));
                     });
                     self.randomizing = Some(rx);
                 }
@@ -286,7 +286,7 @@ impl eframe::App for RwfApp {
                 render_busy: self.batch.is_running() || self.quilt.is_running(),
                 randomizing: self.randomizing.is_some(),
             };
-            if let Some(a) = topbar::show(ui, &info, &mut self.generator) {
+            if let Some(a) = topbar::show(ui, &info, &mut self.generator, &mut self.explorer.extras) {
                 action = Some(a);
             }
         });

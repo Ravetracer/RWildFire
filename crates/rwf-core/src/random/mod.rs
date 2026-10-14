@@ -21,6 +21,7 @@
 //! own "Classic" and "Symmetric") and mutations.
 
 mod coverage;
+pub mod extras;
 mod gens_a;
 mod gens_b;
 mod gens_c;
@@ -36,6 +37,8 @@ use crate::model::{Flame, Layer, PostSymmetryType, VariationInstance, XForm};
 use crate::render::analysis::{auto_frame, coverage};
 use crate::rng::Rng;
 use crate::{solid, variations};
+
+pub use extras::{Extras, SymmetryGen, WeightingGen};
 
 /// What a generator remembers between the attempts of one sample
 /// (`RandomFlameGeneratorState`).
@@ -338,6 +341,23 @@ impl Generator {
         }
     }
 
+    /// `supportsSymmetry`: the random symmetry generator may add a post symmetry.
+    fn supports_symmetry(self) -> bool {
+        !matches!(
+            self,
+            Generator::EDisc
+                | Generator::JulianRings
+                | Generator::Orchids
+                | Generator::Outlines
+                | Generator::Phoenix
+                | Generator::Raster
+                | Generator::SolidLabyrinth
+                | Generator::SolidShadows
+                | Generator::TileBall
+                | Generator::Underwater
+        )
+    }
+
     /// `getMaxCoverage`: solid flames must leave some background.
     fn max_coverage(self) -> f64 {
         if SOLID_GENERATORS.contains(&self) && self != Generator::SolidShadows { 0.75 } else { 1.0 }
@@ -458,22 +478,34 @@ fn own_generator(generator: Generator, rng: &mut Rng) -> Flame {
 
 /// Generates a random flame (`RandomFlameGeneratorSampler.createSample`): up to 16
 /// attempts with a random gradient each, the first one that fills enough of a quick preview
-/// wins, otherwise the one that came closest.
+/// wins, otherwise the one that came closest. Symmetry and weighting fields as in
+/// JWildfire's defaults ("(All, sparse)").
 pub fn generate(generator: Generator, rng: &mut Rng) -> Flame {
+    generate_with(generator, Extras::default(), rng)
+}
+
+/// [`generate`] with the given random symmetry and weighting field generators (RWildFire's
+/// own generators ignore them).
+pub fn generate_with(generator: Generator, extras: Extras, rng: &mut Rng) -> Flame {
     if generator.is_own() {
         return generate_own(generator, rng);
     }
-    sample(generator, rng, Quality::NORMAL, false, true)
+    sample(generator, rng, Quality::NORMAL, false, true, extras)
 }
 
 /// One sample of a generator (`RandomFlameGeneratorSampler.createSample`). `simple`: "(All)"
 /// uses the simple generators only; `finish`: name it and bring it to the 720 pixel frame
-/// (not for flames that become part of another one).
-pub(crate) fn sample(generator: Generator, rng: &mut Rng, quality: Quality, simple: bool, finish: bool) -> Flame {
+/// (not for flames that become part of another one); `extras`: random symmetry and
+/// weighting fields.
+pub(crate) fn sample(generator: Generator, rng: &mut Rng, quality: Quality, simple: bool, finish: bool, extras: Extras) -> Flame {
     let mut st = State { rng, subs: Vec::new(), simple };
     let mut best: Option<(f64, Flame)> = None;
     for _ in 0..quality.max_samples {
         let mut flame = generator.prepare(&mut st);
+        if generator.supports_symmetry() {
+            extras.symmetry.apply(&mut flame, st.rng);
+        }
+        extras.weighting.apply(&mut flame, st.rng);
         for layer in &mut flame.layers {
             layer.gradient = gradients::random_gradient(st.rng);
         }
