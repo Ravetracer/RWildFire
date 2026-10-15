@@ -28,7 +28,7 @@ jobs:
         id: tag
         run: echo "tag=${{ github.event.inputs.tag || github.ref_name }}" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: ${{ steps.tag.outputs.tag }}
 
@@ -45,7 +45,7 @@ jobs:
       - name: Build tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends mingw-w64 poppler-utils python3-markdown fonts-dejavu-core
+          sudo apt-get install -y --no-install-recommends mingw-w64 poppler-utils python3-markdown fonts-dejavu-core desktop-file-utils
           # The manual's font; DejaVu is the fallback.
           sudo apt-get install -y --no-install-recommends fonts-inter || echo "fonts-inter not available"
           rustup toolchain install "$RUST_VERSION" --profile minimal --target x86_64-pc-windows-gnu
