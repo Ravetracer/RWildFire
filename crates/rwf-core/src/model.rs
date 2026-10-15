@@ -434,6 +434,75 @@ impl GradientMap {
     }
 }
 
+/// A group of flame settings that can be reset to its defaults (JWildfire's
+/// `Flame.reset*Settings`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FlameSection {
+    View,
+    Orientation,
+    Camera3d,
+    Stereo,
+    DepthOfField,
+    Tone,
+    Background,
+    Filter,
+    PostBlur,
+    DensityEstimation,
+    Symmetry,
+    MotionBlur,
+}
+
+impl Flame {
+    /// Resets the settings of `section` to the defaults.
+    pub fn reset_section(&mut self, section: FlameSection) {
+        let d = Flame::default();
+        match section {
+            FlameSection::View => {
+                (self.centre_x, self.centre_y, self.cam_zoom) = (d.centre_x, d.centre_y, d.cam_zoom);
+            }
+            FlameSection::Orientation => {
+                (self.cam_roll, self.cam_pitch, self.cam_yaw, self.cam_bank) = (d.cam_roll, d.cam_pitch, d.cam_yaw, d.cam_bank);
+            }
+            FlameSection::Camera3d => {
+                (self.cam_perspective, self.cam_pos_x, self.cam_pos_y, self.cam_pos_z) = (d.cam_perspective, d.cam_pos_x, d.cam_pos_y, d.cam_pos_z);
+                (self.dimish_z, self.dim_z_distance, self.dim_z_color) = (d.dimish_z, d.dim_z_distance, d.dim_z_color);
+            }
+            FlameSection::Stereo => self.stereo3d = d.stereo3d,
+            FlameSection::DepthOfField => {
+                (self.cam_dof, self.new_cam_dof, self.cam_z) = (d.cam_dof, d.new_cam_dof, d.cam_z);
+                (self.focus_x, self.focus_y, self.focus_z, self.cam_dof_area, self.cam_dof_exponent) = (d.focus_x, d.focus_y, d.focus_z, d.cam_dof_area, d.cam_dof_exponent);
+                self.set_dof_shape(d.cam_dof_shape);
+                (self.cam_dof_scale, self.cam_dof_angle, self.cam_dof_fade) = (d.cam_dof_scale, d.cam_dof_angle, d.cam_dof_fade);
+            }
+            FlameSection::Tone => {
+                (self.brightness, self.gamma, self.gamma_threshold, self.vibrancy) = (d.brightness, d.gamma, d.gamma_threshold, d.vibrancy);
+                (self.contrast, self.saturation, self.white_level, self.low_density_brightness) = (d.contrast, d.saturation, d.white_level, d.low_density_brightness);
+                (self.balance_red, self.balance_green, self.balance_blue) = (d.balance_red, d.balance_green, d.balance_blue);
+            }
+            FlameSection::Background => {
+                self.background = d.background;
+                self.bg_image = d.bg_image;
+                self.fg_opacity = d.fg_opacity;
+            }
+            FlameSection::Filter => {
+                (self.filter_kernel, self.spatial_filter_radius, self.filter_sharpness, self.filter_low_density) = (d.filter_kernel, d.spatial_filter_radius, d.filter_sharpness, d.filter_low_density);
+                (self.filter_indicator, self.spatial_oversampling, self.antialias_amount, self.antialias_radius) = (d.filter_indicator, d.spatial_oversampling, d.antialias_amount, d.antialias_radius);
+            }
+            FlameSection::PostBlur => {
+                (self.post_blur_radius, self.post_blur_fade, self.post_blur_falloff) = (d.post_blur_radius, d.post_blur_fade, d.post_blur_falloff);
+            }
+            FlameSection::DensityEstimation => {
+                (self.de_radius, self.de_curve, self.de_comparison_line) = (d.de_radius, d.de_curve, d.de_comparison_line);
+            }
+            FlameSection::Symmetry => self.post_symmetry = d.post_symmetry,
+            FlameSection::MotionBlur => {
+                let a = &mut self.animation;
+                (a.motion_blur_length, a.motion_blur_time_step, a.motion_blur_decay) = (d.animation.motion_blur_length, d.animation.motion_blur_time_step, d.animation.motion_blur_decay);
+            }
+        }
+    }
+}
+
 impl Layer {
     /// The gradient as rendered: with [`Layer::gradient_shift`] applied.
     pub fn render_gradient(&self) -> std::borrow::Cow<'_, Gradient> {

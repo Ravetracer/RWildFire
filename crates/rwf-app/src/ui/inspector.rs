@@ -21,7 +21,7 @@
 
 use egui::{RichText, Ui};
 use rwf_core::Gradient;
-use rwf_core::model::{BgColorType, ColorType, DrawMode, PostSymmetryType};
+use rwf_core::model::{BgColorType, ColorType, DrawMode, FlameSection, PostSymmetryType};
 use rwf_core::render::denoise::{self, Denoiser};
 use rwf_core::render::filter::FilterKernel;
 
@@ -64,6 +64,9 @@ pub struct InspectorState {
     move_step: f64,
     /// Xaos shown as the probabilities into the selected transform instead of out of it.
     xaos_to: bool,
+    /// A running z-buffer suggestion render, and its last outcome.
+    zsuggest: Option<std::sync::mpsc::Receiver<Option<(f64, f64, f64)>>>,
+    zsuggest_status: Option<String>,
 }
 
 impl InspectorState {
@@ -95,7 +98,7 @@ pub fn show(ui: &mut Ui, doc: &mut Document, st: &mut InspectorState, preview: &
         Tab::Transform => transform_tab(ui, doc, st),
         Tab::Camera => camera_tab(ui, doc),
         Tab::Look => look_tab(ui, doc, st),
-        Tab::Render => render_tab(ui, doc, preview, canvas),
+        Tab::Render => render_tab(ui, doc, preview, canvas, st),
     });
 }
 
@@ -290,6 +293,64 @@ fn transform_tab(ui: &mut Ui, doc: &mut Document, st: &mut InspectorState) {
     }
 }
 
+/// Z-buffer output settings and JWildfire's "suggest" (a quick depth render).
+fn zbuffer_section(ui: &mut Ui, f: &mut rwf_core::Flame, st: &mut InspectorState) {
+    use rwf_core::model::ZBufferFilename;
+    if let Some(rx) = &st.zsuggest {
+        match rx.try_recv() {
+            Ok(Some((scale, shift, _bias))) => {
+                // JWildfire applies scale and shift
+                (f.zbuffer_scale, f.zbuffer_shift) = (scale, shift);
+                st.zsuggest_status = Some("Scale and shift fitted to the depth range of the flame".into());
+                st.zsuggest = None;
+            }
+            Ok(None) => {
+                st.zsuggest_status = Some("No depth found (is the flame visible?)".into());
+                st.zsuggest = None;
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => ui.ctx().request_repaint_after(std::time::Duration::from_millis(100)),
+            Err(_) => st.zsuggest = None,
+        }
+    }
+    egui::CollapsingHeader::new(RichText::new("Z-buffer").color(theme::TEXT_MUTED)).id_salt("zbuffer").show(ui, |ui| {
+        ui.label(RichText::new("How depth maps to gray in z-buffer images (Export › Z-buffer, rwf-cli render --zbuffer).").small().color(theme::TEXT_MUTED));
+        grid(ui, "zbuf", |ui| {
+            slider(ui, "Scale", &mut f.zbuffer_scale, -10.0..=10.0).on_hover_text("Negative: black near the camera");
+            slider(ui, "Shift", &mut f.zbuffer_shift, -2.0..=2.0);
+            slider(ui, "Bias", &mut f.zbuffer_bias, 0.0..=1.0).on_hover_text("Gray level of the empty background");
+            widgets::label(ui, "File name");
+            ui.horizontal(|ui| {
+                ui.selectable_value(&mut f.zbuffer_filename, ZBufferFilename::PostDepth, "image_depth.png");
+                ui.selectable_value(&mut f.zbuffer_filename, ZBufferFilename::PreZbuf, "zbuf_image.png");
+            });
+            ui.end_row();
+        });
+        ui.horizontal(|ui| {
+            if st.zsuggest.is_some() {
+                ui.spinner();
+                ui.label(RichText::new("Measuring depth…").small());
+            } else if ui.button("Suggest").on_hover_text("Renders the depth quickly and fits scale and shift to it (JWildfire's suggestion)").clicked() {
+                let mut flame = f.clone();
+                flame.sample_density = 50.0;
+                let k = (640.0 / flame.width.max(flame.height).max(1) as f64).min(1.0);
+                let (w, h) = (((flame.width as f64 * k) as u32).max(16), ((flame.height as f64 * k) as u32).max(16));
+                let (tx, rx) = std::sync::mpsc::channel();
+                std::thread::spawn(move || {
+                    let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+                    let opts = rwf_core::render::RenderOptions { width: w, height: h, threads, max_density: Some(50.0), seed: 7, zbuffer: true };
+                    let r = rwf_core::render::CpuRender::start(&flame, opts).wait();
+                    let _ = tx.send(r.zbuffer_suggestion());
+                });
+                st.zsuggest = Some(rx);
+                st.zsuggest_status = None;
+            }
+            if let Some(s) = &st.zsuggest_status {
+                ui.label(RichText::new(s).small().color(theme::TEXT_MUTED));
+            }
+        });
+    });
+}
+
 fn apply_color_action(doc: &mut Document, a: ColorAction) {
     let layer = doc.layer_mut();
     let n = layer.xforms.len();
@@ -359,7 +420,9 @@ fn xaos_section(ui: &mut Ui, doc: &mut Document, st: &mut InspectorState, i: usi
 fn camera_tab(ui: &mut Ui, doc: &mut Document) {
     use super::camera_gizmo::{self as gizmo, Wheel};
     let f = &mut doc.flame;
-    theme::section_label(ui, "View");
+    if widgets::section_reset(ui, "View") {
+        f.reset_section(FlameSection::View);
+    }
     grid(ui, "cam", |ui| {
         drag(ui, "Center X", &mut f.centre_x, 0.005);
         drag(ui, "Center Y", &mut f.centre_y, 0.005);
@@ -372,12 +435,16 @@ fn camera_tab(ui: &mut Ui, doc: &mut Document) {
             *f = c;
         }
     }
-    theme::section_label(ui, "Orientation");
+    if widgets::section_reset(ui, "Orientation") {
+        f.reset_section(FlameSection::Orientation);
+    }
     ui.vertical_centered(|ui| {
         gizmo::orbit_globe(ui, f, 74.0, false);
         gizmo::angle_fields(ui, f);
     });
-    theme::section_label(ui, "3D camera");
+    if widgets::section_reset(ui, "3D camera") {
+        f.reset_section(FlameSection::Camera3d);
+    }
     grid(ui, "cam3d", |ui| {
         gizmo::wheel_row(ui, "Perspective", &mut f.cam_perspective, Wheel::Linear(0.002), 0.0..=10.0, 0.0, 4);
         gizmo::wheel_row(ui, "Dolly", &mut f.cam_pos_z, Wheel::Linear(0.01), f64::MIN..=f64::MAX, 0.0, 4).on_hover_text("Camera position Z");
@@ -392,6 +459,9 @@ fn camera_tab(ui: &mut Ui, doc: &mut Document) {
     egui::CollapsingHeader::new(RichText::new("Stereo 3D").color(theme::TEXT_MUTED)).id_salt("stereo3d").show(ui, |ui| {
         use rwf_core::stereo::{Stereo3dColor, Stereo3dMode};
         ui.label(RichText::new("Rendered in exported images (Export, rwf-cli render, batch); the canvas shows the normal view.").small().color(theme::TEXT_MUTED));
+        if ui.small_button(format!("{} Reset", icons::REFRESH)).on_hover_text("Stereo settings back to the defaults").clicked() {
+            f.reset_section(FlameSection::Stereo);
+        }
         let st = &mut f.stereo3d;
         grid(ui, "stereo-grid", |ui| {
             widgets::label(ui, "Mode");
@@ -429,7 +499,9 @@ fn camera_tab(ui: &mut Ui, doc: &mut Document) {
         });
     });
 
-    theme::section_label(ui, "Depth of field");
+    if widgets::section_reset(ui, "Depth of field") {
+        f.reset_section(FlameSection::DepthOfField);
+    }
     grid(ui, "dof", |ui| {
         slider(ui, "Amount", &mut f.cam_dof, 0.0..=5.0).on_hover_text("0 = off. Needs a 3D camera (pitch/yaw/perspective) to be visible.");
         if f.cam_dof.abs() > 1e-8 {
@@ -520,7 +592,15 @@ pub fn denoiser_settings(ui: &mut Ui, id: &str, f: &mut rwf_core::Flame) {
 fn look_tab(ui: &mut Ui, doc: &mut Document, st: &mut InspectorState) {
     {
         let f = &mut doc.flame;
-        theme::section_label(ui, "Tone");
+        theme::section_label(ui, "Flame");
+        grid(ui, "flame-name", |ui| {
+            widgets::label(ui, "Name");
+            ui.text_edit_singleline(&mut f.name).on_hover_text("Saved with the flame; shown in the title bar when the flame has no file");
+            ui.end_row();
+        });
+        if widgets::section_reset(ui, "Tone") {
+            f.reset_section(FlameSection::Tone);
+        }
         grid(ui, "tone", |ui| {
             slider(ui, "Brightness", &mut f.brightness, 0.0..=20.0);
             slider(ui, "Gamma", &mut f.gamma, 1.0..=8.0);
@@ -539,7 +619,9 @@ fn look_tab(ui: &mut Ui, doc: &mut Document, st: &mut InspectorState) {
             });
         });
 
-        theme::section_label(ui, "Background");
+        if widgets::section_reset(ui, "Background") {
+            f.reset_section(FlameSection::Background);
+        }
         grid(ui, "bg", |ui| {
             widgets::label(ui, "Type");
             egui::ComboBox::from_id_salt("bgtype")
@@ -587,6 +669,8 @@ fn look_tab(ui: &mut Ui, doc: &mut Document, st: &mut InspectorState) {
                 }
             });
             ui.end_row();
+            slider(ui, "Foreground opacity", &mut f.fg_opacity, 0.0..=3.0)
+                .on_hover_text("How much the flame covers the background in transparent images (1 = normal, less = more see-through)");
             widgets::label(ui, "Transparent");
             ui.checkbox(&mut f.bg_transparency, "in exported images");
             ui.end_row();
@@ -690,7 +774,7 @@ fn gradient_editor(ui: &mut Ui, doc: &mut Document, st: &mut InspectorState) {
         });
 }
 
-fn render_tab(ui: &mut Ui, doc: &mut Document, preview: &mut Preview, canvas: &mut CanvasState) {
+fn render_tab(ui: &mut Ui, doc: &mut Document, preview: &mut Preview, canvas: &mut CanvasState, st: &mut InspectorState) {
     theme::section_label(ui, "Preview");
     grid(ui, "preview", |ui| {
         widgets::label(ui, "Renderer");
@@ -715,7 +799,11 @@ fn render_tab(ui: &mut Ui, doc: &mut Document, preview: &mut Preview, canvas: &m
     }
 
     let f = &mut doc.flame;
-    theme::section_label(ui, "Quality & filtering");
+    if widgets::section_reset(ui, "Quality & filtering") {
+        let q = f.sample_density;
+        f.reset_section(FlameSection::Filter);
+        f.sample_density = q;
+    }
     grid(ui, "quality", |ui| {
         slider_log(ui, "Quality", &mut f.sample_density, 10.0..=10000.0);
         widgets::label(ui, "Filter");
@@ -740,7 +828,9 @@ fn render_tab(ui: &mut Ui, doc: &mut Document, preview: &mut Preview, canvas: &m
         slider(ui, "Antialias radius", &mut f.antialias_radius, 0.0..=2.0);
     });
 
-    theme::section_label(ui, "Post blur");
+    if widgets::section_reset(ui, "Post blur") {
+        f.reset_section(FlameSection::PostBlur);
+    }
     grid(ui, "post_blur", |ui| {
         widgets::label(ui, "Radius");
         ui.add(egui::Slider::new(&mut f.post_blur_radius, 0..=16)).on_hover_text("Splats samples over a radial kernel (0 = off)");
@@ -768,14 +858,18 @@ fn render_tab(ui: &mut Ui, doc: &mut Document, preview: &mut Preview, canvas: &m
         }
     }
 
-    theme::section_label(ui, "Density estimation");
+    if widgets::section_reset(ui, "Density estimation") {
+        f.reset_section(FlameSection::DensityEstimation);
+    }
     grid(ui, "de", |ui| {
         slider(ui, "Radius", &mut f.de_radius, 0.0..=2.0).on_hover_text("Adaptive smoothing of sparse areas (0 = off)");
         slider(ui, "Curve", &mut f.de_curve, 0.0..=1.0);
         slider(ui, "Compare line", &mut f.de_comparison_line, 0.0..=1.0).on_hover_text("Shows the image with/without density estimation side by side (0 = off)");
     });
 
-    theme::section_label(ui, "Symmetry");
+    if widgets::section_reset(ui, "Symmetry") {
+        f.reset_section(FlameSection::Symmetry);
+    }
     let ps = &mut f.post_symmetry;
     grid(ui, "sym", |ui| {
         widgets::label(ui, "Type");
@@ -802,6 +896,8 @@ fn render_tab(ui: &mut Ui, doc: &mut Document, preview: &mut Preview, canvas: &m
             }
         }
     });
+
+    zbuffer_section(ui, f, st);
 
     theme::section_label(ui, "Advanced");
     ui.checkbox(&mut f.preserve_z, "Preserve Z (2D variations keep the z coordinate)");

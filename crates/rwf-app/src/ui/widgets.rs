@@ -65,6 +65,23 @@ pub fn label(ui: &mut Ui, text: &str) {
     ui.label(egui::RichText::new(text).color(theme::TEXT_MUTED));
 }
 
+/// A section heading with a reset button on the right; true when the button was clicked.
+pub fn section_reset(ui: &mut Ui, text: &str) -> bool {
+    let mut clicked = false;
+    ui.add_space(6.0);
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new(text.to_uppercase()).size(10.5).color(theme::TEXT_MUTED).strong());
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            clicked = ui
+                .add(egui::Button::new(egui::RichText::new(crate::icons::REFRESH).size(11.0)).small().frame(false))
+                .on_hover_text(format!("Reset {} to the defaults", text.to_lowercase()))
+                .clicked();
+        });
+    });
+    ui.add_space(2.0);
+    clicked
+}
+
 /// Labeled slider row inside a [`grid`]. Values outside the range can still be typed in.
 pub fn slider(ui: &mut Ui, text: &str, v: &mut f64, range: std::ops::RangeInclusive<f64>) -> Response {
     label(ui, text);

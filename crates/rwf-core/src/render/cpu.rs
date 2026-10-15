@@ -405,6 +405,17 @@ impl CpuRender {
         }
     }
 
+    /// Suggested z-buffer scale, shift and bias for this render ([`suggest_zbuffer_params`]).
+    pub fn zbuffer_suggestion(&self) -> Option<(f64, f64, f64)> {
+        let v = &self.shared.packets[0].view;
+        let solid = self.shared.solid.as_ref().map(|acc| acc.lock().expect("solid accum").z.clone());
+        match (&solid, &self.shared.zbuffer) {
+            (Some(z), _) => suggest_zbuffer_params(v, |x, y| Some(z[(y * v.raster_width + x) as usize]).filter(|z| *z != solid::ZMIN)),
+            (None, Some(zb)) => suggest_zbuffer_params(v, |x, y| zb.get(x, y)),
+            (None, None) => None,
+        }
+    }
+
     /// Solid rendering: normals, AO, shadows, shading and (optionally) post DOF of the current
     /// z-buffer.
     fn solid_image(&self, with_alpha: bool, post_dof: bool) -> Vec<u8> {
@@ -430,25 +441,65 @@ impl Drop for CpuRender {
     }
 }
 
+/// Z-buffer scale, shift and bias that spread the depths of a render over the gray range
+/// (`ZBufferAnalyzer` / `ZBufferGrayValueCalculator.suggestParams`): the depth range plus 6% on
+/// both sides maps to black..white; the bias grows when less of the image is covered.
+pub fn suggest_zbuffer_params(v: &View, depth: impl Fn(u32, u32) -> Option<f32> + Sync) -> Option<(f64, f64, f64)> {
+    let (w, h) = (v.image_width, v.image_height);
+    let (mut zmin, mut zmax, mut count) = (f64::MAX, f64::MIN, 0u64);
+    for y in 0..h {
+        for x in 0..w {
+            if let Some(z) = pixel_depth(v, &depth, x, y) {
+                zmin = zmin.min(z);
+                zmax = zmax.max(z);
+                count += 1;
+            }
+        }
+    }
+    if count == 0 || zmax - zmin <= 0.0 {
+        return None;
+    }
+    let coverage = count as f64 / (w as f64 * h as f64);
+    let (lo, hi) = (zmin - (zmax - zmin) * 0.06, zmax + (zmax - zmin) * 0.06);
+    let scale = 2.0 / (hi - lo);
+    let shift = 2.0 * lo / (hi - lo) + 1.0;
+    let bias = if coverage > 0.95 {
+        0.0
+    } else if coverage > 0.85 {
+        0.1
+    } else {
+        0.2
+    };
+    // the flame's scale is in thousandths (ZSCALE_SCALE)
+    Some((scale / 0.001, shift, bias))
+}
+
+/// The average depth of the oversampling cells of output pixel `(x, y)` (`transformZPoint`).
+fn pixel_depth(v: &View, depth: &impl Fn(u32, u32) -> Option<f32>, x: u32, y: u32) -> Option<f64> {
+    let os = v.oversample;
+    let (mut sum, mut n) = (0.0, 0);
+    for px in 0..os {
+        for py in 0..os {
+            let (rx, ry) = (x * os + px + v.border, y * os + py + v.border);
+            if rx < v.raster_width
+                && ry < v.raster_height
+                && let Some(z) = depth(rx, ry)
+            {
+                sum += z as f64;
+                n += 1;
+            }
+        }
+    }
+    (n > 0).then(|| sum / n as f64)
+}
+
 /// 16-bit gray depth image from the raster depths `depth(x, y)` (`None` = empty cell): averaged
 /// over the oversampling cells (`transformZPoint`), mapped by the flame's z-buffer scale, shift
 /// and bias (`RenderZBufferThread`).
 pub fn zbuffer_image(flame: &Flame, v: &View, depth: impl Fn(u32, u32) -> Option<f32> + Sync) -> Vec<u16> {
     use rayon::prelude::*;
-    let (w, h, os) = (v.image_width, v.image_height, v.oversample);
-    let read = |x: u32, y: u32| if x < v.raster_width && y < v.raster_height { depth(x, y) } else { None };
-    let depth = |x: u32, y: u32| {
-        let (mut sum, mut n) = (0.0, 0);
-        for px in 0..os {
-            for py in 0..os {
-                if let Some(z) = read(x * os + px + v.border, y * os + py + v.border) {
-                    sum += z as f64;
-                    n += 1;
-                }
-            }
-        }
-        (n > 0).then(|| sum / n as f64)
-    };
+    let (w, h) = (v.image_width, v.image_height);
+    let depth = |x: u32, y: u32| pixel_depth(v, &depth, x, y);
     let z_scale = flame.zbuffer_scale * 0.001;
     let z_bias = if flame.zbuffer_bias <= 0.0 {
         0
