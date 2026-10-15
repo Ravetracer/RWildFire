@@ -312,6 +312,8 @@ impl Explorer {
                     widgets::symmetry_combo(ui, "explore-symmetry", &mut self.extras.symmetry);
                     ui.label(RichText::new("Weighting").color(theme::TEXT_MUTED));
                     widgets::weighting_combo(ui, "explore-weighting", &mut self.extras.weighting);
+                    ui.label(RichText::new("Gradient").color(theme::TEXT_MUTED));
+                    widgets::gradient_gen_combo(ui, "explore-gradient", &mut self.extras.gradient);
                     ui.label(RichText::new("Quality").color(theme::TEXT_MUTED));
                     egui::ComboBox::from_id_salt("explore-quality")
                         .width(80.0)

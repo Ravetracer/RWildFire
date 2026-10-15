@@ -134,8 +134,9 @@ impl KeyFrame {
 }
 
 /// The random gradient generators (`RandomGradientGeneratorList`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum GradientGenerator {
+    #[default]
     All,
     Bold,
     Monochrome,
@@ -159,6 +160,10 @@ impl GradientGenerator {
         GradientGenerator::UnevenCurves,
         GradientGenerator::UniformCurves,
     ];
+
+    pub fn by_label(label: &str) -> Option<GradientGenerator> {
+        GradientGenerator::ALL.iter().copied().find(|g| g.label().eq_ignore_ascii_case(label))
+    }
 
     pub fn label(self) -> &'static str {
         match self {
@@ -475,10 +480,16 @@ type ClusterColor = ([u8; 3], (f64, f64, f64));
 
 /// `RandomGradientMutation`: a gradient of the "(All)" generator with random settings.
 pub fn random_gradient(r: &mut Rng) -> Gradient {
+    random_gradient_of(GradientGenerator::All, r)
+}
+
+/// A gradient of `generator` with random settings (the sampler's `palettePoints`,
+/// `fadePaletteColors` and `uniformWidth`).
+pub fn random_gradient_of(generator: GradientGenerator, r: &mut Rng) -> Gradient {
     let key_frames = 3 + r.random_int(56);
     let fade = r.random() > 0.33;
     let uniform = r.random() > 0.75;
-    GradientGenerator::All.generate(key_frames, fade, uniform, r)
+    generator.generate(key_frames, fade, uniform, r)
 }
 
 /// `SimilarGradientMutation` / `SimilarGradientCreator`: clusters the colors of a gradient

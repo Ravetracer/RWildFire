@@ -165,16 +165,17 @@ impl WeightingGen {
     }
 }
 
-/// The symmetry and weighting field generators of a sampler.
+/// The symmetry, weighting field and gradient generators of a sampler.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub struct Extras {
     pub symmetry: SymmetryGen,
     pub weighting: WeightingGen,
+    pub gradient: super::gradients::GradientGenerator,
 }
 
 impl Extras {
     /// Neither symmetry nor weighting fields (flames that become part of another one).
-    pub const NONE: Extras = Extras { symmetry: SymmetryGen::None, weighting: WeightingGen::None };
+    pub const NONE: Extras = Extras { symmetry: SymmetryGen::None, weighting: WeightingGen::None, gradient: super::gradients::GradientGenerator::All };
 }
 
 #[cfg(test)]

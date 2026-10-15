@@ -139,13 +139,16 @@ pub fn show(ui: &mut Ui, info: &TopBarInfo, generator: &mut Generator, extras: &
                 label(ui, "Weighting field");
                 widgets::weighting_combo(ui, "top-weighting", &mut extras.weighting);
                 ui.end_row();
+                label(ui, "Gradient");
+                widgets::gradient_gen_combo(ui, "top-gradient", &mut extras.gradient);
+                ui.end_row();
                 label(ui, "Variations");
                 crate::prefs::profile_combo(ui, "top-profile", profiles, active_profile);
                 ui.end_row();
             });
         })
         .response
-        .on_hover_text("Random symmetry and weighting fields");
+        .on_hover_text("Random symmetry, weighting fields, gradients and variations");
         if info.randomizing {
             ui.add_enabled(false, egui::Button::new(RichText::new(format!("{}  Generating…", icons::DICE)).strong()).fill(theme::ACCENT_DIM));
             ui.spinner();

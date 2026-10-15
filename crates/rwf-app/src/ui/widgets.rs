@@ -144,6 +144,15 @@ pub fn symmetry_combo(ui: &mut Ui, id: &str, value: &mut rwf_core::random::Symme
     });
 }
 
+/// Combo box of the random gradient generators.
+pub fn gradient_gen_combo(ui: &mut Ui, id: &str, value: &mut rwf_core::random::gradients::GradientGenerator) {
+    egui::ComboBox::from_id_salt(id).width(120.0).selected_text(value.label()).show_ui(ui, |ui| {
+        for g in rwf_core::random::gradients::GradientGenerator::ALL {
+            ui.selectable_value(value, *g, g.label());
+        }
+    });
+}
+
 /// Combo box of the random weighting field generators.
 pub fn weighting_combo(ui: &mut Ui, id: &str, value: &mut rwf_core::random::WeightingGen) {
     egui::ComboBox::from_id_salt(id).width(120.0).selected_text(value.label()).show_ui(ui, |ui| {

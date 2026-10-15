@@ -552,7 +552,7 @@ pub(crate) fn sample(generator: Generator, rng: &mut Rng, quality: Quality, simp
         }
         extras.weighting.apply(&mut flame, st.rng);
         for layer in &mut flame.layers {
-            layer.gradient = gradients::random_gradient(st.rng);
+            layer.gradient = gradients::random_gradient_of(extras.gradient, st.rng);
         }
         generator.post_process(&mut st, &mut flame);
         if st.rng.random() > 0.666 {

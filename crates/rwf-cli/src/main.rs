@@ -36,11 +36,14 @@ struct Args {
     threads: usize,
     zbuffer: bool,
     jpeg_quality: u8,
+    /// Overrides the flame's AI post denoiser and its blend.
+    denoiser: Option<rwf_core::render::denoise::Denoiser>,
+    blend: Option<f64>,
 }
 
 fn usage() -> ! {
     eprintln!(
-        "usage: rwf-cli render <file.flame> [-o out.png|.jpg|.hdr|.exr] [-w width] [-h height] [-q quality] [-i flame-index] [--gpu] [-t threads] [--zbuffer] [--jpeg-quality 1-100]\n       rwf-cli batch [options] <files or folders...>   (rwf-cli batch for the options)\n       rwf-cli quilt <file.flame> -o out.png -w width [-h height] [-q quality] [--tiles COLSxROWS]\n       rwf-cli mesh <file.flame | --from-slices DIR> [-o out.obj|.ply|.sc] [--points out.ply|.obj] [--slices DIR] [--resolution N] [--quality Q] [--threshold T] [--dilate 3|5] [--blur B] [--smooth N]\n       rwf-cli movie <file.jwfmovie | --random [all|mandelbrots|bubbles|duckies]> -o out.mp4|.mov|.webm|.anb|out-dir|name.flame|name.jwfmovie [--cpu]\n       rwf-cli dance <file.rwfdance> -o out.mp4|.mov|.webm|out-dir|name.flame [--cpu]\n       rwf-cli random <out-dir> [count] [generator filter] [--symmetry NAME] [--weighting NAME]"
+        "usage: rwf-cli render <file.flame> [-o out.png|.jpg|.hdr|.exr] [-w width] [-h height] [-q quality] [-i flame-index] [--gpu] [-t threads] [--zbuffer] [--jpeg-quality 1-100] [--denoiser off|oidn|optix] [--blend 0..1]\n       rwf-cli batch [options] <files or folders...>   (rwf-cli batch for the options)\n       rwf-cli quilt <file.flame> -o out.png -w width [-h height] [-q quality] [--tiles COLSxROWS]\n       rwf-cli mesh <file.flame | --from-slices DIR> [-o out.obj|.ply|.sc] [--points out.ply|.obj] [--slices DIR] [--resolution N] [--quality Q] [--threshold T] [--dilate 3|5] [--blur B] [--smooth N]\n       rwf-cli movie <file.jwfmovie | --random [all|mandelbrots|bubbles|duckies]> -o out.mp4|.mov|.webm|.anb|out-dir|name.flame|name.jwfmovie [--cpu]\n       rwf-cli dance <file.rwfdance> -o out.mp4|.mov|.webm|out-dir|name.flame [--cpu]\n       rwf-cli random <out-dir> [count] [generator filter] [--symmetry NAME] [--weighting NAME] [--gradient NAME] [-w width] [-h height] [-q quality] [--gpu]"
     );
     std::process::exit(2);
 }
@@ -61,6 +64,8 @@ fn parse_args() -> Args {
         threads: std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4),
         zbuffer: false,
         jpeg_quality: 95,
+        denoiser: None,
+        blend: None,
     };
     while let Some(a) = it.next() {
         let mut val = || it.next().unwrap_or_else(|| usage());
@@ -74,6 +79,17 @@ fn parse_args() -> Args {
             "--gpu" => args.gpu = true,
             "--zbuffer" => args.zbuffer = true,
             "--jpeg-quality" => args.jpeg_quality = val().parse().unwrap_or(95),
+            "--denoiser" => {
+                let v = val().to_uppercase();
+                args.denoiser = Some(match v.as_str() {
+                    "OFF" | "NONE" => rwf_core::render::denoise::Denoiser::None,
+                    _ => rwf_core::render::denoise::Denoiser::parse(&v).unwrap_or_else(|| {
+                        eprintln!("unknown denoiser {v:?} (off, oidn, optix)");
+                        std::process::exit(2);
+                    }),
+                });
+            }
+            "--blend" => args.blend = val().parse::<f64>().ok().map(|b| b.clamp(0.0, 1.0)),
             _ if args.input.as_os_str().is_empty() => args.input = PathBuf::from(a),
             _ => usage(),
         }
@@ -102,29 +118,43 @@ fn write_png(path: &PathBuf, w: u32, h: u32, rgba: &[u8]) -> std::io::Result<()>
 /// contains the filter. The symmetry and weighting field generators default to
 /// "(All, sparse)".
 fn random_cmd() {
+    use rwf_core::random::gradients::GradientGenerator;
     use rwf_core::random::{Extras, SymmetryGen, WeightingGen};
     let mut extras = Extras::default();
     let mut positional = Vec::new();
+    let (mut w, mut h, mut quality, mut gpu) = (480u32, None, 200.0, false);
     let mut args = std::env::args().skip(2);
     while let Some(a) = args.next() {
         match a.as_str() {
-            "--symmetry" | "--weighting" => {
+            "--symmetry" | "--weighting" | "--gradient" => {
                 let name = args.next().unwrap_or_else(|| usage());
-                let ok = if a == "--symmetry" {
-                    SymmetryGen::by_label(&name).map(|g| extras.symmetry = g).is_some()
-                } else {
-                    WeightingGen::by_label(&name).map(|g| extras.weighting = g).is_some()
+                let ok = match a.as_str() {
+                    "--symmetry" => SymmetryGen::by_label(&name).map(|g| extras.symmetry = g).is_some(),
+                    "--weighting" => WeightingGen::by_label(&name).map(|g| extras.weighting = g).is_some(),
+                    _ => GradientGenerator::by_label(&name).map(|g| extras.gradient = g).is_some(),
                 };
                 if !ok {
-                    let names: Vec<&str> = if a == "--symmetry" {
-                        SymmetryGen::ALL.iter().map(|g| g.label()).collect()
-                    } else {
-                        WeightingGen::ALL.iter().map(|g| g.label()).collect()
+                    let names: Vec<&str> = match a.as_str() {
+                        "--symmetry" => SymmetryGen::ALL.iter().map(|g| g.label()).collect(),
+                        "--weighting" => WeightingGen::ALL.iter().map(|g| g.label()).collect(),
+                        _ => GradientGenerator::ALL.iter().map(|g| g.label()).collect(),
                     };
                     eprintln!("unknown {a} {name:?}, one of: {}", names.join(", "));
                     std::process::exit(2);
                 }
             }
+            "-w" | "-h" | "-q" => {
+                let v: f64 = args.next().and_then(|v| v.parse().ok()).filter(|v: &f64| *v > 0.0).unwrap_or_else(|| {
+                    eprintln!("{a} needs a positive number");
+                    std::process::exit(2);
+                });
+                match a.as_str() {
+                    "-w" => w = v as u32,
+                    "-h" => h = Some(v as u32),
+                    _ => quality = v,
+                }
+            }
+            "--gpu" => gpu = true,
             _ => positional.push(a),
         }
     }
@@ -138,14 +168,35 @@ fn random_cmd() {
         std::process::exit(2);
     }
     std::fs::create_dir_all(&dir).expect("create output dir");
+    let mut renderer = if gpu {
+        match rwf_gpu::GpuContext::new_headless() {
+            Ok(c) => Some(rwf_gpu::GpuRenderer::new(c)),
+            Err(e) => {
+                eprintln!("no GPU ({e}), rendering on the CPU");
+                None
+            }
+        }
+    } else {
+        None
+    };
     let mut rng = rwf_core::rng::Rng::from_entropy();
     for i in 0..count {
         let generator = generators[i % generators.len()];
         let flame = rwf_core::random::generate_with(generator, extras, &mut rng);
         let base = dir.join(format!("random_{i:02}_{}", generator.label().replace([' ', '(', ')'], "_")));
         rwf_core::io::write_flame_to_file(&flame, base.with_extension("flame")).expect("write flame");
-        let (w, h) = (480, 270);
-        let img = rwf_core::render::render_image(&flame, w, h, 200.0, false);
+        let h = h.unwrap_or_else(|| (w as f64 * flame.height as f64 / flame.width.max(1) as f64).round().max(1.0) as u32);
+        let img = match renderer.as_mut() {
+            Some(r) => {
+                r.set_flame(&flame, w, h);
+                r.accumulate_frame(&flame, 0.0, w, h, quality).ok().and_then(|_| {
+                    r.tonemap();
+                    r.read_image()
+                })
+            }
+            None => None,
+        }
+        .unwrap_or_else(|| rwf_core::render::render_image(&flame, w, h, quality, false));
         write_png(&base.with_extension("png"), w, h, &img).expect("write png");
         eprintln!("{}", base.display());
     }
@@ -649,6 +700,14 @@ fn main() {
         eprintln!("flame index {} out of range ({} flames)", args.index, flames.len());
         std::process::exit(1);
     };
+    let mut flame = flame.clone();
+    if let Some(d) = args.denoiser {
+        flame.ai_post_denoiser = d;
+    }
+    if let Some(b) = args.blend {
+        flame.post_denoiser_blend = b;
+    }
+    let flame = &flame;
     let (w, h) = match (args.width, args.height) {
         (Some(w), Some(h)) => (w, h),
         (Some(w), None) => (w, (w as f64 * flame.height as f64 / flame.width as f64).round() as u32),
