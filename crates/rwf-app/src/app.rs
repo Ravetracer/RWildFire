@@ -76,6 +76,8 @@ pub struct RwfApp {
     last_title: String,
     prefs: crate::prefs::Prefs,
     prefs_window: crate::prefs::PrefsWindow,
+    /// "Paste flame" was chosen: the next paste event is read as a flame.
+    paste_requested: Option<Instant>,
 }
 
 impl RwfApp {
@@ -112,6 +114,7 @@ impl RwfApp {
             last_title: String::new(),
             prefs,
             prefs_window: Default::default(),
+            paste_requested: None,
         };
         if let Some(p) = initial {
             app.open_path(&p);
@@ -162,8 +165,41 @@ impl RwfApp {
         }
     }
 
-    fn run(&mut self, action: Action) {
+    /// Loads the flames of pasted text; `explicit`: chosen in the menu (reports when the text
+    /// holds no flame).
+    fn paste_flames(&mut self, text: &str, explicit: bool) {
+        match rwf_core::io::read_flames(text) {
+            Ok(flames) if !flames.is_empty() => {
+                let n = flames.len();
+                self.doc.replace(self.prefs.adopt(flames[0].clone()));
+                self.doc.path = None;
+                if n > 1 {
+                    self.doc.library = flames;
+                    self.explorer.mode = crate::explorer::Mode::File;
+                    self.explorer_open = true;
+                    self.explorer.refresh(&self.doc.flame, &self.doc.library);
+                }
+                self.notify(if n > 1 { format!("{n} flames pasted — browse them in Explore › File") } else { "Flame pasted".to_string() });
+            }
+            _ if explicit => self.notify("No flame in the clipboard"),
+            _ => {}
+        }
+    }
+
+    fn run(&mut self, action: Action, ctx: &egui::Context) {
         match action {
+            Action::QuickSave => match self.prefs.quick_save(&self.doc.flame) {
+                Ok(p) => self.notify(format!("Quick saved {}", p.display())),
+                Err(e) => self.notify(format!("Quick save failed: {e}")),
+            },
+            Action::CopyFlame => {
+                ctx.copy_text(rwf_core::io::write_flame(&self.doc.flame));
+                self.notify("Flame copied to the clipboard");
+            }
+            Action::PasteFlame => {
+                self.paste_requested = Some(Instant::now());
+                ctx.send_viewport_cmd(egui::ViewportCommand::RequestPaste);
+            }
             Action::New => {
                 let mut f = Flame { bg_transparency: false, width: 1280, height: 720, ..Flame::default() };
                 let mut xf = rwf_core::XForm::with_variation("linear3D", 1.0);
@@ -179,7 +215,7 @@ impl RwfApp {
             }
             Action::Save => match self.doc.path.clone() {
                 Some(p) => self.save_to(p),
-                None => self.run(Action::SaveAs),
+                None => self.run(Action::SaveAs, ctx),
             },
             Action::SaveAs => {
                 if let Some(p) = rfd::FileDialog::new().add_filter("Flame", &["flame"]).set_file_name("flame.flame").save_file() {
@@ -264,6 +300,8 @@ impl RwfApp {
                 act = Some(Action::Redo);
             } else if i.consume_shortcut(&KeyboardShortcut::new(c, Key::Z)) {
                 act = Some(Action::Undo);
+            } else if i.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND | Modifiers::ALT, Key::S)) {
+                act = Some(Action::QuickSave);
             } else if i.consume_shortcut(&KeyboardShortcut::new(cs, Key::S)) {
                 act = Some(Action::SaveAs);
             } else if i.consume_shortcut(&KeyboardShortcut::new(c, Key::S)) {
@@ -333,6 +371,24 @@ impl eframe::App for RwfApp {
         }
 
         let mut action = self.shortcuts(&ctx);
+        // Clipboard: Ctrl+C / Ctrl+V outside text fields copy and paste flames.
+        let typing = ctx.memory(|m| m.focused().is_some()) && ctx.egui_wants_keyboard_input();
+        let (copy, pasted) = ctx.input(|i| {
+            let copy = i.events.iter().any(|e| matches!(e, egui::Event::Copy));
+            let pasted = i.events.iter().find_map(|e| if let egui::Event::Paste(t) = e { Some(t.clone()) } else { None });
+            (copy, pasted)
+        });
+        // a menu paste request expires (empty clipboards send no paste event)
+        self.paste_requested = self.paste_requested.filter(|t| t.elapsed().as_secs_f32() < 1.0);
+        if let Some(text) = pasted
+            && (self.paste_requested.is_some() || (!typing && !self.render.open))
+        {
+            let explicit = self.paste_requested.take().is_some();
+            self.paste_flames(&text, explicit);
+        }
+        if copy && !typing && !self.render.open {
+            action = Some(Action::CopyFlame);
+        }
         self.timeline.update(&ctx, &mut self.doc);
 
         // ---- top bar ----
@@ -463,7 +519,7 @@ impl eframe::App for RwfApp {
         }
 
         if let Some(a) = action {
-            self.run(a);
+            self.run(a, &ctx);
         }
 
         // Toast

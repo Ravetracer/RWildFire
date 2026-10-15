@@ -84,7 +84,7 @@ Missing compared with JWildfire (from a feature comparison, by priority):
   - Variations panel: reorder, convert to pre_/post_, randomize/reset parameters, favourites, variation profiles for the random generators
   - Canvas: grid and guides (center, rule of thirds, golden ratio), variation effect overlay, DOF focus point drag mode, double-click actions, detached preview window
   - Gradients: RGB, contrast, gamma, brightness, frequency, blur, sort, negative; range operations (copy/paste, fade, monochrome); gradient curve editor; gradient from an image, `.map` export, from/extract from flame; choice of random gradient generator
-  - Files and batches: flame XML to/from clipboard, quick save, folder browser with thumbnails (copy, move, rename, delete, to batch/mesh), configurable random batch (size, quality, snapshot), quick mutation strip
+  - Files and batches: folder browser with thumbnails (copy, move, rename, delete, to batch/mesh), configurable random batch (size, quality, snapshot), quick mutation strip
   - Controls without UI: foreground opacity, z-buffer parameters (and "suggest parameters"), flame title, "reset to defaults" per section
   - Resolution and quality profiles (editable, stored in flames, used by the batch renderer)
   - Preferences: default folders, defaults for new flames (filter, oversampling, DE), preview quality and progressive limits, render threads, editor control style

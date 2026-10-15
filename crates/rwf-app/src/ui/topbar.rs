@@ -31,9 +31,12 @@ pub enum Action {
     Open,
     Save,
     SaveAs,
+    QuickSave,
     Export,
     Undo,
     Redo,
+    CopyFlame,
+    PasteFlame,
     Preferences,
     Randomize,
     ToggleExplorer,
@@ -78,6 +81,9 @@ pub fn show(ui: &mut Ui, info: &TopBarInfo, generator: &mut Generator, extras: &
             if item(ui, "Save as…", "Ctrl+Shift+S").clicked() {
                 action = Some(Action::SaveAs);
             }
+            if item(ui, "Quick save", "Ctrl+Alt+S").on_hover_text("Saves a copy as qsave_<date>_<number>.flame in the quick save folder (Preferences), without asking").clicked() {
+                action = Some(Action::QuickSave);
+            }
             ui.separator();
             if item(ui, "Export image…", "Ctrl+E").clicked() {
                 action = Some(Action::Export);
@@ -90,6 +96,13 @@ pub fn show(ui: &mut Ui, info: &TopBarInfo, generator: &mut Generator, extras: &
             }
             if ui.add_enabled(info.can_redo, egui::Button::new("Redo").shortcut_text("Ctrl+Shift+Z")).clicked() {
                 action = Some(Action::Redo);
+            }
+            ui.separator();
+            if ui.add(egui::Button::new("Copy flame").shortcut_text("Ctrl+C")).on_hover_text("The flame as XML, e.g. to paste into a forum post or another program").clicked() {
+                action = Some(Action::CopyFlame);
+            }
+            if ui.add(egui::Button::new("Paste flame").shortcut_text("Ctrl+V")).on_hover_text("Loads a flame (RWildFire, JWildfire or Apophysis XML) from the clipboard").clicked() {
+                action = Some(Action::PasteFlame);
             }
             ui.separator();
             if ui.button("Preferences…").on_hover_text("Settings that stay between sessions, e.g. always denoise").clicked() {
