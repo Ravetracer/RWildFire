@@ -59,7 +59,7 @@ From left to right:
 | Export image… | <kbd>Ctrl</kbd>+<kbd>E</kbd> | Renders and saves an image or animation (chapter "Exporting"). |
 | Denoise image… | | Runs the AI denoiser on any PNG or JPEG file. |
 | Scripts… | | Opens the scripts window (chapter "Scripting"). |
-| Quit | <kbd>Ctrl</kbd>+<kbd>Q</kbd> | Closes RWildFire, like the window's close button. Unsaved changes are not asked for: save first. |
+| Quit | <kbd>Ctrl</kbd>+<kbd>Q</kbd> | Closes RWildFire, like the window's close button. If the flame has unsaved changes, RWildFire asks first (see below). |
 
 ![File › Denoise image…](images/denoise-image.png){: .third}
 
@@ -177,6 +177,12 @@ into it. Random flames, pasted flames and MutaGen results have no file until you
 Opening files works with the menu, by dropping files onto the window or by passing them on the
 command line (`rwf-app my.flame`). A dropped or passed `.rwfdance` project opens in the dancing
 flames workspace; JWildfire movies (`.jwfmovie`) are opened in Render › Movie.
+
+When you quit (File › Quit, <kbd>Ctrl</kbd>+<kbd>Q</kbd> or the window's close button) while the
+flame has unsaved changes, RWildFire asks **Save changes?**: **Save** saves the flame (asking
+for a file name if it has none yet) and quits, **Don't save** quits without saving, **Cancel**
+keeps RWildFire open. It also warns when a job in the render workspace (batch, quilt, movie,
+dance video, mesh sampling) is still running, because quitting stops it.
 
 Files with several flames keep all of them when you save. **Save** writes the edited flame back
 into its place in the file (the first flame when the file was opened, or the flame you picked in

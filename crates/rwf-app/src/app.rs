@@ -82,6 +82,10 @@ pub struct RwfApp {
     scripts: crate::script_view::ScriptWindow,
     /// "Paste flame" was chosen: the next paste event is read as a flame.
     paste_requested: Option<Instant>,
+    /// The "Save changes?" prompt is open (a close request was held back).
+    close_prompt: bool,
+    /// The user decided: the next close request goes through.
+    allow_close: bool,
 }
 
 impl RwfApp {
@@ -123,6 +127,8 @@ impl RwfApp {
             image_denoiser: Default::default(),
             scripts: Default::default(),
             paste_requested: None,
+            close_prompt: false,
+            allow_close: false,
         };
         app.transforms.favourites = app.prefs.favourites.clone();
         app.canvas.grid_size = app.prefs.grid_size;
@@ -418,9 +424,103 @@ impl RwfApp {
     }
 }
 
+impl RwfApp {
+    /// A render job that closing the window would cancel.
+    fn running_job(&self) -> Option<&'static str> {
+        if self.batch.is_running() {
+            Some("The batch renderer is still rendering.")
+        } else if self.quilt.is_running() {
+            Some("A quilt is still being rendered (finished tiles are kept).")
+        } else if self.movie.is_running() {
+            Some("A movie is still being rendered.")
+        } else if self.dance.is_running() {
+            Some("A dance video is still being rendered.")
+        } else if self.mesh.is_running() {
+            Some("The mesh generator is still sampling.")
+        } else {
+            None
+        }
+    }
+
+    /// Holds back closing the window (close button, File › Quit) while the flame has unsaved
+    /// changes or a render job runs, and asks what to do.
+    fn handle_close_request(&mut self, ctx: &egui::Context) {
+        if ctx.input(|i| i.viewport().close_requested()) && !self.allow_close && (self.doc.dirty || self.running_job().is_some()) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.close_prompt = true;
+        }
+        if !self.close_prompt {
+            return;
+        }
+        let job = self.running_job();
+        let mut choice = None;
+        let modal = egui::Modal::new(egui::Id::new("close-prompt")).show(ctx, |ui| {
+            ui.set_width(380.0);
+            if self.doc.dirty {
+                ui.label(RichText::new("Save changes?").strong().size(16.0));
+                ui.add_space(4.0);
+                let name = self.doc.title();
+                ui.label(format!("The flame \"{}\" has changes that are not saved.", name.trim_end_matches(" •")));
+            } else {
+                ui.label(RichText::new("Quit RWildFire?").strong().size(16.0));
+            }
+            if let Some(job) = job {
+                ui.add_space(4.0);
+                ui.label(RichText::new(format!("{job} Quitting stops it.")).color(theme::WARN));
+            }
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                if self.doc.dirty {
+                    if ui.add(egui::Button::new(RichText::new("Save").strong()).fill(theme::ACCENT_DIM)).clicked() {
+                        choice = Some("save");
+                    }
+                    if ui.button("Don't save").clicked() {
+                        choice = Some("discard");
+                    }
+                } else if ui.add(egui::Button::new(RichText::new("Quit").strong()).fill(theme::ACCENT_DIM)).clicked() {
+                    choice = Some("discard");
+                }
+                if ui.button("Cancel").clicked() {
+                    choice = Some("cancel");
+                }
+            });
+        });
+        if modal.should_close() && choice.is_none() {
+            choice = Some("cancel");
+        }
+        match choice {
+            Some("save") => {
+                let path = self.doc.path.clone().or_else(|| {
+                    crate::settings::dialog(crate::settings::Folder::Flames).add_filter("Flame", &["flame"]).set_file_name("flame.flame").save_file()
+                });
+                match path {
+                    Some(p) => {
+                        self.save_to(p);
+                        // Only quit when the flame really was saved.
+                        if !self.doc.dirty {
+                            self.close_now(ctx);
+                        }
+                    }
+                    None => self.close_prompt = false,
+                }
+            }
+            Some("discard") => self.close_now(ctx),
+            Some(_) => self.close_prompt = false,
+            None => {}
+        }
+    }
+
+    fn close_now(&mut self, ctx: &egui::Context) {
+        self.close_prompt = false;
+        self.allow_close = true;
+        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+    }
+}
+
 impl eframe::App for RwfApp {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        self.handle_close_request(&ctx);
 
         // Dropped files
         let dropped: Vec<PathBuf> = ctx.input(|i| i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).filter(|p| !p.as_os_str().is_empty()).collect());
