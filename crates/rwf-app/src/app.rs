@@ -222,6 +222,15 @@ impl RwfApp {
                 xf.coefs.scale(0.5);
                 f.first_layer_mut().xforms.push(xf);
                 f.pixels_per_unit = 200.0;
+                let profiles = &self.prefs.render_profiles;
+                if let Some(r) = profiles.default_resolution() {
+                    // keep the framing: scale the zoom with the width
+                    f.pixels_per_unit *= r.width as f64 / f.width as f64;
+                    (f.width, f.height, f.resolution_profile) = (r.width, r.height, r.name());
+                }
+                if let Some(q) = profiles.qualities.iter().find(|q| q.default) {
+                    (f.sample_density, f.quality_profile) = (q.quality, q.caption.clone());
+                }
                 self.doc.load(self.prefs.adopt(f), None);
             }
             Action::Open => {
@@ -239,7 +248,7 @@ impl RwfApp {
                 }
             }
             Action::Export => {
-                self.export.open_for(&self.doc.flame, self.preview.gpu_available());
+                self.export.open_for(&self.doc.flame, self.preview.gpu_available(), &self.prefs.render_profiles);
             }
             Action::Preferences => self.prefs_window.open = true,
             Action::Undo => self.doc.undo(),
@@ -475,7 +484,7 @@ impl eframe::App for RwfApp {
                         self.notify("Flame loaded into the editor");
                     }
                 }
-                RenderTab::Batch => self.batch.show(ui, &self.doc, self.preview.gpu_available()),
+                RenderTab::Batch => self.batch.show(ui, &self.doc, self.preview.gpu_available(), &self.prefs.render_profiles),
                 RenderTab::Quilt => {
                     self.quilt.sync_flame(&self.doc);
                     self.quilt.show(ui, &self.doc, self.preview.gpu_available());
@@ -573,7 +582,13 @@ impl eframe::App for RwfApp {
             });
         }
 
-        self.export.show(&ctx, &self.doc.flame, self.preview.gpu_context());
+        self.export.show(&ctx, &self.doc.flame, self.preview.gpu_context(), &self.prefs.render_profiles);
+        if let Some((res, qual)) = self.export.chosen_profiles.take()
+            && (self.doc.flame.resolution_profile != res || self.doc.flame.quality_profile != qual)
+        {
+            self.doc.flame.resolution_profile = res;
+            self.doc.flame.quality_profile = qual;
+        }
         let mut playhead = self.timeline.current_frame();
         self.curves_changed |= self.curves.show(&ctx, &mut self.doc.flame, &mut playhead);
         if playhead != self.timeline.current_frame() {

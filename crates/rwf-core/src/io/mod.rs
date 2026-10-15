@@ -126,6 +126,9 @@ pub(crate) fn parse_flame(el: &Element) -> Flame {
         let mut known = true;
         match k.as_str() {
             "name" => flame.name = v.clone(),
+            "resolution_profile" if v != "null" => flame.resolution_profile = v.clone(),
+            "quality_profile" if v != "null" => flame.quality_profile = v.clone(),
+            "resolution_profile" | "quality_profile" => {}
             "size" => {
                 let s = floats(v);
                 if s.len() >= 2 {
@@ -623,6 +626,12 @@ pub fn write_flame(flame: &Flame) -> String {
     }
     attr(&mut s, "version", concat!("RWildFire ", env!("CARGO_PKG_VERSION")));
     attr(&mut s, "size", format!("{} {}", flame.width, flame.height));
+    if !flame.resolution_profile.is_empty() {
+        attr(&mut s, "resolution_profile", &flame.resolution_profile);
+    }
+    if !flame.quality_profile.is_empty() {
+        attr(&mut s, "quality_profile", &flame.quality_profile);
+    }
     attr(&mut s, "center", format!("{} {}", fmt_f(flame.centre_x), fmt_f(flame.centre_y)));
     attr(&mut s, "scale", fmt_f(flame.pixels_per_unit));
     attr(&mut s, "rotate", fmt_f(flame.cam_roll));

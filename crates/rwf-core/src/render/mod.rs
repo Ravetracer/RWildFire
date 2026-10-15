@@ -42,6 +42,8 @@ use crate::model::{Background, Flame};
 fn iteration_key(flame: &Flame) -> Flame {
     let mut f = flame.clone();
     f.name.clear();
+    f.resolution_profile.clear();
+    f.quality_profile.clear();
     f.brightness = 0.0;
     f.contrast = 0.0;
     f.gamma = 0.0;

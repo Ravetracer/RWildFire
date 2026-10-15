@@ -36,6 +36,7 @@ mod mesh_view;
 mod movie_view;
 mod mutagen;
 mod prefs;
+mod profiles;
 mod preview;
 mod quilt_view;
 mod render_view;

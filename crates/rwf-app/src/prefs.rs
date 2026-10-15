@@ -24,7 +24,7 @@ use egui::RichText;
 use rwf_core::Flame;
 use rwf_core::render::denoise::{self, Denoiser};
 
-use crate::theme;
+use crate::{icons, theme};
 use crate::ui::widgets;
 
 /// The config folder (`$XDG_CONFIG_HOME/rwildfire`, `~/.config/rwildfire` or
@@ -66,6 +66,8 @@ pub struct Prefs {
     /// Flames per random batch (Explore strip) and where a new batch goes.
     pub batch_size: usize,
     pub batch_refresh: crate::explorer::RefreshMode,
+    /// Resolution and quality profiles.
+    pub render_profiles: crate::profiles::Profiles,
 }
 
 /// A set of variations the random generators may use (JWildfire's variation profiles, by
@@ -110,6 +112,7 @@ impl Default for Prefs {
             browser_dir: String::new(),
             batch_size: 24,
             batch_refresh: crate::explorer::RefreshMode::Clear,
+            render_profiles: Default::default(),
         }
     }
 }
@@ -118,6 +121,8 @@ impl Prefs {
     /// Reads the preferences; missing or unreadable values keep their defaults.
     pub fn load() -> Self {
         let mut p = Self::default();
+        // Stored profile lists replace the default ones.
+        let (mut own_res, mut own_qual) = (false, false);
         let Some(src) = config_dir().and_then(|d| std::fs::read_to_string(d.join(FILE)).ok()) else { return p };
         for line in src.lines() {
             let Some((k, v)) = line.split_once('=') else { continue };
@@ -131,6 +136,19 @@ impl Prefs {
                 "variation_profile" => p.profiles.extend(VariationProfile::from_line(v)),
                 "active_profile" => p.active_profile = v.to_string(),
                 "double_click" => p.double_click = crate::canvas::DoubleClick::parse(v),
+                "resolution_profile" => {
+                    if !std::mem::replace(&mut own_res, true) {
+                        p.render_profiles.resolutions.clear();
+                    }
+                    p.render_profiles.resolutions.extend(crate::profiles::ResolutionProfile::from_line(v));
+                }
+                "quality_profile" => {
+                    if !std::mem::replace(&mut own_qual, true) {
+                        p.render_profiles.qualities.clear();
+                    }
+                    p.render_profiles.qualities.extend(crate::profiles::QualityProfile::from_line(v));
+                }
+                "associate_profiles" => p.render_profiles.associate = v == "true",
                 "batch_size" => p.batch_size = v.parse::<usize>().map(|n| n.clamp(1, 64)).unwrap_or(p.batch_size),
                 "batch_refresh" => p.batch_refresh = crate::explorer::RefreshMode::parse(v),
                 "browser_dir" => p.browser_dir = v.to_string(),
@@ -159,6 +177,13 @@ impl Prefs {
         }
         text += &format!("active_profile = {}\n", self.active_profile);
         text += &format!("double_click = {}\ngrid_size = {}\nbrowser_dir = {}\n", self.double_click.as_str(), self.grid_size, self.browser_dir);
+        for r in &self.render_profiles.resolutions {
+            text += &format!("resolution_profile = {}\n", r.to_line());
+        }
+        for q in &self.render_profiles.qualities {
+            text += &format!("quality_profile = {}\n", q.to_line());
+        }
+        text += &format!("associate_profiles = {}\n", self.render_profiles.associate);
         text += &format!("batch_size = {}\nbatch_refresh = {}\n", self.batch_size, self.batch_refresh.as_str());
         std::fs::write(&path, text).map_err(|e| format!("{}: {e}", path.display()))?;
         Ok(path)
@@ -312,6 +337,68 @@ pub fn date_time(secs: u64) -> String {
     format!("{y:04}-{m:02}-{d:02} {:02}:{:02}", mins / 60, mins % 60)
 }
 
+/// Editable resolution and quality profiles.
+fn render_profiles_ui(ui: &mut egui::Ui, p: &mut crate::profiles::Profiles) {
+    use crate::profiles::{QualityProfile, ResolutionProfile};
+    ui.checkbox(&mut p.associate, "Associate profiles with flames")
+        .on_hover_text("The export dialog starts with the profiles last chosen for a flame (stored in the flame file)");
+    ui.label(RichText::new("Resolutions — the default one sizes new flames").small().color(theme::TEXT_MUTED));
+    let (mut remove, mut default) = (None, None);
+    egui::Grid::new("prefs-res-profiles").num_columns(4).spacing([8.0, 4.0]).show(ui, |ui| {
+        for (i, r) in p.resolutions.iter_mut().enumerate() {
+            ui.add(egui::DragValue::new(&mut r.width).range(16..=16384));
+            ui.add(egui::DragValue::new(&mut r.height).range(16..=16384));
+            if ui.radio(r.default, "Default").clicked() {
+                default = Some(i);
+            }
+            if ui.small_button(icons::X).on_hover_text("Remove").clicked() {
+                remove = Some(i);
+            }
+            ui.end_row();
+        }
+    });
+    if let Some(k) = default {
+        for (j, r) in p.resolutions.iter_mut().enumerate() {
+            r.default = j == k;
+        }
+    }
+    if let Some(i) = remove {
+        p.resolutions.remove(i);
+    }
+    if ui.small_button(format!("{} Resolution", icons::PLUS)).clicked() {
+        p.resolutions.push(ResolutionProfile { width: 1920, height: 1080, default: false });
+    }
+    ui.add_space(4.0);
+    ui.label(RichText::new("Qualities — the default one is the quality of new flames; HDR also picks HDR output in the export dialog").small().color(theme::TEXT_MUTED));
+    let (mut remove, mut default) = (None, None);
+    egui::Grid::new("prefs-qual-profiles").num_columns(6).spacing([8.0, 4.0]).show(ui, |ui| {
+        for (i, q) in p.qualities.iter_mut().enumerate() {
+            ui.add_sized([130.0, 20.0], egui::TextEdit::singleline(&mut q.caption));
+            ui.add(egui::DragValue::new(&mut q.quality).range(1.0..=100_000.0).max_decimals(0));
+            ui.checkbox(&mut q.hdr, "HDR");
+            ui.checkbox(&mut q.zbuffer, "Z").on_hover_text("Z-buffer");
+            if ui.radio(q.default, "Default").on_hover_text("Quality of new flames").clicked() {
+                default = Some(i);
+            }
+            if ui.small_button(icons::X).on_hover_text("Remove").clicked() {
+                remove = Some(i);
+            }
+            ui.end_row();
+        }
+    });
+    if let Some(k) = default {
+        for (j, q) in p.qualities.iter_mut().enumerate() {
+            q.default = j == k;
+        }
+    }
+    if let Some(i) = remove {
+        p.qualities.remove(i);
+    }
+    if ui.small_button(format!("{} Quality", icons::PLUS)).clicked() {
+        p.qualities.push(QualityProfile { caption: "New quality".to_string(), quality: 1000.0, hdr: false, zbuffer: false, default: false });
+    }
+}
+
 /// The Preferences window; saves on every change.
 #[derive(Default)]
 pub struct PrefsWindow {
@@ -331,72 +418,77 @@ impl PrefsWindow {
         let before = prefs.clone();
         let mut open = self.open;
         egui::Window::new("Preferences").open(&mut open).default_width(420.0).resizable(false).collapsible(false).show(ctx, |ui| {
-            theme::section_label(ui, "Denoiser");
-            ui.checkbox(&mut prefs.always_denoise, "Always denoise")
-                .on_hover_text("Every flame that comes into the editor without a denoiser (new, random, Explore, MutaGen, opened files) gets the settings below, so saved images and renders are denoised. The canvas shows it only with \"Denoised\". Flames that already have a denoiser keep theirs.");
-            ui.add_enabled_ui(prefs.always_denoise, |ui| {
-                widgets::grid(ui, "prefs-denoise", |ui| {
-                    widgets::label(ui, "AI denoiser");
-                    egui::ComboBox::from_id_salt("prefs-denoiser").selected_text(prefs.denoiser.label()).show_ui(ui, |ui| {
-                        for d in Denoiser::ALL.iter().filter(|d| **d != Denoiser::None) {
-                            ui.selectable_value(&mut prefs.denoiser, *d, d.label());
-                        }
+            let h = ctx.content_rect().height() - 120.0;
+            egui::ScrollArea::vertical().max_height(h).min_scrolled_height(h).show(ui, |ui| {
+                theme::section_label(ui, "Denoiser");
+                ui.checkbox(&mut prefs.always_denoise, "Always denoise")
+                    .on_hover_text("Every flame that comes into the editor without a denoiser (new, random, Explore, MutaGen, opened files) gets the settings below, so saved images and renders are denoised. The canvas shows it only with \"Denoised\". Flames that already have a denoiser keep theirs.");
+                ui.add_enabled_ui(prefs.always_denoise, |ui| {
+                    widgets::grid(ui, "prefs-denoise", |ui| {
+                        widgets::label(ui, "AI denoiser");
+                        egui::ComboBox::from_id_salt("prefs-denoiser").selected_text(prefs.denoiser.label()).show_ui(ui, |ui| {
+                            for d in Denoiser::ALL.iter().filter(|d| **d != Denoiser::None) {
+                                ui.selectable_value(&mut prefs.denoiser, *d, d.label());
+                            }
+                        });
+                        ui.end_row();
+                        widgets::slider(ui, "Blend", &mut prefs.blend, 0.0..=1.0).on_hover_text("Mixes the original image back in (0 = fully denoised)");
                     });
-                    ui.end_row();
-                    widgets::slider(ui, "Blend", &mut prefs.blend, 0.0..=1.0).on_hover_text("Mixes the original image back in (0 = fully denoised)");
+                    match denoise::backend() {
+                        Ok(b) => ui.label(RichText::new(format!("Denoiser found: {b}")).small().color(theme::TEXT_MUTED)),
+                        Err(e) => ui.label(RichText::new(format!("{e}; flames get the setting, but images stay un-denoised")).small().color(theme::WARN)),
+                    };
                 });
-                match denoise::backend() {
-                    Ok(b) => ui.label(RichText::new(format!("Denoiser found: {b}")).small().color(theme::TEXT_MUTED)),
-                    Err(e) => ui.label(RichText::new(format!("{e}; flames get the setting, but images stay un-denoised")).small().color(theme::WARN)),
+                theme::section_label(ui, "Editor");
+                widgets::grid(ui, "prefs-editor", |ui| {
+                    widgets::label(ui, "Double-click");
+                    egui::ComboBox::from_id_salt("prefs-dblclick").selected_text(prefs.double_click.label()).show_ui(ui, |ui| {
+                        for d in crate::canvas::DoubleClick::ALL {
+                            ui.selectable_value(&mut prefs.double_click, d, d.label());
+                        }
+                    })
+                    .response
+                    .on_hover_text("What a double-click on the canvas does");
+                    ui.end_row();
+                    widgets::label(ui, "Grid spacing");
+                    ui.add(egui::DragValue::new(&mut prefs.grid_size).speed(0.01).range(0.01..=100.0)).on_hover_text("Default spacing of the canvas grid (View › Grid)");
+                    ui.end_row();
+                });
+                theme::section_label(ui, "Random flames");
+                widgets::grid(ui, "prefs-batch", |ui| {
+                    widgets::label(ui, "Batch size");
+                    ui.add(egui::DragValue::new(&mut prefs.batch_size).range(1..=64)).on_hover_text("Flames per \"New batch\" in Explore › Random");
+                    ui.end_row();
+                    widgets::label(ui, "New batches");
+                    egui::ComboBox::from_id_salt("prefs-batch-refresh").selected_text(prefs.batch_refresh.label()).show_ui(ui, |ui| {
+                        for r in crate::explorer::RefreshMode::ALL {
+                            ui.selectable_value(&mut prefs.batch_refresh, r, r.label());
+                        }
+                    })
+                    .response
+                    .on_hover_text("Where a new random batch goes in the Explore strip (JWildfire's random batch refresh type)");
+                    ui.end_row();
+                });
+                profiles_ui(ui, prefs, &mut self.profile_search);
+                theme::section_label(ui, "Render profiles");
+                render_profiles_ui(ui, &mut prefs.render_profiles);
+                theme::section_label(ui, "Quick save");
+                ui.horizontal(|ui| {
+                    let shown = prefs.quick_save_folder().map(|p| p.display().to_string()).unwrap_or_default();
+                    if ui.button("Folder…").on_hover_text("Where File › Quick save puts its flames (qsave_<date>_<number>.flame)").clicked()
+                        && let Some(p) = rfd::FileDialog::new().pick_folder()
+                    {
+                        prefs.quick_save_dir = p.to_string_lossy().to_string();
+                    }
+                    ui.label(RichText::new(shown).small().color(theme::TEXT_MUTED));
+                });
+                ui.add_space(6.0);
+                match &self.status {
+                    Some(Ok(p)) => ui.label(RichText::new(format!("Saved to {}", p.display())).small().color(theme::TEXT_MUTED)),
+                    Some(Err(e)) => ui.label(RichText::new(format!("Could not save preferences: {e}")).small().color(theme::WARN)),
+                    None => ui.label(RichText::new("Changes are saved right away.").small().color(theme::TEXT_MUTED)),
                 };
             });
-            theme::section_label(ui, "Editor");
-            widgets::grid(ui, "prefs-editor", |ui| {
-                widgets::label(ui, "Double-click");
-                egui::ComboBox::from_id_salt("prefs-dblclick").selected_text(prefs.double_click.label()).show_ui(ui, |ui| {
-                    for d in crate::canvas::DoubleClick::ALL {
-                        ui.selectable_value(&mut prefs.double_click, d, d.label());
-                    }
-                })
-                .response
-                .on_hover_text("What a double-click on the canvas does");
-                ui.end_row();
-                widgets::label(ui, "Grid spacing");
-                ui.add(egui::DragValue::new(&mut prefs.grid_size).speed(0.01).range(0.01..=100.0)).on_hover_text("Default spacing of the canvas grid (View › Grid)");
-                ui.end_row();
-            });
-            theme::section_label(ui, "Random flames");
-            widgets::grid(ui, "prefs-batch", |ui| {
-                widgets::label(ui, "Batch size");
-                ui.add(egui::DragValue::new(&mut prefs.batch_size).range(1..=64)).on_hover_text("Flames per \"New batch\" in Explore › Random");
-                ui.end_row();
-                widgets::label(ui, "New batches");
-                egui::ComboBox::from_id_salt("prefs-batch-refresh").selected_text(prefs.batch_refresh.label()).show_ui(ui, |ui| {
-                    for r in crate::explorer::RefreshMode::ALL {
-                        ui.selectable_value(&mut prefs.batch_refresh, r, r.label());
-                    }
-                })
-                .response
-                .on_hover_text("Where a new random batch goes in the Explore strip (JWildfire's random batch refresh type)");
-                ui.end_row();
-            });
-            profiles_ui(ui, prefs, &mut self.profile_search);
-            theme::section_label(ui, "Quick save");
-            ui.horizontal(|ui| {
-                let shown = prefs.quick_save_folder().map(|p| p.display().to_string()).unwrap_or_default();
-                if ui.button("Folder…").on_hover_text("Where File › Quick save puts its flames (qsave_<date>_<number>.flame)").clicked()
-                    && let Some(p) = rfd::FileDialog::new().pick_folder()
-                {
-                    prefs.quick_save_dir = p.to_string_lossy().to_string();
-                }
-                ui.label(RichText::new(shown).small().color(theme::TEXT_MUTED));
-            });
-            ui.add_space(6.0);
-            match &self.status {
-                Some(Ok(p)) => ui.label(RichText::new(format!("Saved to {}", p.display())).small().color(theme::TEXT_MUTED)),
-                Some(Err(e)) => ui.label(RichText::new(format!("Could not save preferences: {e}")).small().color(theme::WARN)),
-                None => ui.label(RichText::new("Changes are saved right away.").small().color(theme::TEXT_MUTED)),
-            };
         });
         self.open = open;
         let changed = *prefs != before;

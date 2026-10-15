@@ -364,7 +364,7 @@ impl BatchView {
         }
     }
 
-    pub fn show(&mut self, ui: &mut Ui, doc: &crate::doc::Document, gpu: bool) {
+    pub fn show(&mut self, ui: &mut Ui, doc: &crate::doc::Document, gpu: bool, profiles: &crate::profiles::Profiles) {
         egui::Panel::right("batch-panel")
             .resizable(true)
             .default_size(350.0)
@@ -373,7 +373,7 @@ impl BatchView {
             .show(ui, |ui| {
                 egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                     ui.spacing_mut().slider_width = 120.0;
-                    self.panel(ui, gpu);
+                    self.panel(ui, gpu, profiles);
                 });
             });
         egui::Panel::bottom("batch-preview")
@@ -532,11 +532,27 @@ impl BatchView {
         painter.image(tex.id(), img, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), Color32::WHITE);
     }
 
-    fn panel(&mut self, ui: &mut Ui, gpu: bool) {
+    fn panel(&mut self, ui: &mut Ui, gpu: bool, profiles: &crate::profiles::Profiles) {
         let running = self.is_running();
         theme::section_label(ui, "Defaults");
         ui.add_enabled_ui(!running, |ui| {
             grid(ui, "batch-defaults", |ui| {
+                widgets::label(ui, "Profiles");
+                ui.horizontal(|ui| {
+                    let fixed = if self.size_kind == SizeKind::Fixed { self.fixed } else { (0, 0) };
+                    if let Some(r) = crate::profiles::resolution_combo(ui, "batch-res-profile", profiles, fixed) {
+                        self.size_kind = SizeKind::Fixed;
+                        self.fixed = (r.width, r.height);
+                    }
+                    let current = profiles.qualities.iter().find(|q| q.quality == self.settings.quality).map(|q| q.caption.as_str());
+                    if let Some(q) = crate::profiles::quality_combo(ui, "batch-qual-profile", profiles, current) {
+                        self.settings.quality = q.quality;
+                        self.settings.zbuffer = q.zbuffer;
+                    }
+                })
+                .response
+                .on_hover_text("Resolution and quality profiles (Preferences): set the size and quality below");
+                ui.end_row();
                 widgets::label(ui, "Size");
                 ui.horizontal(|ui| {
                     ui.selectable_value(&mut self.size_kind, SizeKind::LongEdge, "Long edge");

@@ -656,6 +656,10 @@ pub struct Flame {
     pub name: String,
     pub width: u32,
     pub height: u32,
+    /// The resolution profile (`WxH`) and quality profile (caption) last chosen for the flame
+    /// (JWildfire's `resolution_profile`, `quality_profile`; empty: none).
+    pub resolution_profile: String,
+    pub quality_profile: String,
     pub centre_x: f64,
     pub centre_y: f64,
     pub pixels_per_unit: f64,
@@ -773,6 +777,8 @@ impl Default for Flame {
             name: String::new(),
             width: 800,
             height: 600,
+            resolution_profile: String::new(),
+            quality_profile: String::new(),
             centre_x: 0.0,
             centre_y: 0.0,
             pixels_per_unit: 50.0,

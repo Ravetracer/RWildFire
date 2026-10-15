@@ -30,6 +30,7 @@ use rwf_core::render::{CpuRender, RenderOptions};
 use rwf_gpu::{GpuContext, GpuRenderer};
 
 use crate::preview::Backend;
+use crate::profiles::{self, Profiles, QualityProfile};
 use crate::theme;
 
 enum Job {
@@ -79,6 +80,10 @@ pub struct ExportDialog {
     zbuffer: bool,
     running: Option<Running>,
     status: Option<String>,
+    /// The quality profile the quality comes from.
+    quality_profile: Option<String>,
+    /// Profiles chosen in the dialog (resolution, quality; empty: none), for the flame.
+    pub chosen_profiles: Option<(String, String)>,
 }
 
 impl Default for ExportDialog {
@@ -101,6 +106,8 @@ impl Default for ExportDialog {
             zbuffer: false,
             running: None,
             status: None,
+            quality_profile: None,
+            chosen_profiles: None,
         }
     }
 }
@@ -169,11 +176,20 @@ struct SaveJob {
 }
 
 impl ExportDialog {
-    pub fn open_for(&mut self, flame: &Flame, gpu: bool) {
+    pub fn open_for(&mut self, flame: &Flame, gpu: bool, profiles: &Profiles) {
         self.open = true;
         self.width = flame.width;
         self.height = flame.height;
         self.quality = flame.sample_density.max(200.0);
+        self.quality_profile = None;
+        if profiles.associate {
+            if let Some(r) = profiles.resolution(&flame.resolution_profile) {
+                (self.width, self.height) = (r.width, r.height);
+            }
+            if let Some(q) = profiles.quality(&flame.quality_profile) {
+                self.apply_quality(q);
+            }
+        }
         self.transparent = flame.bg_transparency;
         self.mode = if flame.animation.is_animated() { Mode::Animation } else { Mode::Image };
         self.from = 0;
@@ -190,6 +206,15 @@ impl ExportDialog {
         self.status = None;
     }
 
+
+    fn apply_quality(&mut self, q: &QualityProfile) {
+        self.quality = q.quality;
+        self.zbuffer = q.zbuffer;
+        if q.hdr {
+            self.image_format = ImageFormat::Hdr;
+        }
+        self.quality_profile = Some(q.caption.clone());
+    }
 
     fn start(&mut self, flame: &Flame, gpu: Option<GpuContext>, path: PathBuf) {
         // Only PNG keeps an alpha channel.
@@ -374,7 +399,7 @@ impl ExportDialog {
         self.status = None;
     }
 
-    pub fn show(&mut self, ctx: &egui::Context, flame: &Flame, gpu: Option<GpuContext>) {
+    pub fn show(&mut self, ctx: &egui::Context, flame: &Flame, gpu: Option<GpuContext>, profiles: &Profiles) {
         if let Some(job) = &self.anim {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
             if let Ok(r) = job.result.try_recv() {
@@ -400,6 +425,25 @@ impl ExportDialog {
                 });
                 ui.add_space(4.0);
                 egui::Grid::new("export").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
+                    ui.label(RichText::new("Profiles").color(theme::TEXT_MUTED));
+                    ui.horizontal(|ui| {
+                        let mut picked = false;
+                        if let Some(r) = profiles::resolution_combo(ui, "export-res-profile", profiles, (self.width, self.height)) {
+                            (self.width, self.height) = (r.width, r.height);
+                            picked = true;
+                        }
+                        if let Some(q) = profiles::quality_combo(ui, "export-qual-profile", profiles, self.quality_profile.as_deref()) {
+                            self.apply_quality(&q);
+                            picked = true;
+                        }
+                        if picked {
+                            let res = profiles.resolutions.iter().find(|r| (r.width, r.height) == (self.width, self.height)).map(|r| r.name());
+                            self.chosen_profiles = Some((res.unwrap_or_default(), self.quality_profile.clone().unwrap_or_default()));
+                        }
+                    })
+                    .response
+                    .on_hover_text("Resolution and quality profiles (Preferences); the flame remembers them");
+                    ui.end_row();
                     ui.label(RichText::new("Size").color(theme::TEXT_MUTED));
                     ui.horizontal(|ui| {
                         ui.add(egui::DragValue::new(&mut self.width).range(16..=16384));
@@ -419,7 +463,9 @@ impl ExportDialog {
                     });
                     ui.end_row();
                     ui.label(RichText::new("Quality").color(theme::TEXT_MUTED));
-                    ui.add(egui::Slider::new(&mut self.quality, 50.0..=20000.0).logarithmic(true));
+                    if ui.add(egui::Slider::new(&mut self.quality, 50.0..=20000.0).logarithmic(true)).changed() {
+                        self.quality_profile = None;
+                    }
                     ui.end_row();
                     ui.label(RichText::new("Renderer").color(theme::TEXT_MUTED));
                     ui.horizontal(|ui| {
