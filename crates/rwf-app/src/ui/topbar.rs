@@ -57,7 +57,7 @@ pub struct TopBarInfo<'a> {
     pub randomizing: bool,
 }
 
-pub fn show(ui: &mut Ui, info: &TopBarInfo, generator: &mut Generator, extras: &mut Extras) -> Option<Action> {
+pub fn show(ui: &mut Ui, info: &TopBarInfo, generator: &mut Generator, extras: &mut Extras, profiles: &[String], active_profile: &mut String) -> Option<Action> {
     let mut action = None;
     ui.horizontal_centered(|ui| {
         ui.spacing_mut().item_spacing.x = 6.0;
@@ -136,6 +136,9 @@ pub fn show(ui: &mut Ui, info: &TopBarInfo, generator: &mut Generator, extras: &
                 ui.end_row();
                 label(ui, "Weighting field");
                 widgets::weighting_combo(ui, "top-weighting", &mut extras.weighting);
+                ui.end_row();
+                label(ui, "Variations");
+                crate::prefs::profile_combo(ui, "top-profile", profiles, active_profile);
                 ui.end_row();
             });
         })

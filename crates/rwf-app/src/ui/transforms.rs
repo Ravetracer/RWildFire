@@ -33,6 +33,22 @@ use crate::{icons, theme};
 pub struct TransformsState {
     pub var_search: String,
     pub expanded: std::collections::HashSet<usize>,
+    /// Favourite variations (from the preferences; `favourites_changed` asks to save them).
+    pub favourites: std::collections::BTreeSet<String>,
+    pub favourites_changed: bool,
+    /// The add-variation list shows only favourites.
+    pub only_favourites: bool,
+}
+
+/// Random values in the parameters' ranges (integers rounded).
+fn randomize_params(var: &mut VariationInstance, def: &variations::VarDef) {
+    let mut rng = rwf_core::rng::Rng::from_entropy();
+    for (i, p) in def.params.iter().enumerate() {
+        let v = p.min + rng.random() * (p.max - p.min);
+        if let Some(slot) = var.params.get_mut(i) {
+            *slot = if p.integer { v.round() } else { v };
+        }
+    }
 }
 
 fn summary(xf: &XForm) -> String {
@@ -383,6 +399,7 @@ fn variations_editor(ui: &mut Ui, doc: &mut Document, st: &mut TransformsState) 
     };
 
     let mut remove: Option<usize> = None;
+    let mut move_up: Option<usize> = None;
     for (vi, var) in xf.variations.iter_mut().enumerate() {
         let def = variations::find(&var.name);
         let has_params = def.is_some_and(|d| !d.params.is_empty()) || !var.raw_params.is_empty();
@@ -412,10 +429,35 @@ fn variations_editor(ui: &mut Ui, doc: &mut Document, st: &mut TransformsState) 
                     lbl.on_hover_text("CPU only");
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.spacing_mut().item_spacing.x = 2.0;
                     if widgets::icon_button(ui, icons::X, "Remove variation").clicked() {
                         remove = Some(vi);
                     }
                     ui.add(egui::DragValue::new(&mut var.amount).speed(0.005).max_decimals(4));
+                    // pre/post slot (JWildfire priority); prepost variations have both
+                    if def.is_some_and(|d| !matches!(d.kind, variations::VarKind::PrePost(_))) {
+                        let mut post = var.priority > 0;
+                        if ui.toggle_value(&mut post, RichText::new("post").small()).on_hover_text("Run after the normal variations (post_ slot)").changed() {
+                            var.priority = if post { 1 } else { 0 };
+                        }
+                        let mut pre = var.priority < 0;
+                        if ui.toggle_value(&mut pre, RichText::new("pre").small()).on_hover_text("Run before the normal variations (pre_ slot)").changed() {
+                            var.priority = if pre { -1 } else { 0 };
+                        }
+                    }
+                    if vi > 0 && widgets::icon_button(ui, icons::CARET_UP, "Move up (variations run in this order)").clicked() {
+                        move_up = Some(vi);
+                    }
+                    let fav = st.favourites.contains(&var.name);
+                    let star = RichText::new(icons::STAR).color(if fav { theme::ACCENT } else { theme::TEXT_MUTED });
+                    if ui.add(egui::Button::new(star).frame(false)).on_hover_text(if fav { "Favourite (click to remove)" } else { "Add to the favourites" }).clicked() {
+                        if fav {
+                            st.favourites.remove(&var.name);
+                        } else {
+                            st.favourites.insert(var.name.clone());
+                        }
+                        st.favourites_changed = true;
+                    }
                 });
             });
             if has_params && st.expanded.contains(&vi) {
@@ -454,6 +496,16 @@ fn variations_editor(ui: &mut Ui, doc: &mut Document, st: &mut TransformsState) 
                     if let Some(id) = chosen_preset {
                         variations::presets::apply(var, id);
                     }
+                    if !def.params.is_empty() {
+                        ui.horizontal(|ui| {
+                            if ui.small_button(format!("{} Random", icons::DICE)).on_hover_text("Random values in the parameters' ranges").clicked() {
+                                randomize_params(var, def);
+                            }
+                            if ui.small_button(format!("{} Reset", icons::REFRESH)).on_hover_text("Parameters back to their defaults").clicked() {
+                                var.params = def.params.iter().map(|p| p.default).collect();
+                            }
+                        });
+                    }
                 }
                 let res = variations::resources_of(&var.name).map_or(&[][..], |rv| rv.resources);
                 for (k, v) in &var.raw_params {
@@ -470,23 +522,42 @@ fn variations_editor(ui: &mut Ui, doc: &mut Document, st: &mut TransformsState) 
         xf.variations.remove(i);
         st.expanded.clear();
     }
+    if let Some(i) = move_up {
+        xf.variations.swap(i - 1, i);
+        // keep the open parameter panels with their variations
+        let (a, b) = (st.expanded.remove(&(i - 1)), st.expanded.remove(&i));
+        if a {
+            st.expanded.insert(i);
+        }
+        if b {
+            st.expanded.insert(i - 1);
+        }
+    }
 
     ui.add_space(4.0);
     let btn = ui.add_sized([ui.available_width(), 28.0], egui::Button::new(format!("{}  Add variation", icons::PLUS)));
     egui::Popup::from_toggle_button_response(&btn).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
         ui.set_min_width(260.0);
-        let r = ui.add(egui::TextEdit::singleline(&mut st.var_search).hint_text("Search variations…"));
-        r.request_focus();
+        ui.horizontal(|ui| {
+            let r = ui.add(egui::TextEdit::singleline(&mut st.var_search).hint_text("Search variations…"));
+            r.request_focus();
+            ui.toggle_value(&mut st.only_favourites, RichText::new(icons::STAR)).on_hover_text("Only favourites (mark them with the star of a variation)");
+        });
         ui.add_space(4.0);
         let q = st.var_search.to_lowercase();
         let mut chosen = None;
+        // favourites first
+        let mut defs: Vec<&variations::VarDef> = variations::all().to_vec();
+        defs.sort_by_key(|d| !st.favourites.contains(d.name));
         egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
-            for def in variations::all() {
-                if !q.is_empty() && !def.name.to_lowercase().contains(&q) {
+            for def in defs {
+                let fav = st.favourites.contains(def.name);
+                if (!q.is_empty() && !def.name.to_lowercase().contains(&q)) || (st.only_favourites && !fav) {
                     continue;
                 }
                 ui.horizontal(|ui| {
-                    if ui.add(egui::Button::new(def.name).frame(false)).clicked() {
+                    let label = if fav { RichText::new(format!("{} {}", icons::STAR, def.name)) } else { RichText::new(def.name) };
+                    if ui.add(egui::Button::new(label).frame(false)).clicked() {
                         chosen = Some(def.name);
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -683,6 +754,18 @@ fn preset_combo(ui: &mut Ui, vi: usize, current: i32, presets: &[variations::pre
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn random_params_stay_in_range() {
+        let def = variations::find("julian").unwrap();
+        let mut v = VariationInstance::new("julian", 1.0);
+        for _ in 0..50 {
+            randomize_params(&mut v, def);
+            for (p, x) in def.params.iter().zip(&v.params) {
+                assert!(*x >= p.min && *x <= p.max && (!p.integer || x.fract() == 0.0), "{} = {x}", p.name);
+            }
+        }
+    }
 
     #[test]
     fn linked_transform_follows_its_source() {

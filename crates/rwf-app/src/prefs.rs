@@ -17,6 +17,7 @@
 //! User preferences (`preferences.txt` in the config folder, `key = value` lines) and the
 //! Preferences window.
 
+use std::collections::{BTreeSet, HashSet};
 use std::path::PathBuf;
 
 use egui::RichText;
@@ -52,11 +53,51 @@ pub struct Prefs {
     pub blend: f64,
     /// Folder of "Quick save" (empty: `~/RWildFire`).
     pub quick_save_dir: String,
+    /// Favourite variations (star in the variation list).
+    pub favourites: BTreeSet<String>,
+    /// Variation profiles for the random generators, and the active one (empty: none).
+    pub profiles: Vec<VariationProfile>,
+    pub active_profile: String,
+}
+
+/// A set of variations the random generators may use (JWildfire's variation profiles, by
+/// name): the listed ones, or all but the listed ones; optionally only favourites.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct VariationProfile {
+    pub name: String,
+    pub exclude: bool,
+    pub only_favourites: bool,
+    pub variations: BTreeSet<String>,
+}
+
+impl VariationProfile {
+    fn to_line(&self) -> String {
+        let names: Vec<&str> = self.variations.iter().map(String::as_str).collect();
+        format!("{}|{}|{}|{}", self.name.replace('|', "/"), self.exclude as u8, self.only_favourites as u8, names.join(","))
+    }
+
+    fn from_line(v: &str) -> Option<Self> {
+        let mut parts = v.splitn(4, '|');
+        Some(Self {
+            name: parts.next()?.to_string(),
+            exclude: parts.next()? == "1",
+            only_favourites: parts.next()? == "1",
+            variations: parts.next()?.split(',').filter(|s| !s.is_empty()).map(str::to_string).collect(),
+        })
+    }
 }
 
 impl Default for Prefs {
     fn default() -> Self {
-        Self { always_denoise: false, denoiser: Denoiser::Oidn, blend: Flame::default().post_denoiser_blend, quick_save_dir: String::new() }
+        Self {
+            always_denoise: false,
+            denoiser: Denoiser::Oidn,
+            blend: Flame::default().post_denoiser_blend,
+            quick_save_dir: String::new(),
+            favourites: BTreeSet::new(),
+            profiles: Vec::new(),
+            active_profile: String::new(),
+        }
     }
 }
 
@@ -73,6 +114,9 @@ impl Prefs {
                 "denoiser" => p.denoiser = Denoiser::parse(v).filter(|d| *d != Denoiser::None).unwrap_or(p.denoiser),
                 "denoiser_blend" => p.blend = v.parse::<f64>().map(|b| b.clamp(0.0, 1.0)).unwrap_or(p.blend),
                 "quick_save_dir" => p.quick_save_dir = v.to_string(),
+                "favourite_variations" => p.favourites = v.split(',').filter(|s| !s.is_empty()).map(str::to_string).collect(),
+                "variation_profile" => p.profiles.extend(VariationProfile::from_line(v)),
+                "active_profile" => p.active_profile = v.to_string(),
                 _ => {}
             }
         }
@@ -83,15 +127,40 @@ impl Prefs {
         let dir = config_dir().ok_or("no config folder (HOME or APPDATA not set)")?;
         std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
         let path = dir.join(FILE);
-        let text = format!(
+        let mut text = format!(
             "always_denoise = {}\ndenoiser = {}\ndenoiser_blend = {}\nquick_save_dir = {}\n",
             self.always_denoise,
             self.denoiser.as_str(),
             self.blend,
             self.quick_save_dir
         );
+        let favs: Vec<&str> = self.favourites.iter().map(String::as_str).collect();
+        text += &format!("favourite_variations = {}\n", favs.join(","));
+        for pr in &self.profiles {
+            text += &format!("variation_profile = {}\n", pr.to_line());
+        }
+        text += &format!("active_profile = {}\n", self.active_profile);
         std::fs::write(&path, text).map_err(|e| format!("{}: {e}", path.display()))?;
         Ok(path)
+    }
+
+    /// The variations the random generators may use with the active profile (`None`: all).
+    pub fn allowed_variations(&self) -> Option<HashSet<String>> {
+        let p = self.profiles.iter().find(|p| p.name == self.active_profile)?;
+        let mut set: HashSet<String> = if p.exclude {
+            rwf_core::variations::all().iter().map(|d| d.name.to_string()).filter(|n| !p.variations.contains(n)).collect()
+        } else {
+            p.variations.iter().cloned().collect()
+        };
+        if p.only_favourites {
+            set.retain(|n| self.favourites.contains(n));
+        }
+        Some(set)
+    }
+
+    /// Hands the active profile to the random generators.
+    pub fn apply_profile(&self) {
+        rwf_core::random::java::set_allowed_variations(self.allowed_variations());
     }
 
     /// The quick save folder.
@@ -131,6 +200,75 @@ impl Prefs {
     }
 }
 
+/// The active variation profile and the profile editor.
+fn profiles_ui(ui: &mut egui::Ui, prefs: &mut Prefs, search: &mut String) {
+    ui.horizontal(|ui| {
+        widgets::label(ui, "Variation profile");
+        profile_combo(ui, "prefs-profile", &prefs.profiles.iter().map(|p| p.name.clone()).collect::<Vec<_>>(), &mut prefs.active_profile);
+    });
+    if let Some(set) = prefs.allowed_variations() {
+        let msg = if set.is_empty() { "This profile allows no variation: the generators use all of them".to_string() } else { format!("{} variations allowed", set.len()) };
+        ui.label(RichText::new(msg).small().color(if set.is_empty() { theme::WARN } else { theme::TEXT_MUTED }));
+    }
+    let mut delete = None;
+    for (i, p) in prefs.profiles.iter_mut().enumerate() {
+        egui::CollapsingHeader::new(if p.name.is_empty() { "(unnamed)".to_string() } else { p.name.clone() }).id_salt(("profile", i)).show(ui, |ui| {
+            ui.horizontal(|ui| {
+                widgets::label(ui, "Name");
+                ui.text_edit_singleline(&mut p.name);
+            });
+            ui.horizontal(|ui| {
+                ui.selectable_value(&mut p.exclude, false, "Only these").on_hover_text("The generators use only the checked variations");
+                ui.selectable_value(&mut p.exclude, true, "All but these").on_hover_text("The generators use every variation except the checked ones");
+                ui.checkbox(&mut p.only_favourites, "Favourites only");
+            });
+            ui.add(egui::TextEdit::singleline(search).hint_text("Search variations…"));
+            let q = search.to_lowercase();
+            egui::ScrollArea::vertical().id_salt(("profile-list", i)).max_height(160.0).show(ui, |ui| {
+                for d in rwf_core::variations::all() {
+                    if !q.is_empty() && !d.name.contains(&q) {
+                        continue;
+                    }
+                    let mut on = p.variations.contains(d.name);
+                    if ui.checkbox(&mut on, d.name).changed() {
+                        if on {
+                            p.variations.insert(d.name.to_string());
+                        } else {
+                            p.variations.remove(d.name);
+                        }
+                    }
+                }
+            });
+            ui.label(RichText::new(format!("{} checked", p.variations.len())).small().color(theme::TEXT_MUTED));
+            if ui.small_button("Delete profile").clicked() {
+                delete = Some(i);
+            }
+        });
+    }
+    if let Some(i) = delete {
+        if prefs.profiles[i].name == prefs.active_profile {
+            prefs.active_profile.clear();
+        }
+        prefs.profiles.remove(i);
+    }
+    if ui.button("New profile").on_hover_text("A set of variations for the random flame generators").clicked() {
+        prefs.profiles.push(VariationProfile { name: format!("Profile {}", prefs.profiles.len() + 1), ..Default::default() });
+    }
+}
+
+/// Choice of the active variation profile ("All variations" = none).
+pub fn profile_combo(ui: &mut egui::Ui, id: &str, names: &[String], active: &mut String) {
+    let shown = if active.is_empty() { "All variations".to_string() } else { active.clone() };
+    egui::ComboBox::from_id_salt(id).selected_text(shown).show_ui(ui, |ui| {
+        ui.selectable_value(active, String::new(), "All variations");
+        for n in names {
+            ui.selectable_value(active, n.clone(), n);
+        }
+    })
+    .response
+    .on_hover_text("Variations the random flame generators choose from (profiles are edited in Edit › Preferences)");
+}
+
 /// Today's date (UTC) as `yyyy-mm-dd`.
 fn today() -> String {
     let days = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() / 86_400) as i64;
@@ -153,6 +291,7 @@ pub struct PrefsWindow {
     pub open: bool,
     /// Changed and not saved yet.
     unsaved: bool,
+    profile_search: String,
     status: Option<Result<PathBuf, String>>,
 }
 
@@ -184,6 +323,8 @@ impl PrefsWindow {
                     Err(e) => ui.label(RichText::new(format!("{e}; flames get the setting, but images stay un-denoised")).small().color(theme::WARN)),
                 };
             });
+            theme::section_label(ui, "Random flames");
+            profiles_ui(ui, prefs, &mut self.profile_search);
             theme::section_label(ui, "Quick save");
             ui.horizontal(|ui| {
                 let shown = prefs.quick_save_folder().map(|p| p.display().to_string()).unwrap_or_default();
@@ -216,6 +357,21 @@ impl PrefsWindow {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn profiles_round_trip_and_limit() {
+        let pr = VariationProfile { name: "Round".into(), exclude: false, only_favourites: true, variations: ["julia", "spherical", "bubble"].iter().map(|s| s.to_string()).collect() };
+        assert_eq!(VariationProfile::from_line(&pr.to_line()), Some(pr.clone()));
+        let mut p = Prefs { profiles: vec![pr], favourites: ["julia", "bubble", "linear"].iter().map(|s| s.to_string()).collect(), ..Prefs::default() };
+        assert_eq!(p.allowed_variations(), None, "no active profile");
+        p.active_profile = "Round".into();
+        let set = p.allowed_variations().unwrap();
+        assert_eq!(set.len(), 2, "favourites only: {set:?}");
+        p.profiles[0].exclude = true;
+        p.profiles[0].only_favourites = false;
+        let set = p.allowed_variations().unwrap();
+        assert!(!set.contains("julia") && set.contains("linear"));
+    }
 
     #[test]
     fn quick_save_numbers_files() {

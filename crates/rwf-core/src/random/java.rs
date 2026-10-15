@@ -212,9 +212,29 @@ fn random_variation_names() -> &'static [&'static str] {
     })
 }
 
+/// Variations the random generators may use (a variation profile); `None`: all.
+static ALLOWED: std::sync::RwLock<Option<std::sync::Arc<std::collections::HashSet<String>>>> = std::sync::RwLock::new(None);
+
+/// Limits the variations of the random generators to `allowed` (JWildfire's variation
+/// profiles); `None` lifts the limit. A limit that leaves no variation is ignored.
+pub fn set_allowed_variations(allowed: Option<std::collections::HashSet<String>>) {
+    *ALLOWED.write().unwrap() = allowed.map(std::sync::Arc::new);
+}
+
+/// `names` limited to the allowed variations (all of them when none is allowed).
+fn allowed(names: &'static [&'static str]) -> std::borrow::Cow<'static, [&'static str]> {
+    limit_names(names, ALLOWED.read().unwrap().as_deref())
+}
+
+fn limit_names<'a>(names: &'a [&'a str], set: Option<&std::collections::HashSet<String>>) -> std::borrow::Cow<'a, [&'a str]> {
+    let Some(set) = set else { return std::borrow::Cow::Borrowed(names) };
+    let some: Vec<&str> = names.iter().copied().filter(|n| set.contains(*n)).collect();
+    if some.is_empty() { std::borrow::Cow::Borrowed(names) } else { std::borrow::Cow::Owned(some) }
+}
+
 /// `VariationFuncList.getRandomVariationname()`.
 pub fn random_variation(rng: &mut Rng) -> &'static str {
-    pick(rng, random_variation_names())
+    pick(rng, &allowed(random_variation_names()))
 }
 
 /// `VariationFuncList.getRandomVariationname(VARTYPE_2D / VARTYPE_3D)`.
@@ -225,7 +245,7 @@ pub fn random_variation_of(rng: &mut Rng, three_d: bool) -> &'static str {
             |is_3d: bool| random_variation_names().iter().copied().filter(|n| variations::find(n).is_some_and(|d| d.is_3d == is_3d)).collect();
         [split(false), split(true)]
     });
-    pick(rng, &lists[three_d as usize])
+    pick(rng, &allowed(&lists[three_d as usize]))
 }
 
 /// `getRandomVariationName` of several generators: a random 2D (25 %) or 3D variation that
@@ -272,5 +292,21 @@ mod tests {
         assert!((a.c10 - 0.5 * s).abs() < 1e-12 && (a.c11 - 0.5 * c).abs() < 1e-12);
         assert!((a.c20 - (c * 0.5 - s * -0.25)).abs() < 1e-12 && (a.c21 - (s * 0.5 + c * -0.25)).abs() < 1e-12);
         assert!(!random_variation_names().is_empty() && !random_variation_names().contains(&"pre_blur"));
+    }
+}
+
+#[cfg(test)]
+mod allowed_tests {
+    use super::*;
+
+    #[test]
+    fn allowed_variations_limit_the_choice() {
+        let set: std::collections::HashSet<String> = ["julia", "spherical"].iter().map(|s| s.to_string()).collect();
+        let names = random_variation_names();
+        assert_eq!(limit_names(names, Some(&set)).len(), 2);
+        assert_eq!(limit_names(names, None).len(), names.len());
+        // a limit without any usable variation is ignored
+        let none: std::collections::HashSet<String> = ["no_such_variation".to_string()].into_iter().collect();
+        assert_eq!(limit_names(names, Some(&none)).len(), names.len());
     }
 }

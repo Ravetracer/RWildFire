@@ -116,6 +116,8 @@ impl RwfApp {
             prefs_window: Default::default(),
             paste_requested: None,
         };
+        app.transforms.favourites = app.prefs.favourites.clone();
+        app.prefs.apply_profile();
         if let Some(p) = initial {
             app.open_path(&p);
         }
@@ -404,8 +406,16 @@ impl eframe::App for RwfApp {
                 render_busy: self.batch.is_running() || self.quilt.is_running() || self.movie.is_running() || self.mesh.is_running() || self.dance.is_running(),
                 randomizing: self.randomizing.is_some(),
             };
-            if let Some(a) = topbar::show(ui, &info, &mut self.generator, &mut self.explorer.extras) {
+            let names: Vec<String> = self.prefs.profiles.iter().map(|p| p.name.clone()).collect();
+            let before = self.prefs.active_profile.clone();
+            if let Some(a) = topbar::show(ui, &info, &mut self.generator, &mut self.explorer.extras, &names, &mut self.prefs.active_profile) {
                 action = Some(a);
+            }
+            if self.prefs.active_profile != before {
+                self.prefs.apply_profile();
+                if let Err(e) = self.prefs.save() {
+                    self.toast = Some((format!("Could not save preferences: {e}"), Instant::now()));
+                }
             }
         });
 
@@ -516,6 +526,15 @@ impl eframe::App for RwfApp {
 
         if self.prefs_window.show(&ctx, &mut self.prefs) {
             self.prefs.apply(&mut self.doc.flame);
+            self.prefs.apply_profile();
+            self.transforms.favourites = self.prefs.favourites.clone();
+        }
+        if std::mem::take(&mut self.transforms.favourites_changed) {
+            self.prefs.favourites = self.transforms.favourites.clone();
+            self.prefs.apply_profile();
+            if let Err(e) = self.prefs.save() {
+                self.notify(format!("Could not save preferences: {e}"));
+            }
         }
 
         if let Some(a) = action {
