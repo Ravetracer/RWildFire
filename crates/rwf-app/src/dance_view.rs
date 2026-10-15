@@ -86,6 +86,8 @@ pub struct DanceView {
     selected_motion: Option<usize>,
     link_flame: usize,
     link_filter: String,
+    /// The key of the spline curve being dragged.
+    spline_drag: Option<usize>,
     random: Option<Receiver<Flame>>,
     // export
     output: Option<PathBuf>,
@@ -120,6 +122,7 @@ impl Default for DanceView {
             selected_motion: None,
             link_flame: 0,
             link_filter: String::new(),
+            spline_drag: None,
             random: None,
             output: None,
             format: VideoFormat::Mp4,
@@ -305,7 +308,7 @@ impl DanceView {
             let elapsed = self.worker.take().map(|w| w.started.elapsed()).unwrap_or_default();
             self.status = Some(match r {
                 Ok(p) => format!("Saved {} ({:.0} s)", p.display(), elapsed.as_secs_f64()),
-                Err(e) => format!("Video not finished: {e}"),
+                Err(e) => format!("Export not finished: {e}"),
             });
         }
         if self.loading.is_some() || self.random.is_some() || self.worker.is_some() {
@@ -379,6 +382,7 @@ impl DanceView {
             .show(ui, |ui| {
                 egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                     self.motions_panel(ui);
+                    self.balancing_panel(ui);
                     self.export_panel(ui, &gpu);
                 });
             });
@@ -599,10 +603,25 @@ impl DanceView {
                     widgets::drag(ui, "To", max, 0.05);
                     widgets::drag(ui, "Per minute", rpm, 0.1);
                 }
+                MotionKind::Spline { amplitude, offset } => {
+                    widgets::drag(ui, "Amplitude", amplitude, 0.05);
+                    widgets::drag(ui, "Offset", offset, 0.01);
+                    widgets::label(ui, "Curve");
+                    egui::ComboBox::from_id_salt("dance-spline-interp").selected_text(m.curve.interp.as_str()).show_ui(ui, |ui| {
+                        for i in rwf_core::animation::Interp::ALL {
+                            ui.selectable_value(&mut m.curve.interp, i, i.as_str()).on_hover_text(i.help());
+                        }
+                    });
+                    ui.end_row();
+                }
             }
             widgets::drag(ui, "Start (s)", &mut m.start, 0.1);
             widgets::drag(ui, "End (s)", &mut m.end, 0.1).on_hover_text("0 = until the end");
         });
+        if matches!(m.kind, MotionKind::Spline { .. }) {
+            let duration = spectrum.as_ref().map_or(0.0, |s| s.duration());
+            spline_editor(ui, &mut m.curve, &mut self.spline_drag, duration, now);
+        }
         ui.label(
             RichText::new("The value is added to every linked property; rotations are in degrees, zoom adds to 1.").small().color(theme::TEXT_MUTED),
         );
@@ -740,10 +759,77 @@ impl DanceView {
         {
             self.start_export(if self.on_gpu { gpu.clone() } else { None });
         }
+        if self.worker.is_none()
+            && ui
+                .add_enabled(!self.project.performance.is_empty(), egui::Button::new("Save as flames…").min_size(vec2(ui.available_width(), 24.0)))
+                .on_hover_text("One flame file per frame of the recorded show (name00001.flame, …), e.g. to render them elsewhere")
+                .clicked()
+        {
+            self.start_flame_export();
+        }
         if let Some(s) = &self.status {
             ui.add_space(4.0);
             ui.label(RichText::new(s).small().color(theme::TEXT_MUTED));
         }
+    }
+
+    fn balancing_panel(&mut self, ui: &mut Ui) {
+        theme::section_label(ui, "Color balancing");
+        let mut remove = None;
+        for (i, b) in self.project.balancing.iter_mut().enumerate() {
+            egui::Frame::new().fill(theme::SURFACE).corner_radius(6).inner_margin(6).show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(format!("Balancing {}", i + 1)).color(theme::TEXT));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if widgets::icon_button(ui, icons::X, "Remove").clicked() {
+                            remove = Some(i);
+                        }
+                    });
+                });
+                grid(ui, &format!("dance-balance-{i}"), |ui| {
+                    for (label, v) in [("Red", &mut b.red), ("Green", &mut b.green), ("Blue", &mut b.blue)] {
+                        widgets::label(ui, label);
+                        ui.add(egui::Slider::new(v, -255..=255));
+                        ui.end_row();
+                    }
+                    widgets::drag(ui, "Start (s)", &mut b.start, 0.1);
+                    widgets::drag(ui, "End (s)", &mut b.end, 0.1).on_hover_text("0 = until the end");
+                });
+            });
+            ui.add_space(2.0);
+        }
+        if let Some(i) = remove {
+            self.project.balancing.remove(i);
+        }
+        if ui
+            .button(format!("{} Balancing", icons::PLUS))
+            .on_hover_text("Shifts the red, green and blue of the gradients of all flames while active (JWildfire's balancing preprocessor)")
+            .clicked()
+        {
+            self.project.balancing.push(Default::default());
+        }
+    }
+
+    /// Writes the recorded show as one flame file per frame (JWildfire's "save recorded flames").
+    fn start_flame_export(&mut self) {
+        let Some(path) = crate::settings::dialog(crate::settings::Folder::Flames).add_filter("Flame", &["flame"]).set_file_name("dance.flame").save_file() else { return };
+        self.pause();
+        let project = self.project.clone();
+        let spectrum = self.music.as_ref().map(|m| m.spectrum.clone());
+        let cancel = Arc::new(AtomicBool::new(false));
+        let (tx, rx) = channel();
+        let c2 = cancel.clone();
+        self.progress = Some((0, project.performance_frames()));
+        self.status = None;
+        std::thread::spawn(move || {
+            let tx2 = tx.clone();
+            let r = project.write_performance_flames(spectrum.as_deref(), &path, &c2, |index, total| {
+                let _ = tx2.send(Msg::Frame { index, total });
+            });
+            let stem = path.with_extension("").display().to_string();
+            let _ = tx.send(Msg::Done(r.map(|n| PathBuf::from(format!("{stem}00001.flame … {stem}{n:05}.flame")))));
+        });
+        self.worker = Some(Worker { cancel, msgs: rx, started: Instant::now() });
     }
 
     fn start_export(&mut self, gpu: Option<GpuContext>) {
@@ -951,4 +1037,64 @@ fn fit(avail: Rect, aspect: f32) -> Rect {
 /// Label of a link target (falls back to the raw path).
 fn targets_label(flame: &Flame, target: &str) -> String {
     targets(flame).into_iter().find(|(t, _)| t == target).map_or_else(|| target.to_string(), |(_, l)| l)
+}
+
+/// Editor of a spline motion's curve: x is the time into the music, drag keys to move them,
+/// double-click adds one, right-click removes one.
+fn spline_editor(ui: &mut Ui, curve: &mut rwf_core::animation::Track, drag: &mut Option<usize>, duration: f64, now: f64) {
+    use rwf_core::animation::Key;
+    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 110.0), Sense::click_and_drag());
+    let p = ui.painter_at(rect.expand(4.0));
+    p.rect_filled(rect, 4, theme::CANVAS);
+    let t_max = curve.keys.last().map_or(0.0, |k| k.frame + 1.0).max(duration).max(10.0);
+    let (lo, hi) = curve.keys.iter().fold((-1.0f64, 1.0f64), |(lo, hi), k| (lo.min(k.value), hi.max(k.value)));
+    let pad = (hi - lo) * 0.1;
+    let (lo, hi) = (lo - pad, hi + pad);
+    let to_screen = |t: f64, v: f64| pos2(rect.left() + rect.width() * (t / t_max) as f32, rect.bottom() - rect.height() * ((v - lo) / (hi - lo)) as f32);
+    let to_value = |q: egui::Pos2| (((q.x - rect.left()) / rect.width()) as f64 * t_max, lo + ((rect.bottom() - q.y) / rect.height()) as f64 * (hi - lo));
+    // zero line, playhead, curve, keys
+    let zero = to_screen(0.0, 0.0).y;
+    p.line_segment([pos2(rect.left(), zero), pos2(rect.right(), zero)], egui::Stroke::new(1.0, theme::BORDER));
+    if now > 0.0 {
+        let x = to_screen(now, 0.0).x;
+        p.line_segment([pos2(x, rect.top()), pos2(x, rect.bottom())], egui::Stroke::new(1.0, theme::TEXT_MUTED));
+    }
+    let line: Vec<egui::Pos2> = (0..=200).map(|i| t_max * i as f64 / 200.0).map(|t| to_screen(t, curve.eval(t).unwrap_or(0.0))).collect();
+    p.add(egui::Shape::line(line, egui::Stroke::new(1.5, theme::ACCENT)));
+    for k in &curve.keys {
+        p.circle_filled(to_screen(k.frame, k.value), 4.0, theme::ACCENT);
+    }
+    p.text(rect.right_top() + vec2(-4.0, 2.0), egui::Align2::RIGHT_TOP, format!("{t_max:.0} s"), egui::FontId::proportional(10.0), theme::TEXT_MUTED);
+    let nearest = |q: egui::Pos2, keys: &[Key]| keys.iter().position(|k| to_screen(k.frame, k.value).distance(q) < 9.0);
+    if resp.drag_started()
+        && let Some(q) = resp.interact_pointer_pos()
+    {
+        *drag = nearest(q, &curve.keys);
+    }
+    if resp.dragged()
+        && let (Some(i), Some(q)) = (*drag, resp.interact_pointer_pos())
+        && i < curve.keys.len()
+    {
+        let (t, v) = to_value(q);
+        let lo_t = if i > 0 { curve.keys[i - 1].frame + 0.01 } else { 0.0 };
+        let hi_t = curve.keys.get(i + 1).map_or(f64::MAX, |k| k.frame - 0.01);
+        curve.keys[i] = Key { frame: t.clamp(lo_t, hi_t.max(lo_t)), value: v };
+    }
+    if resp.drag_stopped() {
+        *drag = None;
+    }
+    if resp.double_clicked()
+        && let Some(q) = resp.interact_pointer_pos()
+    {
+        let (t, v) = to_value(q);
+        curve.set_key(t.max(0.0), v);
+    }
+    if resp.secondary_clicked()
+        && let Some(q) = resp.interact_pointer_pos()
+        && let Some(i) = nearest(q, &curve.keys)
+        && curve.keys.len() > 1
+    {
+        curve.keys.remove(i);
+    }
+    resp.on_hover_text("Time into the music → value. Drag keys, double-click adds one, right-click removes one.");
 }

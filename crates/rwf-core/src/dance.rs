@@ -28,7 +28,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::animation::{get_prop, set_prop, xform_at_mut};
+use crate::animation::{Interp, Key, Track, get_prop, set_prop, xform_at_mut};
 use crate::audio::{Audio, fft, hann};
 use crate::io::xml::{self, Element};
 use crate::model::{Flame, XFormKind};
@@ -148,16 +148,19 @@ pub enum MotionKind {
     Sine { min: f64, max: f64, rpm: f64 },
     /// Runs from `min` to `max`, `rpm` times per minute.
     SawTooth { min: f64, max: f64, rpm: f64 },
+    /// `offset + amplitude * curve(t)` of the motion's curve (JWildfire's spline motion).
+    Spline { amplitude: f64, offset: f64 },
 }
 
 impl MotionKind {
-    pub const NAMES: [&str; 3] = ["Music (FFT band)", "Sine", "Saw tooth"];
+    pub const NAMES: [&str; 4] = ["Music (FFT band)", "Sine", "Saw tooth", "Spline"];
 
     pub fn index(&self) -> usize {
         match self {
             MotionKind::Fft { .. } => 0,
             MotionKind::Sine { .. } => 1,
             MotionKind::SawTooth { .. } => 2,
+            MotionKind::Spline { .. } => 3,
         }
     }
 
@@ -165,6 +168,7 @@ impl MotionKind {
         match index {
             1 => MotionKind::Sine { min: -1.0, max: 1.0, rpm: 10.0 },
             2 => MotionKind::SawTooth { min: 0.0, max: 1.0, rpm: 10.0 },
+            3 => MotionKind::Spline { amplitude: 1.0, offset: 0.0 },
             _ => MotionKind::Fft { band: 1, amplitude: 1.0, offset: 0.0, release: 0.15 },
         }
     }
@@ -179,6 +183,8 @@ pub struct Motion {
     pub start: f64,
     pub end: f64,
     pub links: Vec<Link>,
+    /// The curve of a spline motion: keys at seconds into the music (`frame` = seconds).
+    pub curve: Track,
 }
 
 /// A property of a pool flame moved by a motion: an animation property path (see
@@ -204,7 +210,7 @@ pub const XFORM_OPS: [(&str, &str); 8] = [
 
 impl Motion {
     pub fn new(name: impl Into<String>, kind: MotionKind) -> Self {
-        Motion { name: name.into(), kind, start: 0.0, end: 0.0, links: Vec::new() }
+        Motion { name: name.into(), kind, start: 0.0, end: 0.0, links: Vec::new(), curve: default_curve() }
     }
 
     fn active(&self, t: f64) -> bool {
@@ -238,6 +244,38 @@ impl Motion {
                 let x = rpm * t / 60.0;
                 min + (max - min) * x.rem_euclid(1.0)
             }
+            MotionKind::Spline { amplitude, offset } => offset + amplitude * self.curve.eval(t).unwrap_or(0.0),
+        }
+    }
+}
+
+/// The curve a new spline motion starts with: up and down again over ten seconds.
+pub fn default_curve() -> Track {
+    let keys = [(0.0, 0.0), (5.0, 1.0), (10.0, 0.0)].map(|(frame, value)| Key { frame, value }).to_vec();
+    Track { path: String::new(), interp: Interp::Smooth, keys }
+}
+
+/// Shifts the gradient colors of every flame while active (JWildfire's balancing
+/// preprocessor: the palette's red, green and blue modifiers, -255..255).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Balancing {
+    pub red: i32,
+    pub green: i32,
+    pub blue: i32,
+    /// Active from/until this many seconds into the music (`end` 0 = to the end).
+    pub start: f64,
+    pub end: f64,
+}
+
+impl Balancing {
+    fn active(&self, t: f64) -> bool {
+        t >= self.start && (self.end <= 0.0 || t <= self.end)
+    }
+
+    fn apply(&self, flame: &mut Flame) {
+        let mods = crate::gradient_ops::GradientMods { red: self.red, green: self.green, blue: self.blue, ..Default::default() };
+        for layer in &mut flame.layers {
+            layer.gradient = layer.gradient.with_mods(&mods);
         }
     }
 }
@@ -337,6 +375,8 @@ pub struct DanceProject {
     /// Sample density of exported frames.
     pub quality: f64,
     pub performance: Performance,
+    /// Color balancing of all flames (applied in order while active).
+    pub balancing: Vec<Balancing>,
 }
 
 impl Default for DanceProject {
@@ -351,6 +391,7 @@ impl Default for DanceProject {
             height: 720,
             quality: 200.0,
             performance: Performance::default(),
+            balancing: Vec::new(),
         }
     }
 }
@@ -369,6 +410,9 @@ impl DanceProject {
                 let v = *value.get_or_insert_with(|| m.value(spectrum, t));
                 apply_target(&mut f, &l.target, v);
             }
+        }
+        for b in self.balancing.iter().filter(|b| b.active(t)) {
+            b.apply(&mut f);
         }
         Some(f)
     }
@@ -393,6 +437,39 @@ impl DanceProject {
         let t = self.performance.start + frame as f64 / self.fps.max(1.0);
         let state = self.performance.state_at(t, self.morph_seconds())?;
         self.flame_at(state, spectrum, t)
+    }
+
+    /// Writes every frame of the recorded performance as a flame file next to `path`:
+    /// `<name>00001.flame`, `<name>00002.flame`, … (JWildfire's "save recorded flames"), at the
+    /// project size with the framing kept. Stops early (with an error) when `cancel` is set;
+    /// `on_frame(index, total)` after each file. Returns the number of files.
+    pub fn write_performance_flames(
+        &self,
+        spectrum: Option<&Spectrum>,
+        path: &Path,
+        cancel: &std::sync::atomic::AtomicBool,
+        mut on_frame: impl FnMut(u32, u32),
+    ) -> Result<u32, String> {
+        let total = self.performance_frames();
+        if total == 0 {
+            return Err("nothing recorded".into());
+        }
+        let dir = path.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."));
+        let stem = path.file_name().map(|n| n.to_string_lossy().trim_end_matches(".flame").to_string()).unwrap_or_else(|| "dance".into());
+        for i in 0..total {
+            if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                return Err("cancelled".into());
+            }
+            let Some(mut f) = self.performance_flame(spectrum, i) else { continue };
+            // the project size, the same part of the flame in view
+            // as the renderer scales a flame drawn at another size (`View::new`)
+            f.pixels_per_unit *= (self.width as f64 / f.width.max(1) as f64 + self.height as f64 / f.height.max(1) as f64) * 0.5;
+            (f.width, f.height) = (self.width, self.height);
+            let file = dir.join(format!("{stem}{:05}.flame", i + 1));
+            crate::io::write_flame_to_file(&f, &file).map_err(|e| format!("{}: {e}", file.display()))?;
+            on_frame(i, total);
+        }
+        Ok(total)
     }
 
     /// Number of frames of the recorded performance.
@@ -512,10 +589,24 @@ pub fn write_project(p: &DanceProject) -> String {
                 attr(&mut s, "max", fmt(max));
                 attr(&mut s, "rpm", fmt(rpm));
             }
+            MotionKind::Spline { amplitude, offset } => {
+                attr(&mut s, "type", "spline".into());
+                attr(&mut s, "amplitude", fmt(amplitude));
+                attr(&mut s, "offset", fmt(offset));
+                attr(&mut s, "interp", m.curve.interp.as_str().into());
+            }
         }
         attr(&mut s, "start", fmt(m.start));
         attr(&mut s, "end", fmt(m.end));
         s.push_str(">\n");
+        if matches!(m.kind, MotionKind::Spline { .. }) {
+            for k in &m.curve.keys {
+                s.push_str("    <key");
+                attr(&mut s, "time", fmt(k.frame));
+                attr(&mut s, "value", fmt(k.value));
+                s.push_str("/>\n");
+            }
+        }
         for l in &m.links {
             s.push_str("    <link");
             attr(&mut s, "flame", l.flame.to_string());
@@ -523,6 +614,15 @@ pub fn write_project(p: &DanceProject) -> String {
             s.push_str("/>\n");
         }
         s.push_str("  </motion>\n");
+    }
+    for b in &p.balancing {
+        s.push_str("  <balancing");
+        attr(&mut s, "red", b.red.to_string());
+        attr(&mut s, "green", b.green.to_string());
+        attr(&mut s, "blue", b.blue.to_string());
+        attr(&mut s, "start", fmt(b.start));
+        attr(&mut s, "end", fmt(b.end));
+        s.push_str("/>\n");
     }
     let perf = &p.performance;
     if !perf.cues.is_empty() {
@@ -567,6 +667,7 @@ pub fn read_project(src: &str) -> Result<DanceProject, DanceIoError> {
         let kind = match m.attr("type").unwrap_or("fft") {
             "sine" => MotionKind::Sine { min: n("min", -1.0), max: n("max", 1.0), rpm: n("rpm", 10.0) },
             "sawtooth" => MotionKind::SawTooth { min: n("min", 0.0), max: n("max", 1.0), rpm: n("rpm", 10.0) },
+            "spline" => MotionKind::Spline { amplitude: n("amplitude", 1.0), offset: n("offset", 0.0) },
             _ => MotionKind::Fft {
                 band: (n("band", 0.0).max(0.0) as usize).min(BANDS - 1),
                 amplitude: n("amplitude", 1.0),
@@ -579,7 +680,23 @@ pub fn read_project(src: &str) -> Result<DanceProject, DanceIoError> {
             .filter_map(|l| Some(Link { flame: num(l, "flame")? as usize, target: l.attr("target")?.to_string() }))
             .filter(|l| l.flame < p.flames.len())
             .collect();
-        p.motions.push(Motion { name: m.attr("name").unwrap_or_default().to_string(), kind, start: n("start", 0.0), end: n("end", 0.0), links });
+        let mut curve = default_curve();
+        if matches!(kind, MotionKind::Spline { .. }) {
+            curve.interp = Interp::parse(m.attr("interp").unwrap_or("smooth"));
+            curve.keys = m.children_named("key").filter_map(|k| Some(Key { frame: num(k, "time")?, value: num(k, "value")? })).collect();
+            curve.keys.sort_by(|a, b| a.frame.total_cmp(&b.frame));
+        }
+        p.motions.push(Motion { name: m.attr("name").unwrap_or_default().to_string(), kind, start: n("start", 0.0), end: n("end", 0.0), links, curve });
+    }
+    for b in el.children_named("balancing") {
+        let n = |k: &str| num(b, k).unwrap_or(0.0);
+        p.balancing.push(Balancing {
+            red: (n("red") as i32).clamp(-255, 255),
+            green: (n("green") as i32).clamp(-255, 255),
+            blue: (n("blue") as i32).clamp(-255, 255),
+            start: n("start"),
+            end: n("end"),
+        });
     }
     if let Some(perf) = el.children_named("performance").next() {
         p.performance = Performance {
@@ -682,12 +799,18 @@ mod tests {
         p.create_default_motions();
         assert!(p.motions.iter().any(|m| m.links.iter().any(|l| l.flame == 1)));
         p.motions.push(Motion::new("spin", MotionKind::SawTooth { min: 0.0, max: 360.0, rpm: 4.0 }));
+        let mut spline = Motion::new("wave", MotionKind::Spline { amplitude: 2.0, offset: 0.5 });
+        spline.curve.interp = Interp::Linear;
+        spline.curve.keys = vec![Key { frame: 1.0, value: -1.0 }, Key { frame: 4.0, value: 3.0 }];
+        p.motions.push(spline);
+        p.balancing.push(Balancing { red: 40, green: -20, blue: 0, start: 1.0, end: 0.0 });
         p.sound = Some(PathBuf::from("/music/song.mp3"));
         p.performance = Performance { cues: vec![Cue { time: 0.5, flame: 0 }, Cue { time: 3.0, flame: 1 }], start: 0.5, end: 6.0 };
         let q = read_project(&write_project(&p)).unwrap();
         assert_eq!(q.flames.len(), 2);
         assert_eq!(q.motions, p.motions);
         assert_eq!(q.performance, p.performance);
+        assert_eq!(q.balancing, p.balancing);
         assert_eq!(q.sound, p.sound);
         assert_eq!(q.performance_frames(), (5.5 * 30.0) as u32);
         assert!(q.performance_flame(None, 100).is_some());
@@ -695,5 +818,41 @@ mod tests {
         p.remove_flame(0);
         assert!(p.motions.iter().all(|m| m.links.iter().all(|l| l.flame == 0)));
         assert_eq!(p.performance.cues, vec![Cue { time: 3.0, flame: 0 }]);
+    }
+
+    #[test]
+    fn spline_motion_follows_its_curve() {
+        let mut m = Motion::new("w", MotionKind::Spline { amplitude: 2.0, offset: 1.0 });
+        m.curve.interp = Interp::Linear;
+        m.curve.keys = vec![Key { frame: 0.0, value: 0.0 }, Key { frame: 10.0, value: 1.0 }];
+        assert!((m.value(None, 5.0) - 2.0).abs() < 1e-9, "1 + 2 * 0.5");
+        assert!((m.value(None, 20.0) - 3.0).abs() < 1e-9, "holds the last key");
+    }
+
+    #[test]
+    fn balancing_shifts_the_gradient_while_active() {
+        let mut rng = Rng::new(9);
+        let mut p = DanceProject { flames: vec![generate(Generator::Classic, &mut rng)], ..Default::default() };
+        p.balancing.push(Balancing { red: 255, green: 0, blue: 0, start: 2.0, end: 4.0 });
+        let red = |f: &Flame| f.layers[0].gradient.colors.iter().map(|c| c[0] as u32).sum::<u32>();
+        let before = red(&p.moved_flame(0, None, 1.0).unwrap());
+        let during = red(&p.moved_flame(0, None, 3.0).unwrap());
+        let after = red(&p.moved_flame(0, None, 5.0).unwrap());
+        assert!(during > before && before == after, "{before} {during} {after}");
+    }
+
+    #[test]
+    fn show_is_written_as_flame_files() {
+        let mut rng = Rng::new(11);
+        let mut p = DanceProject { flames: vec![generate(Generator::Classic, &mut rng)], fps: 10.0, width: 320, height: 180, ..Default::default() };
+        p.performance = Performance { cues: vec![Cue { time: 0.0, flame: 0 }], start: 0.0, end: 0.5 };
+        let dir = std::env::temp_dir().join(format!("rwf-dance-flames-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let n = p.write_performance_flames(None, &dir.join("show.flame"), &std::sync::atomic::AtomicBool::new(false), |_, _| {}).unwrap();
+        assert_eq!(n, 5);
+        let f = &crate::io::read_flames_from_file(dir.join("show00005.flame")).unwrap()[0];
+        assert_eq!((f.width, f.height), (320, 180));
+        assert!(!dir.join("show00006.flame").exists());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

@@ -40,7 +40,7 @@ struct Args {
 
 fn usage() -> ! {
     eprintln!(
-        "usage: rwf-cli render <file.flame> [-o out.png|.jpg|.hdr|.exr] [-w width] [-h height] [-q quality] [-i flame-index] [--gpu] [-t threads] [--zbuffer] [--jpeg-quality 1-100]\n       rwf-cli batch [options] <files or folders...>   (rwf-cli batch for the options)\n       rwf-cli quilt <file.flame> -o out.png -w width [-h height] [-q quality] [--tiles COLSxROWS]\n       rwf-cli mesh <file.flame | --from-slices DIR> [-o out.obj|.ply|.sc] [--points out.ply|.obj] [--slices DIR] [--resolution N] [--quality Q] [--threshold T] [--dilate 3|5] [--blur B] [--smooth N]\n       rwf-cli movie <file.jwfmovie> -o out.mp4|.mov|.webm|out-dir [--cpu]\n       rwf-cli dance <file.rwfdance> -o out.mp4|.mov|.webm|out-dir [--cpu]\n       rwf-cli random <out-dir> [count] [generator filter] [--symmetry NAME] [--weighting NAME]"
+        "usage: rwf-cli render <file.flame> [-o out.png|.jpg|.hdr|.exr] [-w width] [-h height] [-q quality] [-i flame-index] [--gpu] [-t threads] [--zbuffer] [--jpeg-quality 1-100]\n       rwf-cli batch [options] <files or folders...>   (rwf-cli batch for the options)\n       rwf-cli quilt <file.flame> -o out.png -w width [-h height] [-q quality] [--tiles COLSxROWS]\n       rwf-cli mesh <file.flame | --from-slices DIR> [-o out.obj|.ply|.sc] [--points out.ply|.obj] [--slices DIR] [--resolution N] [--quality Q] [--threshold T] [--dilate 3|5] [--blur B] [--smooth N]\n       rwf-cli movie <file.jwfmovie> -o out.mp4|.mov|.webm|out-dir [--cpu]\n       rwf-cli dance <file.rwfdance> -o out.mp4|.mov|.webm|out-dir|name.flame [--cpu]\n       rwf-cli random <out-dir> [count] [generator filter] [--symmetry NAME] [--weighting NAME]"
     );
     std::process::exit(2);
 }
@@ -422,7 +422,7 @@ fn dance_cmd() {
         i += 1;
     }
     let (Some(input), Some(output)) = (input, output) else {
-        eprintln!("usage: rwf-cli dance <file.rwfdance> -o out.mp4|.mov|.webm|out-dir [--cpu]");
+        eprintln!("usage: rwf-cli dance <file.rwfdance> -o out.mp4|.mov|.webm|out-dir|name.flame [--cpu]  (name.flame: one flame file per frame)");
         std::process::exit(2);
     };
     let project = rwf_core::dance::read_project_file(&input).unwrap_or_else(|e| {
@@ -436,6 +436,17 @@ fn dance_cmd() {
             None
         }
     });
+    if output.extension().is_some_and(|e| e.eq_ignore_ascii_case("flame")) {
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        match project.write_performance_flames(spectrum.as_ref(), &output, &cancel, |i, total| eprint!("\rflame {}/{total}", i + 1)) {
+            Ok(n) => eprintln!("\n{n} flame files next to {}", output.display()),
+            Err(e) => {
+                eprintln!("\ndance failed: {e}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
     let format = rwf_core::video::VideoFormat::from_path(&output);
     let gpu = if cpu { None } else { rwf_gpu::GpuContext::new_headless().map_err(|e| eprintln!("no GPU ({e}), rendering on the CPU")).ok() };
     let started = std::time::Instant::now();
