@@ -161,6 +161,7 @@ impl RwfApp {
                 let n = flames.len();
                 self.doc.load(self.prefs.adopt(flames[0].clone()), Some(path.to_path_buf()));
                 self.doc.library = flames;
+                self.doc.library_path = Some(path.to_path_buf());
                 if n > 1 {
                     self.notify(format!("{n} flames in file — browse them in Explore › File"));
                     self.explorer.mode = crate::explorer::Mode::File;
@@ -179,12 +180,28 @@ impl RwfApp {
         }
     }
 
+    /// Saves the editor's flame; a file with several flames keeps the others (see
+    /// [`crate::doc::Document::flames_for_save`]).
     fn save_to(&mut self, path: PathBuf) {
-        match rwf_core::io::write_flame_to_file(&self.doc.flame, &path) {
+        let existing = if path.exists() { rwf_core::io::read_flames_from_file(&path).unwrap_or_default() } else { Vec::new() };
+        let (flames, index) = self.doc.flames_for_save(&path, existing);
+        let result = if flames.len() == 1 {
+            rwf_core::io::write_flame_to_file(&flames[0], &path).map_err(|e| e.to_string())
+        } else {
+            std::fs::write(&path, rwf_core::io::write_flames(&flames)).map_err(|e| e.to_string())
+        };
+        match result {
             Ok(()) => {
                 self.doc.path = Some(path.clone());
                 self.doc.dirty = false;
-                self.notify(format!("Saved {}", path.display()));
+                let n = flames.len();
+                if self.doc.library_path.as_deref() == Some(path.as_path()) {
+                    self.doc.library = flames;
+                    if self.explorer.mode == crate::explorer::Mode::File {
+                        self.explorer.refresh(&self.doc.flame, &self.doc.library);
+                    }
+                }
+                self.notify(if n > 1 { format!("Saved {} (flame {} of {n})", path.display(), index + 1) } else { format!("Saved {}", path.display()) });
             }
             Err(e) => self.notify(format!("Save failed: {e}")),
         }
@@ -200,6 +217,7 @@ impl RwfApp {
                 self.doc.path = None;
                 if n > 1 {
                     self.doc.library = flames;
+                    self.doc.library_path = None;
                     self.explorer.mode = crate::explorer::Mode::File;
                     self.explorer_open = true;
                     self.explorer.refresh(&self.doc.flame, &self.doc.library);
@@ -565,8 +583,12 @@ impl eframe::App for RwfApp {
         // ---- explorer strip ----
         if self.explorer_open && !self.workspace_open() {
             egui::Panel::bottom("explorer").resizable(false).frame(egui::Frame::new().fill(theme::PANEL).inner_margin(egui::Margin::symmetric(12, 8))).show(ui, |ui| {
-                if let Some(f) = self.explorer.show(ui, &self.doc.flame, &self.doc.library) {
+                if let Some((f, file_index)) = self.explorer.show(ui, &self.doc.flame, &self.doc.library) {
                     self.doc.replace(self.prefs.adopt(f));
+                    // A flame of the opened file: Save writes it back into its place.
+                    if let (Some(i), Some(p)) = (file_index, self.doc.library_path.clone()) {
+                        self.doc.source = Some((p, i));
+                    }
                 }
                 if std::mem::take(&mut self.explorer.open_mutagen) {
                     self.mutagen.open_with(&self.doc.flame);
@@ -612,6 +634,7 @@ impl eframe::App for RwfApp {
             if !out.flames.is_empty() {
                 let n = out.flames.len();
                 self.doc.library = out.flames;
+                self.doc.library_path = None;
                 self.explorer.mode = crate::explorer::Mode::File;
                 self.explorer_open = true;
                 self.explorer.refresh(&self.doc.flame, &self.doc.library);

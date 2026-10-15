@@ -131,13 +131,30 @@ pub fn apply_post_denoiser(flame: &Flame, rgba: &mut [u8], width: u32, height: u
 /// [`apply_post_denoiser`] with helper images (see [`DenoiseAux`]); they are used by the OIDN
 /// library, not by the `oidnDenoise` tool.
 pub fn apply_post_denoiser_with(flame: &Flame, rgba: &mut [u8], width: u32, height: u32, gpu_render: bool, aux: Option<&DenoiseAux>) -> Result<DenoiseOutcome, String> {
+    apply_post_denoiser_from(flame, rgba, None, width, height, gpu_render, aux)
+}
+
+/// [`apply_post_denoiser_with`] that denoises `source` (the same image without spatial filter,
+/// as RGBA8 of the same size) instead of `rgba`, and writes the result into `rgba`; Blend
+/// mixes the original `rgba` back in. The denoiser removes independent pixel noise well, but
+/// keeps the grain that a spatial filter has spread into small blobs.
+pub fn apply_post_denoiser_from(
+    flame: &Flame,
+    rgba: &mut [u8],
+    source: Option<&[u8]>,
+    width: u32,
+    height: u32,
+    gpu_render: bool,
+    aux: Option<&DenoiseAux>,
+) -> Result<DenoiseOutcome, String> {
+    let source = source.filter(|s| s.len() == rgba.len());
     if let Some(why) = skip_reason(flame, gpu_render) {
         return Ok(DenoiseOutcome::Skipped(why.into()));
     }
     let prefer = if flame.ai_post_denoiser == Denoiser::Optix { DeviceType::Cuda } else { DeviceType::Default };
     let library = oidn::library();
     if library.is_ok() {
-        let used = denoise_with_library(rgba, width, height, flame.post_denoiser_blend, prefer, aux)?;
+        let used = denoise_with_library_from(rgba, source, width, height, flame.post_denoiser_blend, prefer, aux)?;
         let mut how = format!("OIDN on {}", used.label());
         match aux {
             Some(DenoiseAux { normal: Some(_), .. }) => how.push_str(", with albedo and normals"),
@@ -153,7 +170,7 @@ pub fn apply_post_denoiser_with(flame: &Flame, rgba: &mut [u8], width: u32, heig
         let why = library.err().unwrap_or_default();
         return Ok(DenoiseOutcome::Skipped(format!("Open Image Denoise not found ({why})")));
     };
-    denoise(&tool, rgba, width, height, flame.post_denoiser_blend)?;
+    denoise_from(&tool, rgba, source, width, height, flame.post_denoiser_blend)?;
     Ok(DenoiseOutcome::Denoised("the oidnDenoise tool".into()))
 }
 
@@ -185,11 +202,16 @@ pub fn backend() -> Result<String, String> {
 /// Denoises the color channels of an RGBA8 image in place with the OIDN library, keeping
 /// alpha; `blend` as in [`denoise`]. Returns the device type used.
 pub fn denoise_with_library(rgba: &mut [u8], width: u32, height: u32, blend: f64, prefer: DeviceType, aux: Option<&DenoiseAux>) -> Result<DeviceType, String> {
+    denoise_with_library_from(rgba, None, width, height, blend, prefer, aux)
+}
+
+/// [`denoise_with_library`] with the denoiser's input taken from `source` (default: `rgba`).
+fn denoise_with_library_from(rgba: &mut [u8], source: Option<&[u8]>, width: u32, height: u32, blend: f64, prefer: DeviceType, aux: Option<&DenoiseAux>) -> Result<DeviceType, String> {
     let n = width as usize * height as usize;
     if rgba.len() != n * 4 {
         return Err("image size mismatch".into());
     }
-    let mut color: Vec<f32> = rgba.chunks_exact(4).flat_map(|p| [p[0], p[1], p[2]]).map(|c| c as f32 / 255.0).collect();
+    let mut color: Vec<f32> = source.unwrap_or(rgba).chunks_exact(4).flat_map(|p| [p[0], p[1], p[2]]).map(|c| c as f32 / 255.0).collect();
     let albedo = aux.map(|a| a.albedo.as_slice());
     let normal = aux.and_then(|a| a.normal.as_deref());
     let used = oidn::denoise(&mut color, width as usize, height as usize, false, true, prefer, albedo, normal)?;
@@ -211,6 +233,11 @@ fn blend_back(rgba: &mut [u8], denoised: &[f32], blend: f64) {
 /// Denoises the color channels of an RGBA8 image in place, keeping alpha. `blend` mixes the
 /// original back in (0 = fully denoised, 1 = original), as the OptiX denoiser's blend factor.
 pub fn denoise(tool: &Path, rgba: &mut [u8], width: u32, height: u32, blend: f64) -> Result<(), String> {
+    denoise_from(tool, rgba, None, width, height, blend)
+}
+
+/// [`denoise`] with the denoiser's input taken from `source` (default: `rgba`).
+fn denoise_from(tool: &Path, rgba: &mut [u8], source: Option<&[u8]>, width: u32, height: u32, blend: f64) -> Result<(), String> {
     let n = width as usize * height as usize;
     if rgba.len() != n * 4 {
         return Err("image size mismatch".into());
@@ -220,7 +247,7 @@ pub fn denoise(tool: &Path, rgba: &mut [u8], width: u32, height: u32, blend: f64
     let input = dir.join(format!("{stem}.pfm"));
     let output = dir.join(format!("{stem}_out.pfm"));
     let result = (|| {
-        let color: Vec<f32> = rgba.chunks_exact(4).flat_map(|p| [p[0], p[1], p[2]]).map(|c| c as f32 / 255.0).collect();
+        let color: Vec<f32> = source.unwrap_or(rgba).chunks_exact(4).flat_map(|p| [p[0], p[1], p[2]]).map(|c| c as f32 / 255.0).collect();
         write_pfm(&input, width, height, &color).map_err(|e| format!("writing {}: {e}", input.display()))?;
         let out = Command::new(tool)
             .arg("--ldr")

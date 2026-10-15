@@ -567,10 +567,8 @@ fn update_denoised(ctx: &egui::Context, doc: &Document, state: &mut CanvasState,
         && state.denoised.wants(key, std::time::Duration::ZERO)
         && let Some((img, w, h, on_gpu)) = preview.read_image()
     {
-        let aux = (on_gpu && rwf_core::render::denoise::skip_reason(&doc.flame, true).is_none() && rwf_core::render::oidn::library().is_ok())
-            .then(|| preview.read_denoise_aux())
-            .flatten();
-        state.denoised.start(key, &doc.flame, img, w, h, on_gpu, aux);
+        let (source, aux) = preview.read_denoise_input(&doc.flame);
+        state.denoised.start(key, &doc.flame, img, source, w, h, on_gpu, aux);
     }
     state.denoised.is_current(key).then(|| state.denoised.texture()).flatten()
 }

@@ -79,7 +79,8 @@ found. It is searched next to the program (`lib/` on Linux), in the folder given
 environment variable `RWF_OIDN_DIR`, and in the system's library paths.
 
 **The denoiser leaves grain.**
-Set the filter radius to 0 or a small value (Render tab), see "Render settings › Denoiser".
+Raise the quality a little: at very low qualities, sparse areas have too few points for the
+denoiser to tell structure from noise. Check that Blend is 0 or small (Render tab).
 
 **Video formats are disabled.**
 MP4, MOV and WebM are written by ffmpeg. Install it and make sure it is in the `PATH`, then

@@ -171,6 +171,8 @@ Opening files works with the menu, by dropping files onto the window or by passi
 command line (`rwf-app my.flame`). A dropped or passed `.rwfdance` project opens in the dancing
 flames workspace; JWildfire movies (`.jwfmovie`) are opened in Render › Movie.
 
-!!! warning
-    A file with several flames holds only the edited flame after **Save**. To keep the others,
-    use **Save as…** with a new name.
+Files with several flames keep all of them when you save. **Save** writes the edited flame back
+into its place in the file (the first flame when the file was opened, or the flame you picked in
+Explore › File); the other flames stay unchanged. A flame that did not come from this file, such
+as a random flame, is added at the end. The status line says which flame was written, e.g.
+"Saved … (flame 2 of 3)". **Save as…** into a new file writes the edited flame alone.

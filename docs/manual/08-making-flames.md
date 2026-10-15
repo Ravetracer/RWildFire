@@ -112,7 +112,8 @@ flame. This way you can walk step by step towards a flame you like.
 ### File
 
 When a file with several flames is opened (or several flames are pasted, or a script creates
-flames), **File** shows them. **Load thumbnails** renders thumbnails of up to 64 of them.
+flames), **File** shows them. **Load thumbnails** renders thumbnails of up to 64 of them. Click a
+flame to edit it; **Save** then writes it back into its place in the file and keeps the others.
 
 ### MutaGen
 

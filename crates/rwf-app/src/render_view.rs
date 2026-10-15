@@ -149,11 +149,6 @@ impl Default for InteractiveRenderer {
     }
 }
 
-/// Whether the denoiser will run with the OIDN library (which uses helper images).
-fn wants_aux(flame: &Flame) -> bool {
-    rwf_core::render::denoise::skip_reason(flame, true).is_none() && rwf_core::render::oidn::library().is_ok()
-}
-
 fn format_duration(d: Duration) -> String {
     let s = d.as_secs();
     format!("{}:{:02}:{:02}", s / 3600, s / 60 % 60, s % 60)
@@ -309,8 +304,8 @@ impl InteractiveRenderer {
         if self.denoised.wants(key, interval)
             && let (Some(img), Some((w, h))) = (r.read_image(), r.output_size())
         {
-            let aux = wants_aux(flame).then(|| r.read_denoise_aux()).flatten();
-            self.denoised.start(key, flame, img, w, h, true, aux);
+            let (source, aux) = r.read_denoise_input(flame);
+            self.denoised.start(key, flame, img, source, w, h, true, aux);
         }
     }
 
@@ -681,6 +676,7 @@ impl InteractiveRenderer {
         let Some(path) = crate::settings::dialog(crate::settings::Folder::Images).add_filter(self.image_format.label(), &[ext]).set_file_name(name).save_file() else { return };
         // Read back here (the device belongs to this thread), encode and write in the background.
         let (format, jpeg_quality) = (self.image_format, self.jpeg_quality);
+        let mut denoise_input = (None, None);
         let pixels = if format.is_hdr() {
             r.read_hdr().map(Pixels::Hdr)
         } else {
@@ -688,6 +684,7 @@ impl InteractiveRenderer {
             r.set_with_alpha(flame.bg_transparency && format == ImageFormat::Png);
             r.tonemap();
             let img = r.read_image().map(Pixels::Rgba);
+            denoise_input = r.read_denoise_input(&flame);
             r.set_with_alpha(false);
             self.needs_refresh = true;
             img
@@ -697,7 +694,7 @@ impl InteractiveRenderer {
             return;
         };
         let zbuf = if self.zbuffer { r.read_zbuffer() } else { None };
-        let aux = (!format.is_hdr() && wants_aux(&flame)).then(|| r.read_denoise_aux()).flatten();
+        let (source, aux) = denoise_input;
         let (w, h) = self.render_size;
         let (tx, rx) = channel();
         std::thread::spawn(move || {
@@ -708,7 +705,7 @@ impl InteractiveRenderer {
                         "not denoised: HDR images are saved as rendered".to_string()
                     }
                     Pixels::Rgba(mut img) => {
-                        let outcome = rwf_core::render::denoise::apply_post_denoiser_with(&flame, &mut img, w, h, true, aux.as_ref())
+                        let outcome = rwf_core::render::denoise::apply_post_denoiser_from(&flame, &mut img, source.as_deref(), w, h, true, aux.as_ref())
                             .map_err(|e| format!("denoiser: {e}"))?;
                         rwf_core::output::write_rgba8(&path, format, w, h, &img, jpeg_quality)?;
                         outcome.describe()

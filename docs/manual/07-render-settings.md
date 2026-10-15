@@ -116,16 +116,15 @@ and videos; the canvas shows it only with **Denoised** in the canvas toolbar.
   JWildfire's GPU renderer was separate).
 - The line below says which denoiser is used, or why it is not available.
 
-When rendering on the GPU, RWildFire also gives OIDN helper images (the colors without
-lighting, and for solid flames the surface normals), which helps it keep edges.
+The denoiser works on the image **before** spatial filtering and density estimation. The filter
+spreads every point over a few pixels and would turn the grain into small blobs, which the
+denoiser takes for detail and keeps; independent pixel noise is what it removes best. So the
+filter settings stay as they are and the denoiser still gets clean input. When rendering on
+the GPU, RWildFire also gives OIDN helper images (the colors without lighting, and for solid
+flames the surface normals), which helps it keep edges. **Blend** mixes the normal, filtered
+render back in.
 
-![The denoiser works best on unfiltered images](images/cmp-denoise.jpg)
-
-!!! tip
-    The denoiser removes *independent* pixel noise. The spatial filter spreads each point over
-    a few pixels, which turns the grain into small blobs that the denoiser takes for detail
-    and keeps. For a denoised render, set the **Filter radius** to 0 (or a small value like
-    0.3): the denoiser then smooths the image much better, as the comparison shows.
+![A low quality render, denoised, and a render with 100 times the quality](images/cmp-denoise.jpg)
 
 The denoiser smooths very fine structures a little. For flames with hair-thin detail, a
 higher quality without denoiser, or a Blend of 0.3, often looks best.

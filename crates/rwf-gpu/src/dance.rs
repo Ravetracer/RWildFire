@@ -46,8 +46,9 @@ pub fn render_performance_frame(
         None => {
             let threads = rwf_core::render::cpu_threads();
             let opts = RenderOptions { width: w, height: h, threads, max_density: Some(q), seed: 0xDA2CE + frame as u64, zbuffer: false };
-            let mut img = CpuRender::start(&flame, opts).wait().image(false);
-            rwf_core::render::denoise::apply_post_denoiser(&flame, &mut img, w, h, false).map_err(|e| format!("denoiser: {e}"))?;
+            let r = CpuRender::start(&flame, opts).wait();
+            let mut img = r.image(false);
+            r.apply_post_denoiser(&mut img, false).map_err(|e| format!("denoiser: {e}"))?;
             img
         }
     };

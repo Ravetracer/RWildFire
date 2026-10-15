@@ -53,7 +53,7 @@ pub fn render_stereo_image(flame: &Flame, w: u32, h: u32, quality: f64, gpu: Opt
             None => {
                 let r = CpuRender::start(f, RenderOptions { width: w, height: h, threads, max_density: Some(q), seed: 0x5EED + done as u64, zbuffer: false }).wait();
                 let mut img = r.image(alpha);
-                let outcome = rwf_core::render::denoise::apply_post_denoiser(f, &mut img, w, h, false).map_err(|e| format!("denoiser: {e}"))?;
+                let outcome = r.apply_post_denoiser(&mut img, alpha).map_err(|e| format!("denoiser: {e}"))?;
                 note = outcome.describe();
                 img
             }

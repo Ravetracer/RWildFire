@@ -377,6 +377,26 @@ impl CpuRender {
 }
 
 impl CpuRender {
+    /// The image without spatial filter and density estimation (see
+    /// [`ToneMapper::unfiltered`]): the input for the denoiser. `None` for solid flames.
+    pub fn image_unfiltered(&self, with_alpha: bool) -> Option<Vec<u8>> {
+        if self.shared.solid.is_some() {
+            return None;
+        }
+        let v = &self.shared.packets[0].view;
+        let tm = ToneMapper::new(&self.flame, v.image_width, v.image_height, v.ppu, self.density(), with_alpha).with_packets(self.shared.packets.len()).unfiltered();
+        Some(tm.render(&self.flame, &self.shared.histogram, v.image_width, v.image_height))
+    }
+
+    /// Applies the flame's post denoiser to `img` (this render's [`CpuRender::image`]); the
+    /// denoiser works on the unfiltered image, Blend mixes `img` back in.
+    pub fn apply_post_denoiser(&self, img: &mut [u8], with_alpha: bool) -> Result<super::denoise::DenoiseOutcome, String> {
+        let v = &self.shared.packets[0].view;
+        let (w, h) = (v.image_width, v.image_height);
+        let unfiltered = if super::denoise::skip_reason(&self.flame, false).is_none() { self.image_unfiltered(with_alpha) } else { None };
+        super::denoise::apply_post_denoiser_from(&self.flame, img, unfiltered.as_deref(), w, h, false, None)
+    }
+
     /// Tonemaps into linear float RGB (`RenderHDRImageThread`), 1.0 = full 8-bit white.
     pub fn image_hdr(&self) -> Vec<f32> {
         let v = &self.shared.packets[0].view;

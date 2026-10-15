@@ -288,6 +288,8 @@ pub struct GpuRenderer {
     last_error: Option<String>,
     frame_seed: u32,
     with_alpha: bool,
+    /// The next tonemap passes skip the spatial filter and density estimation (denoiser input).
+    unfiltered: bool,
     tone_base: Option<ToneUniforms>,
     output_generation: u64,
     /// Number of flame states accumulated into the histogram (motion blur packets).
@@ -390,6 +392,7 @@ impl GpuRenderer {
             last_error: None,
             frame_seed: 1,
             with_alpha: false,
+            unfiltered: false,
             tone_base: None,
             output_generation: 0,
             packets: 1,
@@ -992,10 +995,49 @@ impl GpuRenderer {
 
     /// The flame's post denoiser on `img` (read from this renderer), with the renderer's helper
     /// images when the OIDN library is used.
+    /// The denoiser works on the image without spatial filter and density estimation (see
+    /// [`GpuRenderer::read_denoise_input`]); Blend mixes `img` back in.
     pub fn apply_post_denoiser(&mut self, flame: &Flame, img: &mut [u8], w: u32, h: u32) -> Result<rwf_core::render::denoise::DenoiseOutcome, String> {
+        let (unfiltered, aux) = if self.output_size() == Some((w, h)) { self.read_denoise_input(flame) } else { (None, None) };
+        rwf_core::render::denoise::apply_post_denoiser_from(flame, img, unfiltered.as_deref(), w, h, true, aux.as_ref())
+    }
+
+    /// What the flame's post denoiser needs from this render: the unfiltered image (see
+    /// [`GpuRenderer::read_unfiltered_image`]) and the helper images, which must match it
+    /// (filtered helpers would mark the grain blobs as detail again). Nothing when the flame's
+    /// denoiser does not run on GPU renders; no helpers without the OIDN library.
+    pub fn read_denoise_input(&mut self, flame: &Flame) -> (Option<Vec<u8>>, Option<rwf_core::render::denoise::DenoiseAux>) {
         use rwf_core::render::denoise;
-        let aux = if denoise::skip_reason(flame, true).is_none() && rwf_core::render::oidn::library().is_ok() { self.read_denoise_aux() } else { None };
-        denoise::apply_post_denoiser_with(flame, img, w, h, true, aux.as_ref())
+        if denoise::skip_reason(flame, true).is_some() {
+            return (None, None);
+        }
+        let unfiltered = self.read_unfiltered_image();
+        let aux = if rwf_core::render::oidn::library().is_ok() {
+            self.unfiltered = unfiltered.is_some();
+            let aux = self.read_denoise_aux();
+            self.unfiltered = false;
+            aux
+        } else {
+            None
+        };
+        (unfiltered, aux)
+    }
+
+    /// The image without spatial filter and density estimation, as RGBA8: the denoiser's input.
+    /// The filter spreads every point over neighbouring pixels; the denoiser takes such
+    /// correlated grain for detail and keeps it, while it removes independent pixel noise well.
+    /// `None` for solid flames (their surfaces are shaded, not filtered). The output texture
+    /// keeps the filtered image.
+    pub fn read_unfiltered_image(&mut self) -> Option<Vec<u8>> {
+        if self.flame.as_ref()?.solid.enabled {
+            return None;
+        }
+        self.unfiltered = true;
+        self.tonemap_into(None, false);
+        let img = self.read_image();
+        self.unfiltered = false;
+        self.tonemap_into(None, false);
+        img
     }
 
     /// Helper images for the denoiser: albedo (RGB 0..1 per pixel) and, for solid flames, the
@@ -1090,6 +1132,13 @@ impl GpuRenderer {
         if with_backdrop {
             tone.bg_kind = 3;
         }
+        if self.unfiltered {
+            // Only the oversampling cells of each pixel (size 0 = no filter matrix).
+            if tone.fsize > 1 || tone.adaptive != 0 {
+                tone.border += rwf_core::render::tonemap::unfiltered_shift(tone.os);
+            }
+            (tone.fsize, tone.fhalf, tone.sharpen, tone.adaptive, tone.prim_radius) = (0, -1, 0, 0, 0.0);
+        }
         tone.mix_mode = 0;
         if let Some(func) = flame.mixer.color_func() {
             tone.mix_mode = func.mode_index();
@@ -1100,7 +1149,7 @@ impl GpuRenderer {
         let device = &self.ctx.device;
         let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("tonemap") });
         // Optional density estimation: accum -> de, then tonemap reads de.
-        let de = rwf_core::render::de::DeParams::new(flame, view.ppu_scale);
+        let de = rwf_core::render::de::DeParams::new(flame, view.ppu_scale).filter(|_| !self.unfiltered);
         let source = match de {
             Some(p) => {
                 let show = p.splitter > 1e-8 && p.splitter < 1.0 - 1e-8;

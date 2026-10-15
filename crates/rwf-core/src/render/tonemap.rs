@@ -199,6 +199,13 @@ fn lum(r: f64, g: f64, b: f64) -> f64 {
     0.299 * r + 0.588 * g + 0.113 * b
 }
 
+/// Raster cells by which an unfiltered pixel must move to be centered like a filtered one: a
+/// filter matrix (`half = size / 2 - 1`, as in JWildfire) centers one cell after the pixel's
+/// first oversampling cell, the plain sum over `oversample` cells around `(oversample - 1) / 2`.
+pub fn unfiltered_shift(oversample: u32) -> u32 {
+    1 - (oversample.max(1) - 1) / 2
+}
+
 pub struct ToneMapper {
     pub params: ToneParams,
     pub primary: FilterMatrix,
@@ -223,6 +230,19 @@ impl ToneMapper {
             border,
             with_alpha,
         }
+    }
+
+    /// Without spatial filter (adaptive or not): each pixel only sums its oversampling cells.
+    /// The border stays, so the same raster is read. Used for the denoiser's input: the filter
+    /// spreads every point over neighbouring pixels, and the denoiser takes such correlated
+    /// grain for detail.
+    pub fn unfiltered(mut self) -> Self {
+        if !self.primary.is_empty() || self.adaptive.is_some() {
+            self.border += unfiltered_shift(self.oversample);
+        }
+        self.primary = FilterMatrix::new(self.primary.kernel, self.oversample, 0.0);
+        self.adaptive = None;
+        self
     }
 
     /// Normalizes counts for a histogram filled by `n` motion-blur packets.
@@ -473,4 +493,61 @@ fn read_cell<R: Raster>(raster: &R, rx: i64, ry: i64) -> [f64; 4] {
 /// True if a filter radius is effectively off.
 pub fn filter_disabled(radius: f64) -> bool {
     radius < EPSILON
+}
+
+#[cfg(test)]
+mod unfiltered_tests {
+    use super::*;
+
+    /// One bright cell in an otherwise empty raster.
+    struct Dot {
+        w: u32,
+        h: u32,
+        at: (u32, u32),
+    }
+
+    impl Raster for Dot {
+        fn width(&self) -> u32 {
+            self.w
+        }
+        fn height(&self) -> u32 {
+            self.h
+        }
+        fn cell(&self, x: u32, y: u32) -> [f64; 4] {
+            if (x, y) == self.at { [1000.0, 1000.0, 1000.0, 1000.0] } else { [0.0; 4] }
+        }
+    }
+
+    /// Brightness-weighted center of the image.
+    fn centre(img: &[u8], w: u32) -> (f64, f64) {
+        let (mut sx, mut sy, mut sum) = (0.0, 0.0, 0.0);
+        for (i, p) in img.chunks_exact(4).enumerate() {
+            let v = p[0] as f64 + p[1] as f64 + p[2] as f64;
+            sx += v * (i as u32 % w) as f64;
+            sy += v * (i as u32 / w) as f64;
+            sum += v;
+        }
+        (sx / sum, sy / sum)
+    }
+
+    #[test]
+    fn unfiltered_pixels_line_up_with_filtered_ones() {
+        // With an even oversampling the plain sum is centered between two cells and the filter
+        // on one: up to half a cell apart.
+        for (radius, os, tolerance) in [(1.0, 1, 0.01), (2.0, 1, 0.01), (0.75, 3, 0.01), (1.0, 2, 0.26), (1.0, 4, 0.13)] {
+            let flame = Flame { spatial_filter_radius: radius, spatial_oversampling: os, ..Flame::default() };
+            let (w, h) = (24, 20);
+            let tm = ToneMapper::new(&flame, w, h, 50.0, 10.0, false);
+            // Average over dot positions inside one output pixel.
+            let (mut dx, mut dy) = (0.0, 0.0);
+            for k in 0..os * os {
+                let at = (10 * os + k % os + tm.border, 8 * os + k / os + tm.border);
+                let raster = Dot { w: w * os + 2 * tm.border, h: h * os + 2 * tm.border, at };
+                let f = centre(&tm.render(&flame, &raster, w, h), w);
+                let u = centre(&ToneMapper::new(&flame, w, h, 50.0, 10.0, false).unfiltered().render(&flame, &raster, w, h), w);
+                (dx, dy) = (dx + (f.0 - u.0) / (os * os) as f64, dy + (f.1 - u.1) / (os * os) as f64);
+            }
+            assert!(dx.abs() <= tolerance && dy.abs() <= tolerance, "radius {radius}, oversampling {os}: off by ({dx:.3}, {dy:.3})");
+        }
+    }
 }

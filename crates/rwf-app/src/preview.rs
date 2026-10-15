@@ -149,10 +149,15 @@ impl Preview {
     }
 
     /// The denoiser helper images of the GPU preview.
-    pub fn read_denoise_aux(&mut self) -> Option<rwf_core::render::denoise::DenoiseAux> {
+    /// The denoiser's input for the shown image: the unfiltered image and the helper images
+    /// (GPU), or only the unfiltered image (CPU).
+    pub fn read_denoise_input(&mut self, flame: &Flame) -> (Option<Vec<u8>>, Option<rwf_core::render::denoise::DenoiseAux>) {
         match self.backend {
-            Backend::Gpu => self.gpu.as_mut()?.read_denoise_aux(),
-            Backend::Cpu => None,
+            Backend::Gpu if self.gpu.is_some() => self.gpu.as_mut().map_or((None, None), |g| g.read_denoise_input(flame)),
+            _ => {
+                let active = rwf_core::render::denoise::skip_reason(flame, false).is_none();
+                (self.cpu.as_ref().filter(|_| active).and_then(|r| r.image_unfiltered(false)), None)
+            }
         }
     }
 

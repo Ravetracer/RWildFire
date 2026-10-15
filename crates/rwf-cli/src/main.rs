@@ -240,25 +240,25 @@ fn render_anim_cmd() {
     let mut gpu_renderer = gpu.then(|| rwf_gpu::GpuRenderer::new(rwf_gpu::GpuContext::new_headless().expect("GPU")));
     let t0 = Instant::now();
     for frame in from..=to {
-        let mut denoised = None;
-        let mut img = match &mut gpu_renderer {
+        let (img, denoised) = match &mut gpu_renderer {
             Some(r) => {
                 r.set_with_alpha(false);
                 let mut img = r.render_frame(&flame, frame as f64, w, h, q).unwrap_or_else(|e| {
                     eprintln!("{e}");
                     std::process::exit(1);
                 });
-                denoised = Some(r.apply_post_denoiser(&flame, &mut img, w, h));
-                img
+                let denoised = r.apply_post_denoiser(&flame, &mut img, w, h);
+                (img, denoised)
             }
             None => {
                 let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
-                CpuRender::start_frame(&flame, frame as f64, RenderOptions { width: w, height: h, threads, max_density: Some(q), seed: 42 + frame as u64, zbuffer: false })
-                    .wait()
-                    .image(false)
+                let r = CpuRender::start_frame(&flame, frame as f64, RenderOptions { width: w, height: h, threads, max_density: Some(q), seed: 42 + frame as u64, zbuffer: false }).wait();
+                let mut img = r.image(false);
+                let denoised = r.apply_post_denoiser(&mut img, false);
+                (img, denoised)
             }
         };
-        if let Err(e) = denoised.unwrap_or_else(|| rwf_core::render::denoise::apply_post_denoiser(&flame, &mut img, w, h, gpu)) {
+        if let Err(e) = denoised {
             eprintln!("warning: denoiser failed: {e}");
         }
         sink.write_frame(frame - from, &img).expect("write frame");
@@ -956,7 +956,9 @@ fn main() {
             hdr = Some(r.image_hdr());
             Vec::new()
         } else {
-            r.image(flame.bg_transparency)
+            let mut img = r.image(flame.bg_transparency);
+            gpu_denoise_note = Some(r.apply_post_denoiser(&mut img, flame.bg_transparency));
+            img
         }
     };
     let mut rgba = rgba;

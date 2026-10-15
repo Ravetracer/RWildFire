@@ -102,13 +102,18 @@ pub struct Document {
     pub path: Option<PathBuf>,
     /// All flames of the last opened file (for multi-flame files).
     pub library: Vec<Flame>,
+    /// The file `library` was read from (`None` for pasted or script-made flames).
+    pub library_path: Option<PathBuf>,
+    /// The file and flame index the editor's flame was loaded from or last saved to; saving into
+    /// that file replaces that flame and keeps the others. Undo and redo restore it.
+    pub source: Option<(PathBuf, usize)>,
     pub layer: usize,
     pub selection: Selection,
     /// Edit post-affine instead of pre-affine.
     pub edit_post: bool,
     pub edit_plane: EditPlane,
-    undo: Vec<Flame>,
-    redo: Vec<Flame>,
+    undo: Vec<(Flame, Option<(PathBuf, usize)>)>,
+    redo: Vec<(Flame, Option<(PathBuf, usize)>)>,
     committed: Flame,
     pub dirty: bool,
 }
@@ -123,6 +128,8 @@ impl Document {
             flame,
             path: None,
             library: Vec::new(),
+            library_path: None,
+            source: None,
             layer: 0,
             selection,
             edit_post: false,
@@ -168,7 +175,7 @@ impl Document {
             return;
         }
         let prev = std::mem::replace(&mut self.committed, self.flame.clone());
-        self.undo.push(prev);
+        self.undo.push((prev, self.source.clone()));
         if self.undo.len() > MAX_UNDO {
             self.undo.remove(0);
         }
@@ -188,10 +195,12 @@ impl Document {
         self.committed = self.flame.clone();
     }
 
-    /// Replaces the whole flame as one undoable step.
+    /// Replaces the whole flame as one undoable step. The new flame comes from no file; set
+    /// `source` afterwards if it does.
     pub fn replace(&mut self, flame: Flame) {
         self.commit_if_settled(false);
-        self.undo.push(std::mem::replace(&mut self.flame, flame));
+        let prev = std::mem::replace(&mut self.flame, flame);
+        self.undo.push((prev, self.source.take()));
         self.committed = self.flame.clone();
         self.redo.clear();
         self.dirty = true;
@@ -201,11 +210,37 @@ impl Document {
     /// Loads a new document (clears history).
     pub fn load(&mut self, flame: Flame, path: Option<PathBuf>) {
         self.replace(flame);
+        self.source = path.clone().map(|p| (p, 0));
         self.path = path;
         self.layer = 0;
         self.selection = Selection::XForm(0);
         self.fix_selection();
         self.dirty = false;
+    }
+
+    /// The flames to write when saving the editor's flame to `path`, which currently holds
+    /// `existing` (empty if it does not exist or cannot be read), and the editor flame's index
+    /// among them. A file with several flames keeps them: the editor's flame replaces the flame
+    /// it came from, or is appended if it is not from this file. Other files get the editor's
+    /// flame alone. Sets `source` to the written flame.
+    pub fn flames_for_save(&mut self, path: &std::path::Path, mut existing: Vec<Flame>) -> (Vec<Flame>, usize) {
+        let index = if existing.len() > 1 {
+            match self.source.as_ref().filter(|(p, i)| p == path && *i < existing.len()) {
+                Some((_, i)) => {
+                    existing[*i] = self.flame.clone();
+                    *i
+                }
+                None => {
+                    existing.push(self.flame.clone());
+                    existing.len() - 1
+                }
+            }
+        } else {
+            existing = vec![self.flame.clone()];
+            0
+        };
+        self.source = Some((path.to_path_buf(), index));
+        (existing, index)
     }
 
     pub fn can_undo(&self) -> bool {
@@ -218,16 +253,18 @@ impl Document {
 
     pub fn undo(&mut self) {
         self.commit_if_settled(false);
-        if let Some(prev) = self.undo.pop() {
-            self.redo.push(std::mem::replace(&mut self.flame, prev));
+        if let Some((prev, source)) = self.undo.pop() {
+            let cur = std::mem::replace(&mut self.flame, prev);
+            self.redo.push((cur, std::mem::replace(&mut self.source, source)));
             self.committed = self.flame.clone();
             self.fix_selection();
         }
     }
 
     pub fn redo(&mut self) {
-        if let Some(next) = self.redo.pop() {
-            self.undo.push(std::mem::replace(&mut self.flame, next));
+        if let Some((next, source)) = self.redo.pop() {
+            let cur = std::mem::replace(&mut self.flame, next);
+            self.undo.push((cur, std::mem::replace(&mut self.source, source)));
             self.committed = self.flame.clone();
             self.fix_selection();
         }
@@ -255,5 +292,44 @@ mod tests {
         edit_affine_mut(&mut xf, EditPlane::ZX, false).c21 = 4.0;
         assert_eq!((xf.yz_post.c20, xf.zx_coefs.c21, xf.coefs.c20), (3.0, 4.0, 0.0));
         assert_eq!(edit_affine(&xf, EditPlane::YZ, true).c20, 3.0);
+    }
+
+    fn named(name: &str) -> Flame {
+        Flame { name: name.into(), ..Flame::default() }
+    }
+
+    fn names(v: &[Flame]) -> Vec<&str> {
+        v.iter().map(|f| f.name.as_str()).collect()
+    }
+
+    #[test]
+    fn saving_into_a_multi_flame_file_keeps_the_other_flames() {
+        let file = PathBuf::from("/tmp/x.flame");
+        let three = || vec![named("a"), named("b"), named("c")];
+        let mut doc = Document::new(named("start"));
+        doc.load(named("a"), Some(file.clone()));
+        // Picked flame 2 of the file in Explore › File and changed it.
+        doc.replace(named("b"));
+        doc.source = Some((file.clone(), 1));
+        doc.flame.name = "b2".into();
+        let (flames, i) = doc.flames_for_save(&file, three());
+        assert_eq!((names(&flames), i), (vec!["a", "b2", "c"], 1));
+        // A flame that is not from the file is appended; saving it again replaces it.
+        doc.replace(named("new"));
+        let (flames, i) = doc.flames_for_save(&file, three());
+        assert_eq!((names(&flames), i), (vec!["a", "b", "c", "new"], 3));
+        let (flames, _) = doc.flames_for_save(&file, flames);
+        assert_eq!(names(&flames), ["a", "b", "c", "new"]);
+        // Undo brings back the (edited) flame from the file together with where it came from.
+        doc.undo();
+        assert_eq!(doc.flame.name, "b2");
+        assert_eq!(doc.source, Some((file.clone(), 1)));
+        // Redo returns to the appended flame, which was saved as flame 4.
+        doc.redo();
+        assert_eq!(doc.source, Some((file.clone(), 3)));
+        // A file with one flame (or a new file) gets the editor's flame alone.
+        let (flames, i) = doc.flames_for_save(&file, vec![named("only")]);
+        assert_eq!((names(&flames), i), (vec!["new"], 0));
+        assert_eq!(doc.flames_for_save(std::path::Path::new("/tmp/new.flame"), Vec::new()).0.len(), 1);
     }
 }

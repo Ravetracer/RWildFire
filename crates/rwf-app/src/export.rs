@@ -115,11 +115,6 @@ impl Default for ExportDialog {
 /// Status note for HDR files, which are not denoised.
 const HDR_NOTE: &str = "not denoised: HDR images are saved as rendered";
 
-/// Runs the flame's AI post denoiser, if any (`apply_post_denoiser`), and tells what it did.
-pub(crate) fn denoise(flame: &Flame, img: &mut [u8], w: u32, h: u32, gpu: bool) -> Result<rwf_core::render::denoise::DenoiseOutcome, String> {
-    rwf_core::render::denoise::apply_post_denoiser(flame, img, w, h, gpu).map_err(|e| format!("denoiser: {e}"))
-}
-
 /// Saves a finished CPU render: image in the chosen format plus the optional z-buffer.
 fn save_cpu(r: &CpuRender, run: &SaveJob) -> Result<String, String> {
     let (w, h) = (run.width, run.height);
@@ -128,7 +123,7 @@ fn save_cpu(r: &CpuRender, run: &SaveJob) -> Result<String, String> {
         HDR_NOTE.to_string()
     } else {
         let mut img = r.image(run.with_alpha);
-        let outcome = denoise(&run.flame, &mut img, w, h, false)?;
+        let outcome = r.apply_post_denoiser(&mut img, run.with_alpha).map_err(|e| format!("denoiser: {e}"))?;
         rwf_core::output::write_rgba8(&run.path, run.format, w, h, &img, run.jpeg_quality)?;
         outcome.describe()
     };
@@ -369,24 +364,22 @@ impl ExportDialog {
                         let _ = sink.finish();
                         return Err("Cancelled".into());
                     }
-                    let mut gpu_note = None;
-                    let mut img = match &mut gpu_r {
+                    let (img, outcome) = match &mut gpu_r {
                         Some(r) => {
                             let mut img = r.render_frame(&flame, frame as f64, w, h, q)?;
-                            gpu_note = Some(r.apply_post_denoiser(&flame, &mut img, w, h).map_err(|e| format!("denoiser: {e}"))?.describe());
-                            img
+                            let outcome = r.apply_post_denoiser(&flame, &mut img, w, h);
+                            (img, outcome)
                         }
                         None => {
                             let threads = crate::settings::cpu_threads();
-                            CpuRender::start_frame(&flame, frame as f64, RenderOptions { width: w, height: h, threads, max_density: Some(q), seed: 0x5EED + frame as u64, zbuffer: false })
-                                .wait()
-                                .image(false)
+                            let r = CpuRender::start_frame(&flame, frame as f64, RenderOptions { width: w, height: h, threads, max_density: Some(q), seed: 0x5EED + frame as u64, zbuffer: false })
+                                .wait();
+                            let mut img = r.image(false);
+                            let outcome = r.apply_post_denoiser(&mut img, false);
+                            (img, outcome)
                         }
                     };
-                    note = match gpu_note {
-                        Some(n) => n,
-                        None => denoise(&flame, &mut img, w, h, false)?.describe(),
-                    };
+                    note = outcome.map_err(|e| format!("denoiser: {e}"))?.describe();
                     sink.write_frame(i as u32, &img).map_err(|e| e.to_string())?;
                     d2.fetch_add(1, Ordering::Relaxed);
                 }

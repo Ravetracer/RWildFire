@@ -283,7 +283,9 @@ impl Explorer {
     }
 
     /// Shows the strip; returns a flame the user picked.
-    pub fn show(&mut self, ui: &mut egui::Ui, current: &Flame, library: &[Flame]) -> Option<Flame> {
+    /// Shows the strip; returns a clicked flame and, for flames of the opened file, its index in
+    /// the file.
+    pub fn show(&mut self, ui: &mut egui::Ui, current: &Flame, library: &[Flame]) -> Option<(Flame, Option<usize>)> {
         self.poll(ui.ctx());
         if self.mode == Mode::File && library.is_empty() {
             self.mode = Mode::Random;
@@ -371,7 +373,7 @@ impl Explorer {
         }
         egui::ScrollArea::horizontal().show(ui, |ui| {
             ui.horizontal(|ui| {
-                for slot in strip {
+                for (slot_index, slot) in strip.iter().enumerate() {
                     let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
                     let p = ui.painter();
                     p.rect_filled(rect, CornerRadius::same(6), theme::BG);
@@ -388,7 +390,8 @@ impl Explorer {
                     if let Some((f, _)) = &slot.thumb {
                         let tip = if f.name.is_empty() { "Click to open".to_string() } else { format!("{}\nClick to open", f.name) };
                         if resp.on_hover_text(tip).clicked() {
-                            picked = Some(f.clone());
+                            // The file strip lists the file's first flames in order.
+                            picked = Some((f.clone(), (self.mode == Mode::File).then_some(slot_index)));
                         }
                     }
                 }
