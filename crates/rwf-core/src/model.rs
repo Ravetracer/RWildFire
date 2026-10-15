@@ -557,6 +557,8 @@ pub struct Flame {
     pub focus_z: f64,
     pub dimish_z: f64,
     pub dim_z_distance: f64,
+    /// Color that depth-faded points fade into (`cam_zdimcolor`; black by default).
+    pub dim_z_color: [u8; 3],
 
     pub brightness: f64,
     pub contrast: f64,
@@ -659,6 +661,7 @@ impl Default for Flame {
             focus_z: 0.0,
             dimish_z: 0.0,
             dim_z_distance: 0.0,
+            dim_z_color: [0, 0, 0],
             brightness: 4.0,
             contrast: 1.0,
             gamma: 4.0,

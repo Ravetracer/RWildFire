@@ -824,8 +824,8 @@ impl Program {
                     .replace("    var intensity = 1.0;\n", "    var intensity = 1.0;\n    var cam_z = 0.0;\n")
                     .replace("        if (zr < EPSILON) { return; }\n", "        if (zr < EPSILON) { return; }\n        cam_z = cz;\n")
                     .replace(
-                        "    splat(ix, iy, col_in * intensity);",
-                        "    zbuf_add(ix, iy, cam_z * U.bws, col_in * intensity);\n    splat(ix, iy, col_in * intensity);",
+                        "    splat(ix, iy, dim_col(col_in, intensity));",
+                        "    zbuf_add(ix, iy, cam_z * U.bws, dim_col(col_in, intensity));\n    splat(ix, iy, dim_col(col_in, intensity));",
                     );
             }
             w.push_str(&project);
@@ -855,7 +855,7 @@ impl Program {
             let lay = &layers[li];
             let _ = writeln!(
                 w,
-                "    case {li}u: {{\n      cmap_base = {cb}u;\n      let density = prm[{h}u + {d}u];\n      let weight = prm[{h}u + {wt}u];\n      for (var i = 0u; i < U.iters; i++) {{\n        if (density < 1.0 && rnd() > density * density) {{ continue; }}\n        if (!has_next_{li}(xf)) {{ break; }}\n        xf = nxt[{nb}u + xf * {ts}u + (rnd_u32() & {mask}u)];\n        p = apply_xf_{li}(xf, p);{mat_step}\n        if (bad(p)) {{ p = fresh_point(); skip = FUSE_ITERS;{mat_reset} continue; }}\n        if (skip > 0u) {{ skip -= 1u; continue; }}\n        if (!visible_{li}(xf)) {{ continue; }}\n        let q = finals_{li}(p);\n        if (q.hide != 0.0) {{ continue; }}{mat_plot}\n        plot_sym(q, vec3<f32>(q.r, q.g, q.b) * weight);\n      }}\n    }}",
+                "    case {li}u: {{\n      cmap_base = {cb}u;\n      let density = prm[{h}u + {d}u];\n      let weight = prm[{h}u + {wt}u];\n      for (var i = 0u; i < U.iters; i++) {{\n        if (density < 1.0 && rnd() > density * density) {{ continue; }}\n        if (!has_next_{li}(xf)) {{ break; }}\n        xf = nxt[{nb}u + xf * {ts}u + (rnd_u32() & {mask}u)];\n        p = apply_xf_{li}(xf, p);{mat_step}\n        if (bad(p)) {{ p = fresh_point(); skip = FUSE_ITERS;{mat_reset} continue; }}\n        if (skip > 0u) {{ skip -= 1u; continue; }}\n        if (!visible_{li}(xf)) {{ continue; }}\n        let q = finals_{li}(p);\n        if (q.hide != 0.0) {{ continue; }}{mat_plot}\n        cur_w = weight;\n        plot_sym(q, vec3<f32>(q.r, q.g, q.b) * weight);\n      }}\n    }}",
                 h = lay.header,
                 d = lo::DENSITY,
                 wt = lo::WEIGHT,
@@ -1231,7 +1231,7 @@ fn plot(px_in: f32, py_in: f32, pz: f32, col_in: vec3<f32>) {\n  let wp = vec3<f
   let key = zkey(cz * U.bws);\n\
   let old = atomicMax(&zbuf[idx], key);\n\
   if (key > old) {\n\
-    let col = col_in * intensity;\n\
+    let col = dim_col(col_in, intensity);\n\
     let b = idx * 8u;\n\
     sattr[b] = px_in; sattr[b + 1u] = py_in; sattr[b + 2u] = pz;\n\
     sattr[b + 3u] = col.x; sattr[b + 4u] = col.y; sattr[b + 5u] = col.z;\n\
@@ -1254,10 +1254,20 @@ struct IterUniforms {
     raster_w: u32, raster_h: u32, iters: u32, thread_count: u32,
     aa_amount: f32, aa_radius: f32, color_scale: f32, layer_count: u32,
     sym_cx: f32, sym_cy: f32, sym_halve_dist: f32, sym_order: u32,
-    sym_rot_sin: f32, sym_rot_cos: f32, sym_do_rot: u32, _pad0: u32,
+    sym_rot_sin: f32, sym_rot_cos: f32, sym_do_rot: u32, dim_r: f32,
+    dim_g: f32, dim_b: f32, _pad1: u32, _pad2: u32,
 }
 
 @group(0) @binding(0) var<uniform> U: IterUniforms;
+
+// Weight of the layer being plotted (for the depth fade color).
+var<private> cur_w: f32 = 1.0;
+
+// Depth fade: blends the (weighted) point color into the fade color, both scaled by the layer
+// weight (`plotPoint`: lerp(dimColor, color, intensity) * weight).
+fn dim_col(col: vec3<f32>, intensity: f32) -> vec3<f32> {
+    return col * intensity + vec3<f32>(U.dim_r, U.dim_g, U.dim_b) * (cur_w * (1.0 - intensity));
+}
 @group(0) @binding(5) var<storage, read_write> hist: array<atomic<i32>>;
 "#;
 
@@ -1314,7 +1324,7 @@ fn plot(px_in: f32, py_in: f32, pz: f32, col_in: vec3<f32>) {
     let ix = i32(floor(rx + 0.5));
     let iy = i32(floor(ry + 0.5));
     if (ix < 0 || iy < 0 || ix >= i32(U.raster_w) || iy >= i32(U.raster_h)) { return; }
-    splat(ix, iy, col_in * intensity);
+    splat(ix, iy, dim_col(col_in, intensity));
 }
 
 fn hist_add(ix: i32, iy: i32, col: vec3<f32>) {

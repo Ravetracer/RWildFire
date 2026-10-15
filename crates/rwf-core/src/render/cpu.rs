@@ -284,7 +284,8 @@ impl CpuRender {
             samples: AtomicU64::new(0),
             stop: AtomicBool::new(false),
             target_samples,
-            dimish_color: [0.0; 3],
+            // JWildfire blends the render colors with the 0..255 values
+            dimish_color: flame.dim_z_color.map(|c| c as f64),
             zbuffer: (opts.zbuffer && solid.is_none()).then(|| ZBuffer::new(view.raster_width, view.raster_height)),
             solid,
             packets,

@@ -71,7 +71,11 @@ struct IterUniforms {
     sym_rot_sin: f32,
     sym_rot_cos: f32,
     sym_do_rot: u32,
-    _pad0: u32,
+    dim_r: f32,
+    dim_g: f32,
+    dim_b: f32,
+    _pad1: u32,
+    _pad2: u32,
 }
 
 #[repr(C)]
@@ -676,7 +680,11 @@ impl GpuRenderer {
             sym_rot_sin: rot.sin() as f32,
             sym_rot_cos: rot.cos() as f32,
             sym_do_rot: (rot.abs() > 1e-8) as u32,
-            _pad0: 0,
+            dim_r: flame.dim_z_color[0] as f32,
+            dim_g: flame.dim_z_color[1] as f32,
+            dim_b: flame.dim_z_color[2] as f32,
+            _pad1: 0,
+            _pad2: 0,
         };
         self.ctx.queue.write_buffer(&self.iter_uniforms, 0, bytemuck::bytes_of(&iu));
 

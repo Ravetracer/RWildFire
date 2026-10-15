@@ -288,6 +288,9 @@ fn camera_tab(ui: &mut Ui, doc: &mut Document) {
         drag(ui, "Position Y", &mut f.cam_pos_y, 0.01);
         slider(ui, "Depth fade", &mut f.dimish_z, 0.0..=4.0);
         drag(ui, "Fade distance", &mut f.dim_z_distance, 0.01);
+        widgets::label(ui, "Fade color");
+        widgets::color_rgb(ui, &mut f.dim_z_color).on_hover_text("Color that distant points fade into with \"Depth fade\" (black: they just get darker)");
+        ui.end_row();
     });
     theme::section_label(ui, "Depth of field");
     grid(ui, "dof", |ui| {

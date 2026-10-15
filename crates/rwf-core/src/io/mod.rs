@@ -219,6 +219,7 @@ pub(crate) fn parse_flame(el: &Element) -> Flame {
             "cam_zfocus" => flame.focus_z = f.unwrap_or(0.0),
             "cam_zdimish" => flame.dimish_z = f.unwrap_or(0.0),
             "cam_zdimdist" => flame.dim_z_distance = f.unwrap_or(0.0),
+            "cam_zdimcolor" => flame.dim_z_color = color_of(v),
             "low_density_brightness" => flame.low_density_brightness = f.unwrap_or(0.24),
             "balancing_red" => flame.balance_red = f.unwrap_or(1.0),
             "balancing_green" => flame.balance_green = f.unwrap_or(1.0),
@@ -641,6 +642,9 @@ pub fn write_flame(flame: &Flame) -> String {
     attr(&mut s, "cam_persp", fmt_f(flame.cam_perspective));
     attr(&mut s, "cam_zdimish", fmt_f(flame.dimish_z));
     attr(&mut s, "cam_zdimdist", fmt_f(flame.dim_z_distance));
+    if flame.dim_z_color != [0, 0, 0] {
+        attr(&mut s, "cam_zdimcolor", fmt_color(flame.dim_z_color));
+    }
     attr(&mut s, "cam_pos_x", fmt_f(flame.cam_pos_x));
     attr(&mut s, "cam_pos_y", fmt_f(flame.cam_pos_y));
     attr(&mut s, "cam_pos_z", fmt_f(flame.cam_pos_z));
