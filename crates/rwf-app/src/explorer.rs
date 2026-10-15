@@ -92,7 +92,7 @@ struct Slot {
 /// What a batch generates for each of its slots.
 #[derive(Clone)]
 enum Source {
-    Random(Generator, Extras, Quality),
+    Random(Generator, Extras, Quality, Arc<crate::settings::NewFlameDefaults>),
     Mutations(Arc<Flame>, MutationType, f64),
     File(Arc<Vec<Flame>>),
     Snapshot(Arc<Flame>),
@@ -101,7 +101,11 @@ enum Source {
 impl Source {
     fn flame(&self, i: usize, rng: &mut Rng) -> Flame {
         match self {
-            Source::Random(g, extras, quality) => generate_quality(*g, *extras, *quality, rng),
+            Source::Random(g, extras, quality, defaults) => {
+                let mut f = generate_quality(*g, *extras, *quality, rng);
+                defaults.apply_to_random(&mut f);
+                f
+            }
             Source::Mutations(base, kind, strength) => quick_mutation(base, *kind, *strength, rng),
             Source::File(flames) => flames[i].clone(),
             Source::Snapshot(f) => (**f).clone(),
@@ -118,6 +122,8 @@ pub struct Explorer {
     /// Flames per random batch, and where a new batch goes (Preferences).
     pub batch_size: usize,
     pub refresh_mode: RefreshMode,
+    /// Settings of new flames (Preferences), for the random flames.
+    pub new_flame: crate::settings::NewFlameDefaults,
     mutation: MutationType,
     mutation_count: usize,
     strength: f64,
@@ -142,6 +148,7 @@ impl Default for Explorer {
             quality: Quality::NORMAL,
             batch_size: 24,
             refresh_mode: RefreshMode::Clear,
+            new_flame: Default::default(),
             mutation: MutationType::All,
             mutation_count: 11,
             strength: 0.5,
@@ -193,7 +200,7 @@ impl Explorer {
         }
         let batch = self.batches[strip].load(Ordering::Relaxed);
         let (keys, next) = (Arc::new(keys), Arc::new(AtomicUsize::new(0)));
-        let threads = std::thread::available_parallelism().map_or(2, |n| n.get() / 2).clamp(1, count.max(1));
+        let threads = (crate::settings::cpu_threads() / 2).max(1).clamp(1, count.max(1));
         for _ in 0..threads {
             let (tx, token, source, keys, next) = (self.tx.clone(), self.batches[strip].clone(), source.clone(), keys.clone(), next.clone());
             std::thread::spawn(move || {
@@ -227,7 +234,7 @@ impl Explorer {
     pub fn refresh(&mut self, current: &Flame, library: &[Flame]) {
         match self.mode {
             Mode::Random => {
-                let source = Source::Random(self.generator, self.extras, self.quality);
+                let source = Source::Random(self.generator, self.extras, self.quality, Arc::new(self.new_flame.clone()));
                 self.start(0, source, self.batch_size.clamp(1, 64), self.refresh_mode);
             }
             Mode::Mutations => {

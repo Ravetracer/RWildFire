@@ -484,7 +484,7 @@ impl CurveEditor {
             |ui| {
                 ui.horizontal(|ui| {
                     if ui.button("Open audio…").on_hover_text("MP3, WAV, FLAC or Ogg Vorbis").clicked()
-                        && let Some(file) = rfd::FileDialog::new().add_filter("Audio", &["mp3", "wav", "flac", "ogg"]).pick_file()
+                        && let Some(file) = crate::settings::dialog(crate::settings::Folder::Sound).add_filter("Audio", &["mp3", "wav", "flac", "ogg"]).pick_file()
                     {
                         let (tx, rx) = channel();
                         let f = file.clone();

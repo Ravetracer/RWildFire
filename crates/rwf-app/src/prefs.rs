@@ -68,6 +68,15 @@ pub struct Prefs {
     pub batch_refresh: crate::explorer::RefreshMode,
     /// Resolution and quality profiles.
     pub render_profiles: crate::profiles::Profiles,
+    /// Default folders of the file dialogs.
+    pub folders: crate::settings::Folders,
+    pub new_flame: crate::settings::NewFlameDefaults,
+    /// Quality the editor preview renders up to, and its time limit in seconds (0: none).
+    pub preview_quality: f64,
+    pub preview_seconds: f64,
+    /// CPU cores the renderers leave free.
+    pub free_cores: usize,
+    pub controls: crate::settings::ControlStyle,
 }
 
 /// A set of variations the random generators may use (JWildfire's variation profiles, by
@@ -113,6 +122,12 @@ impl Default for Prefs {
             batch_size: 24,
             batch_refresh: crate::explorer::RefreshMode::Clear,
             render_profiles: Default::default(),
+            folders: Default::default(),
+            new_flame: Default::default(),
+            preview_quality: 400.0,
+            preview_seconds: 0.0,
+            free_cores: 0,
+            controls: Default::default(),
         }
     }
 }
@@ -148,6 +163,28 @@ impl Prefs {
                     }
                     p.render_profiles.qualities.extend(crate::profiles::QualityProfile::from_line(v));
                 }
+                k if k.starts_with("folder_") => {
+                    if let Some(f) = crate::settings::Folder::ALL.into_iter().find(|f| f.key() == k) {
+                        p.folders.set(f, v.to_string());
+                    }
+                }
+                "new_title" => p.new_flame.title = v.to_string(),
+                "new_oversampling" => p.new_flame.oversampling = v.parse::<u32>().map(|n| n.clamp(1, 6)).unwrap_or(p.new_flame.oversampling),
+                "new_filter_kernel" => p.new_flame.filter_kernel = rwf_core::render::filter::FilterKernel::parse(v).unwrap_or(p.new_flame.filter_kernel),
+                "new_filter_radius" => p.new_flame.filter_radius = num(v, p.new_flame.filter_radius),
+                "new_de_radius" => p.new_flame.de_radius = num(v, p.new_flame.de_radius),
+                "new_de_curve" => p.new_flame.de_curve = num(v, p.new_flame.de_curve),
+                "new_white_level" => p.new_flame.white_level = num(v, p.new_flame.white_level),
+                "new_fg_opacity" => p.new_flame.fg_opacity = num(v, p.new_flame.fg_opacity),
+                "new_fps" => p.new_flame.fps = num(v, p.new_flame.fps),
+                "new_frame_count" => p.new_flame.frame_count = v.parse::<u32>().ok().filter(|n| *n > 0).unwrap_or(p.new_flame.frame_count),
+                "preview_quality" => p.preview_quality = num(v, p.preview_quality).max(10.0),
+                "preview_seconds" => p.preview_seconds = num(v, p.preview_seconds).max(0.0),
+                "free_cores" => p.free_cores = v.parse().unwrap_or(p.free_cores),
+                "control_shape" => p.controls.shape = crate::settings::ControlShape::parse(v),
+                "control_color" => p.controls.color = v == "true",
+                "control_numbers" => p.controls.numbers = v == "true",
+                "control_shadows" => p.controls.shadows = v == "true",
                 "associate_profiles" => p.render_profiles.associate = v == "true",
                 "batch_size" => p.batch_size = v.parse::<usize>().map(|n| n.clamp(1, 64)).unwrap_or(p.batch_size),
                 "batch_refresh" => p.batch_refresh = crate::explorer::RefreshMode::parse(v),
@@ -184,6 +221,17 @@ impl Prefs {
             text += &format!("quality_profile = {}\n", q.to_line());
         }
         text += &format!("associate_profiles = {}\n", self.render_profiles.associate);
+        for f in crate::settings::Folder::ALL {
+            text += &format!("{} = {}\n", f.key(), self.folders.get(f));
+        }
+        let n = &self.new_flame;
+        text += &format!(
+            "new_title = {}\nnew_oversampling = {}\nnew_filter_kernel = {}\nnew_filter_radius = {}\nnew_de_radius = {}\nnew_de_curve = {}\nnew_white_level = {}\nnew_fg_opacity = {}\nnew_fps = {}\nnew_frame_count = {}\n",
+            n.title, n.oversampling, n.filter_kernel.as_str(), n.filter_radius, n.de_radius, n.de_curve, n.white_level, n.fg_opacity, n.fps, n.frame_count
+        );
+        text += &format!("preview_quality = {}\npreview_seconds = {}\nfree_cores = {}\n", self.preview_quality, self.preview_seconds, self.free_cores);
+        let c = &self.controls;
+        text += &format!("control_shape = {}\ncontrol_color = {}\ncontrol_numbers = {}\ncontrol_shadows = {}\n", c.shape.as_str(), c.color, c.numbers, c.shadows);
         text += &format!("batch_size = {}\nbatch_refresh = {}\n", self.batch_size, self.batch_refresh.as_str());
         std::fs::write(&path, text).map_err(|e| format!("{}: {e}", path.display()))?;
         Ok(path)
@@ -204,8 +252,11 @@ impl Prefs {
     }
 
     /// Hands the active profile to the random generators.
+    /// Applies the settings held globally: the variation profile of the random generators,
+    /// default folders and render threads.
     pub fn apply_profile(&self) {
         rwf_core::random::java::set_allowed_variations(self.allowed_variations());
+        crate::settings::set_globals(&self.folders, self.free_cores);
     }
 
     /// The quick save folder.
@@ -315,6 +366,11 @@ pub fn profile_combo(ui: &mut egui::Ui, id: &str, names: &[String], active: &mut
 }
 
 /// Today's date (UTC) as `yyyy-mm-dd`.
+/// A finite number, or `default`.
+fn num(v: &str, default: f64) -> f64 {
+    v.parse::<f64>().ok().filter(|x| x.is_finite()).unwrap_or(default)
+}
+
 fn today() -> String {
     let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
     date_time(secs)[..10].to_string()
@@ -450,10 +506,30 @@ impl PrefsWindow {
                     .response
                     .on_hover_text("What a double-click on the canvas does");
                     ui.end_row();
+                    widgets::label(ui, "Preview quality");
+                    ui.add(egui::DragValue::new(&mut prefs.preview_quality).range(10.0..=5000.0).max_decimals(0))
+                        .on_hover_text("The editor preview renders up to this quality (Render tab › Target quality changes it for the session)");
+                    ui.end_row();
+                    widgets::label(ui, "Preview time limit");
+                    ui.add(egui::DragValue::new(&mut prefs.preview_seconds).range(0.0..=3600.0).suffix(" s").max_decimals(0))
+                        .on_hover_text("The preview stops refining after this many seconds; 0 = no limit");
+                    ui.end_row();
+                    widgets::label(ui, "Free CPU cores");
+                    ui.add(egui::DragValue::new(&mut prefs.free_cores).range(0..=256)).on_hover_text(format!(
+                        "CPU cores the renderers leave free for other programs ({} of {} cores used)",
+                        crate::settings::cpu_threads_for(prefs.free_cores),
+                        std::thread::available_parallelism().map_or(4, |n| n.get())
+                    ));
+                    ui.end_row();
                     widgets::label(ui, "Grid spacing");
                     ui.add(egui::DragValue::new(&mut prefs.grid_size).speed(0.01).range(0.01..=100.0)).on_hover_text("Default spacing of the canvas grid (View › Grid)");
                     ui.end_row();
                 });
+                crate::settings::controls_ui(ui, &mut prefs.controls);
+                theme::section_label(ui, "New flames");
+                crate::settings::new_flame_ui(ui, &mut prefs.new_flame);
+                theme::section_label(ui, "Folders");
+                crate::settings::folders_ui(ui, &mut prefs.folders);
                 theme::section_label(ui, "Random flames");
                 widgets::grid(ui, "prefs-batch", |ui| {
                     widgets::label(ui, "Batch size");

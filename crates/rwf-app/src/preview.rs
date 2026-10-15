@@ -35,6 +35,11 @@ pub struct Preview {
     pub backend: Backend,
     /// Accumulation stops at this sample density.
     pub target_quality: f64,
+    /// ... or after this many seconds of rendering one state (0: no limit).
+    pub max_seconds: f64,
+    /// When the current render (re)started, and its sample count last frame.
+    run_start: Instant,
+    run_samples: u64,
     gpu: Option<GpuRenderer>,
     gpu_error: Option<String>,
     gpu_texture: Option<(egui::TextureId, u64)>,
@@ -71,6 +76,9 @@ impl Preview {
         Self {
             backend: if gpu.is_some() { Backend::Gpu } else { Backend::Cpu },
             target_quality: 400.0,
+            max_seconds: 0.0,
+            run_start: Instant::now(),
+            run_samples: 0,
             gpu,
             gpu_error,
             gpu_texture: None,
@@ -149,7 +157,20 @@ impl Preview {
     }
 
     pub fn is_converged(&self) -> bool {
-        self.density() >= self.target_quality
+        self.density() >= self.target_quality || self.timed_out()
+    }
+
+    /// The time limit stopped the render before it reached the target quality.
+    pub fn timed_out(&self) -> bool {
+        self.max_seconds > 0.0 && self.run_start.elapsed().as_secs_f64() > self.max_seconds
+    }
+
+    /// Restarts the time limit when the render started over.
+    fn track_restart(&mut self, samples: u64) {
+        if samples == 0 || samples < self.run_samples {
+            self.run_start = Instant::now();
+        }
+        self.run_samples = samples;
     }
 
 
@@ -181,13 +202,19 @@ impl Preview {
 
     fn update_gpu(&mut self, ctx: &egui::Context, frame: &eframe::Frame, flame: &Flame, size: (u32, u32), dt: Duration) -> Option<PreviewImage> {
         let target = self.target_quality;
+        let samples = {
+            let gpu = self.gpu.as_mut()?;
+            gpu.set_flame(flame, size.0, size.1);
+            if gpu.last_error().is_some() {
+                return None;
+            }
+            gpu.samples()
+        };
+        self.track_restart(samples);
+        let timed_out = self.timed_out();
         let gpu = self.gpu.as_mut()?;
-        gpu.set_flame(flame, size.0, size.1);
-        if gpu.last_error().is_some() {
-            return None;
-        }
         // Adaptive work per frame: aim for roughly 60 fps while accumulating.
-        if gpu.density() < target {
+        if gpu.density() < target && !timed_out {
             let ms = dt.as_secs_f64() * 1000.0;
             if ms < 14.0 {
                 self.gpu_iters = (self.gpu_iters + self.gpu_iters / 4 + 1).min(2048);
@@ -236,7 +263,7 @@ impl Preview {
             }
         };
         if needs_restart {
-            let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).saturating_sub(1).max(1);
+            let threads = crate::settings::cpu_threads().saturating_sub(1).max(1);
             self.cpu = Some(CpuRender::start(
                 flame,
                 RenderOptions { width: size.0, height: size.1, threads, max_density: Some(self.target_quality), seed: 7, zbuffer: false },
@@ -244,6 +271,7 @@ impl Preview {
             self.cpu_uploaded_samples = u64::MAX;
             self.cpu_final_uploaded = false;
             self.cpu_last_upload = Instant::now() - Duration::from_secs(1);
+            self.run_start = Instant::now();
         } else if let Some(r) = &mut self.cpu
             && r.flame() != flame
         {
@@ -253,6 +281,9 @@ impl Preview {
         }
         let samples = self.cpu.as_ref()?.samples();
         self.track_rate(samples);
+        if self.timed_out() {
+            self.cpu.as_ref()?.stop();
+        }
         let r = self.cpu.as_ref()?;
         let interval = if samples < 2_000_000 { 60 } else { 250 };
         let finished = r.is_finished();

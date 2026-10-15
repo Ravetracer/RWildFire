@@ -625,7 +625,7 @@ fn resource_picker(ui: &mut Ui, var: &mut VariationInstance, r: &variations::Res
             ui.horizontal(|ui| {
                 ui.label(RichText::new(format!("SVG, {} KB", len.div_ceil(1024))).color(theme::TEXT_MUTED));
                 if ui.small_button("Load…").clicked()
-                    && let Some(p) = rfd::FileDialog::new().add_filter("SVG", &["svg"]).pick_file()
+                    && let Some(p) = crate::settings::dialog(crate::settings::Folder::Images).add_filter("SVG", &["svg"]).pick_file()
                     && let Ok(text) = std::fs::read_to_string(&p)
                 {
                     var.set_resource(r.name, &text);
@@ -637,7 +637,7 @@ fn resource_picker(ui: &mut Ui, var: &mut VariationInstance, r: &variations::Res
             ui.horizontal(|ui| {
                 ui.label(RichText::new(format!("flame, {} KB", len.div_ceil(1024))).color(theme::TEXT_MUTED));
                 if ui.small_button("Load…").clicked()
-                    && let Some(p) = rfd::FileDialog::new().add_filter("Flame", &["flame"]).pick_file()
+                    && let Some(p) = crate::settings::dialog(crate::settings::Folder::Flames).add_filter("Flame", &["flame"]).pick_file()
                     && let Ok(text) = std::fs::read_to_string(&p)
                 {
                     var.set_resource(r.name, &text);
@@ -649,7 +649,7 @@ fn resource_picker(ui: &mut Ui, var: &mut VariationInstance, r: &variations::Res
             ui.horizontal(|ui| {
                 let mut changed = ui.add(egui::TextEdit::singleline(&mut value).desired_width(140.0).hint_text("Flame file")).changed();
                 if ui.small_button("…").clicked()
-                    && let Some(p) = rfd::FileDialog::new().add_filter("Flame", &["flame"]).pick_file()
+                    && let Some(p) = crate::settings::dialog(crate::settings::Folder::Flames).add_filter("Flame", &["flame"]).pick_file()
                 {
                     value = p.display().to_string();
                     changed = true;
@@ -698,7 +698,7 @@ fn resource_picker(ui: &mut Ui, var: &mut VariationInstance, r: &variations::Res
                 let txt = if len == 0 { "none".to_string() } else { format!("embedded, {} KB", len.div_ceil(1024)) };
                 ui.label(RichText::new(txt).color(theme::TEXT_MUTED));
                 if ui.small_button("Embed…").clicked()
-                    && let Some(p) = rfd::FileDialog::new().add_filter(image_filter.0, image_filter.1).pick_file()
+                    && let Some(p) = crate::settings::dialog(crate::settings::Folder::Images).add_filter(image_filter.0, image_filter.1).pick_file()
                     && let Ok(bytes) = std::fs::read(&p)
                 {
                     var.set_resource_bytes(r.name, &bytes);

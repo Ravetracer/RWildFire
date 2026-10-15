@@ -43,7 +43,7 @@ pub fn render_movie_frame(movie: &Movie, frame: u32, gpu: Option<&mut GpuRendere
             img
         }
         None => {
-            let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+            let threads = rwf_core::render::cpu_threads();
             let opts = RenderOptions { width: w, height: h, threads, max_density: Some(q), seed: 0x5EED + frame as u64, zbuffer: false };
             let mut img = CpuRender::start_packets(&packets, opts).wait().image(false);
             rwf_core::render::denoise::apply_post_denoiser(first, &mut img, w, h, false).map_err(|e| format!("denoiser: {e}"))?;

@@ -395,14 +395,14 @@ impl DanceView {
         theme::section_label(ui, "Project");
         ui.horizontal(|ui| {
             if ui.button("Open…").clicked()
-                && let Some(p) = rfd::FileDialog::new().add_filter("Dance project", &["rwfdance"]).pick_file()
+                && let Some(p) = crate::settings::dialog(crate::settings::Folder::Movies).add_filter("Dance project", &["rwfdance"]).pick_file()
                 && let Err(e) = self.open_file(&p)
             {
                 self.status = Some(format!("Could not open {}: {e}", p.display()));
             }
             if ui.button("Save…").clicked() {
                 let name = self.file.as_ref().and_then(|f| f.file_name()).map_or("show.rwfdance".into(), |n| n.to_string_lossy().to_string());
-                if let Some(p) = rfd::FileDialog::new().add_filter("Dance project", &["rwfdance"]).set_file_name(name).save_file() {
+                if let Some(p) = crate::settings::dialog(crate::settings::Folder::Movies).add_filter("Dance project", &["rwfdance"]).set_file_name(name).save_file() {
                     let p = p.with_extension("rwfdance");
                     match rwf_core::dance::write_project_file(&self.project, &p) {
                         Ok(()) => {
@@ -438,7 +438,7 @@ impl DanceView {
                 self.random = Some(rx);
             }
             if ui.button(format!("{} Files…", icons::PLUS)).clicked()
-                && let Some(files) = rfd::FileDialog::new().add_filter("Flame", &["flame", "xml"]).pick_files()
+                && let Some(files) = crate::settings::dialog(crate::settings::Folder::Flames).add_filter("Flame", &["flame", "xml"]).pick_files()
             {
                 for f in files {
                     match rwf_core::io::read_flames_from_file(&f) {
@@ -699,12 +699,12 @@ impl DanceView {
             ui.horizontal(|ui| {
                 if ui.button("Choose output…").clicked() {
                     self.output = match self.format.extension() {
-                        Some(ext) => rfd::FileDialog::new()
+                        Some(ext) => crate::settings::dialog(crate::settings::Folder::Images)
                             .add_filter(self.format.label(), &[ext])
                             .set_file_name(format!("dance.{ext}"))
                             .save_file()
                             .map(|p| p.with_extension(ext)),
-                        None => rfd::FileDialog::new().set_title("Folder for the PNG frames").pick_folder(),
+                        None => crate::settings::dialog(crate::settings::Folder::Images).set_title("Folder for the PNG frames").pick_folder(),
                     };
                 }
                 ui.add_enabled(gpu.is_some(), egui::Checkbox::new(&mut self.on_gpu, "GPU"));
@@ -774,7 +774,7 @@ impl DanceView {
     fn transport(&mut self, ui: &mut Ui) {
         ui.horizontal_centered(|ui| {
             if ui.button(format!("{} Music…", icons::PLUS)).on_hover_text("MP3, WAV, FLAC or Ogg").clicked()
-                && let Some(p) = rfd::FileDialog::new().add_filter("Music", &["mp3", "wav", "flac", "ogg"]).pick_file()
+                && let Some(p) = crate::settings::dialog(crate::settings::Folder::Sound).add_filter("Music", &["mp3", "wav", "flac", "ogg"]).pick_file()
             {
                 self.pause();
                 self.load_music(p);

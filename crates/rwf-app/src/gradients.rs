@@ -263,7 +263,7 @@ impl GradientLibrary {
                     self.status = Some(self.save_user(current));
                 }
                 if ui.button("Import file…").on_hover_text("Load .ugr / .map / flam3 palette files").clicked()
-                    && let Some(p) = rfd::FileDialog::new().add_filter("Gradients", &["ugr", "map", "xml", "gradient"]).pick_file()
+                    && let Some(p) = crate::settings::dialog(crate::settings::Folder::Gradients).add_filter("Gradients", &["ugr", "map", "xml", "gradient"]).pick_file()
                 {
                     self.status = Some(self.import(&p));
                 }

@@ -346,7 +346,7 @@ fn zbuffer_section(ui: &mut Ui, f: &mut rwf_core::Flame, st: &mut InspectorState
                 let (w, h) = (((flame.width as f64 * k) as u32).max(16), ((flame.height as f64 * k) as u32).max(16));
                 let (tx, rx) = std::sync::mpsc::channel();
                 std::thread::spawn(move || {
-                    let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+                    let threads = crate::settings::cpu_threads();
                     let opts = rwf_core::render::RenderOptions { width: w, height: h, threads, max_density: Some(50.0), seed: 7, zbuffer: true };
                     let r = rwf_core::render::CpuRender::start(&flame, opts).wait();
                     let _ = tx.send(r.zbuffer_suggestion());
@@ -667,7 +667,7 @@ fn look_tab(ui: &mut Ui, doc: &mut Document, st: &mut InspectorState) {
                 let name = std::path::Path::new(&f.bg_image).file_name().map(|n| n.to_string_lossy().to_string());
                 let missing = !f.bg_image.is_empty() && rwf_core::render::background::background_image(f).is_none();
                 if ui.button(name.clone().unwrap_or_else(|| "Choose…".into())).on_hover_text("Image shown behind the flame instead of the colors above, stretched to the image size").clicked()
-                    && let Some(p) = rfd::FileDialog::new().add_filter("Image", &["png", "jpg", "jpeg"]).pick_file()
+                    && let Some(p) = crate::settings::dialog(crate::settings::Folder::Images).add_filter("Image", &["png", "jpg", "jpeg"]).pick_file()
                 {
                     f.bg_image = p.to_string_lossy().to_string();
                 }
@@ -743,7 +743,7 @@ fn gradient_editor(ui: &mut Ui, doc: &mut Document, st: &mut InspectorState) {
     });
     ui.horizontal(|ui| {
         if ui.button("From image…").on_hover_text("The 256 colors that represent an image best, sorted by hue (JWildfire's median cut)").clicked()
-            && let Some(p) = rfd::FileDialog::new().add_filter("Image", &["png", "jpg", "jpeg"]).pick_file()
+            && let Some(p) = crate::settings::dialog(crate::settings::Folder::Images).add_filter("Image", &["png", "jpg", "jpeg"]).pick_file()
         {
             match rwf_core::resources::image(&p.to_string_lossy()) {
                 Some(img) => {
@@ -755,7 +755,7 @@ fn gradient_editor(ui: &mut Ui, doc: &mut Document, st: &mut InspectorState) {
             }
         }
         if ui.button("From flame…").on_hover_text("The gradient of a flame file (its first flame and layer)").clicked()
-            && let Some(p) = rfd::FileDialog::new().add_filter("Flame", &["flame", "xml"]).pick_file()
+            && let Some(p) = crate::settings::dialog(crate::settings::Folder::Flames).add_filter("Flame", &["flame", "xml"]).pick_file()
         {
             match rwf_core::io::read_flames_from_file(&p) {
                 Ok(f) if !f.is_empty() => {
@@ -767,7 +767,7 @@ fn gradient_editor(ui: &mut Ui, doc: &mut Document, st: &mut InspectorState) {
             }
         }
         if ui.button("Export…").on_hover_text("Saves the gradient as .map (Fractint/JWildfire) or .ugr (Ultra Fractal)").clicked()
-            && let Some(p) = rfd::FileDialog::new().add_filter("Map gradient", &["map"]).add_filter("Ultra Fractal gradient", &["ugr"]).set_file_name("gradient.map").save_file()
+            && let Some(p) = crate::settings::dialog(crate::settings::Folder::Gradients).add_filter("Map gradient", &["map"]).add_filter("Ultra Fractal gradient", &["ugr"]).set_file_name("gradient.map").save_file()
         {
             let name = p.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
             let text = if p.extension().is_some_and(|e| e.eq_ignore_ascii_case("ugr")) {
@@ -906,7 +906,7 @@ fn gradient_editor(ui: &mut Ui, doc: &mut Document, st: &mut InspectorState) {
                 ui.horizontal(|ui| {
                     let name = std::path::Path::new(&gm.file).file_name().map(|n| n.to_string_lossy().to_string());
                     if ui.button(name.unwrap_or_else(|| "Choose…".into())).on_hover_text("Image used as a two-dimensional gradient").clicked()
-                        && let Some(p) = rfd::FileDialog::new().add_filter("Image", &["png", "jpg", "jpeg"]).pick_file()
+                        && let Some(p) = crate::settings::dialog(crate::settings::Folder::Images).add_filter("Image", &["png", "jpg", "jpeg"]).pick_file()
                     {
                         gm.file = p.to_string_lossy().to_string();
                     }

@@ -346,7 +346,7 @@ impl MeshView {
         {
             let ext = if self.format == Format::Obj { "obj" } else { "ply" };
             let name = self.flame.as_ref().filter(|f| !f.name.is_empty()).map_or("mesh".to_string(), |f| f.name.clone());
-            if let Some(p) = rfd::FileDialog::new().add_filter(ext.to_uppercase(), &[ext]).set_file_name(format!("{name}.{ext}")).save_file() {
+            if let Some(p) = crate::settings::dialog(crate::settings::Folder::Meshes).add_filter(ext.to_uppercase(), &[ext]).set_file_name(format!("{name}.{ext}")).save_file() {
                 let p: PathBuf = p.with_extension(ext);
                 let mut m = (*mesh).clone();
                 if !self.colors {

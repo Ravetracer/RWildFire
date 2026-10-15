@@ -120,6 +120,9 @@ impl RwfApp {
         };
         app.transforms.favourites = app.prefs.favourites.clone();
         app.canvas.grid_size = app.prefs.grid_size;
+        app.preview.target_quality = app.prefs.preview_quality;
+        app.preview.max_seconds = app.prefs.preview_seconds;
+        app.canvas.controls = app.prefs.controls;
         app.prefs.apply_profile();
         if let Some(p) = initial {
             app.open_path(&p);
@@ -222,6 +225,7 @@ impl RwfApp {
                 xf.coefs.scale(0.5);
                 f.first_layer_mut().xforms.push(xf);
                 f.pixels_per_unit = 200.0;
+                self.prefs.new_flame.apply(&mut f);
                 let profiles = &self.prefs.render_profiles;
                 if let Some(r) = profiles.default_resolution() {
                     // keep the framing: scale the zoom with the width
@@ -234,7 +238,7 @@ impl RwfApp {
                 self.doc.load(self.prefs.adopt(f), None);
             }
             Action::Open => {
-                if let Some(p) = rfd::FileDialog::new().add_filter("Flame", &["flame", "xml"]).pick_file() {
+                if let Some(p) = crate::settings::dialog(crate::settings::Folder::Flames).add_filter("Flame", &["flame", "xml"]).pick_file() {
                     self.open_path(&p);
                 }
             }
@@ -243,7 +247,7 @@ impl RwfApp {
                 None => self.run(Action::SaveAs, ctx),
             },
             Action::SaveAs => {
-                if let Some(p) = rfd::FileDialog::new().add_filter("Flame", &["flame"]).set_file_name("flame.flame").save_file() {
+                if let Some(p) = crate::settings::dialog(crate::settings::Folder::Flames).add_filter("Flame", &["flame"]).set_file_name("flame.flame").save_file() {
                     self.save_to(p);
                 }
             }
@@ -398,11 +402,17 @@ impl eframe::App for RwfApp {
         }
         self.batch.poll(&ctx);
         self.quilt.poll(&ctx);
+        self.explorer.batch_size = self.prefs.batch_size;
+        self.explorer.refresh_mode = self.prefs.batch_refresh;
+        if self.explorer.new_flame != self.prefs.new_flame {
+            self.explorer.new_flame = self.prefs.new_flame.clone();
+        }
 
         if let Some(rx) = &self.randomizing {
             match rx.try_recv() {
-                Ok(f) => {
+                Ok(mut f) => {
                     self.randomizing = None;
+                    self.prefs.new_flame.apply_to_random(&mut f);
                     self.doc.replace(self.prefs.adopt(f));
                     self.doc.path = None;
                 }
@@ -542,8 +552,6 @@ impl eframe::App for RwfApp {
         // ---- explorer strip ----
         if self.explorer_open && !self.workspace_open() {
             egui::Panel::bottom("explorer").resizable(false).frame(egui::Frame::new().fill(theme::PANEL).inner_margin(egui::Margin::symmetric(12, 8))).show(ui, |ui| {
-                self.explorer.batch_size = self.prefs.batch_size;
-                self.explorer.refresh_mode = self.prefs.batch_refresh;
                 if let Some(f) = self.explorer.show(ui, &self.doc.flame, &self.doc.library) {
                     self.doc.replace(self.prefs.adopt(f));
                 }
@@ -608,8 +616,14 @@ impl eframe::App for RwfApp {
         if std::mem::take(&mut self.canvas.open_render) && !self.render.open {
             self.render.open_with(&self.doc.flame);
         }
+        let preview_quality = self.prefs.preview_quality;
         if self.prefs_window.show(&ctx, &mut self.prefs) {
             self.canvas.grid_size = self.prefs.grid_size;
+            if self.prefs.preview_quality != preview_quality {
+                self.preview.target_quality = self.prefs.preview_quality;
+            }
+            self.preview.max_seconds = self.prefs.preview_seconds;
+            self.canvas.controls = self.prefs.controls;
             self.prefs.apply(&mut self.doc.flame);
             self.prefs.apply_profile();
             self.transforms.favourites = self.prefs.favourites.clone();

@@ -451,7 +451,7 @@ impl InteractiveRenderer {
                     self.save_state();
                 }
                 if ui.button("Load state…").on_hover_text("Continue a saved render").clicked()
-                    && let Some(p) = rfd::FileDialog::new().add_filter("Render state", &["rwfrender"]).pick_file()
+                    && let Some(p) = crate::settings::dialog(crate::settings::Folder::Images).add_filter("Render state", &["rwfrender"]).pick_file()
                 {
                     self.request(Pending::Load(p), editor_flame, gpu);
                 }
@@ -678,7 +678,7 @@ impl InteractiveRenderer {
         let Some(flame) = self.flame.clone() else { return };
         let ext = self.image_format.extension();
         let name = format!("{}.{ext}", if flame.name.is_empty() { "flame" } else { &flame.name });
-        let Some(path) = rfd::FileDialog::new().add_filter(self.image_format.label(), &[ext]).set_file_name(name).save_file() else { return };
+        let Some(path) = crate::settings::dialog(crate::settings::Folder::Images).add_filter(self.image_format.label(), &[ext]).set_file_name(name).save_file() else { return };
         // Read back here (the device belongs to this thread), encode and write in the background.
         let (format, jpeg_quality) = (self.image_format, self.jpeg_quality);
         let pixels = if format.is_hdr() {
@@ -727,7 +727,7 @@ impl InteractiveRenderer {
     fn save_state(&mut self) {
         let Some(r) = self.renderer.as_ref() else { return };
         let name = format!("{}.rwfrender", self.flame.as_ref().filter(|f| !f.name.is_empty()).map_or("render", |f| f.name.as_str()));
-        let Some(path) = rfd::FileDialog::new().add_filter("Render state", &["rwfrender"]).set_file_name(name).save_file() else { return };
+        let Some(path) = crate::settings::dialog(crate::settings::Folder::Images).add_filter("Render state", &["rwfrender"]).set_file_name(name).save_file() else { return };
         let Some(st) = r.save_state(self.elapsed.as_millis() as u64) else {
             self.status = Some("Readback failed".into());
             return;

@@ -25,6 +25,7 @@ use rwf_core::{Affine, Flame};
 
 use crate::doc::{Document, Selection};
 use crate::preview::Preview;
+use crate::settings::ControlShape;
 use crate::{icons, theme};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -112,6 +113,8 @@ pub struct CanvasState {
     /// Grid in world units, `grid_size` apart; composition guides over the image.
     pub show_grid: bool,
     pub grid_size: f64,
+    /// Look of the transform controls (Preferences).
+    pub controls: crate::settings::ControlStyle,
     pub show_guides: bool,
     /// The selected transform applied to a grid ("variation effect").
     pub show_var_effect: bool,
@@ -133,6 +136,7 @@ impl Default for CanvasState {
             scale_y: true,
             show_grid: false,
             grid_size: 0.5,
+            controls: Default::default(),
             show_guides: false,
             show_var_effect: false,
             var_mesh: None,
@@ -212,6 +216,31 @@ fn triangle(m: &Mapper, a: &Affine) -> [Pos2; 3] {
     [o, x, y]
 }
 
+/// The lines of a transform control (`t`: origin, end of the X axis, end of the Y axis).
+fn control_segments(shape: ControlShape, t: &[Pos2; 3]) -> Vec<(Pos2, Pos2)> {
+    let [o, x, y] = *t;
+    match shape {
+        ControlShape::Triangle => vec![(o, x), (x, y), (y, o)],
+        ControlShape::Rectangle => {
+            let far = x + (y - o);
+            vec![(o, x), (x, far), (far, y), (y, o)]
+        }
+        ControlShape::Axis => {
+            let mut v = vec![(o, x), (o, y)];
+            for tip in [x, y] {
+                let d = (tip - o).normalized() * 9.0;
+                if d.is_finite() {
+                    let rot = |v: Vec2, a: f32| vec2(v.x * a.cos() - v.y * a.sin(), v.x * a.sin() + v.y * a.cos());
+                    v.push((tip, tip - rot(d, 0.45)));
+                    v.push((tip, tip - rot(d, -0.45)));
+                }
+            }
+            v
+        }
+        ControlShape::Crosshair => vec![(o - (x - o), x), (o - (y - o), y)],
+    }
+}
+
 fn point_in_triangle(p: Pos2, t: &[Pos2; 3]) -> bool {
     let s = |a: Pos2, b: Pos2, c: Pos2| (a.x - c.x) * (b.y - c.y) - (b.x - c.x) * (a.y - c.y);
     let d1 = s(p, t[0], t[1]);
@@ -233,7 +262,7 @@ fn all_handles(doc: &Document) -> Vec<Selection> {
     v
 }
 
-fn hit_test(doc: &Document, m: &Mapper, p: Pos2) -> Option<Hit> {
+fn hit_test(doc: &Document, m: &Mapper, p: Pos2, shape: ControlShape) -> Option<Hit> {
     let mut order = all_handles(doc);
     // The selected transform wins ties.
     if let Some(pos) = order.iter().position(|s| *s == doc.selection) {
@@ -252,7 +281,9 @@ fn hit_test(doc: &Document, m: &Mapper, p: Pos2) -> Option<Hit> {
     }
     for sel in &order {
         let Some(a) = affine_of(doc, *sel) else { continue };
-        if point_in_triangle(p, &triangle(m, &a)) {
+        let t = triangle(m, &a);
+        let far = t[1] + (t[2] - t[0]);
+        if point_in_triangle(p, &t) || (shape == ControlShape::Rectangle && point_in_triangle(p, &[t[1], far, t[2]])) {
             return Some(Hit { sel: *sel, handle: Handle::Body });
         }
     }
@@ -293,14 +324,14 @@ pub fn show(ui: &mut egui::Ui, frame: &eframe::Frame, doc: &mut Document, state:
     // ---- interaction ----
     let pointer = resp.hover_pos();
     let modifiers = ui.input(|i| i.modifiers);
-    let hover_hit = if state.show_handles && state.drag.is_none() { pointer.and_then(|p| hit_test(doc, &mapper, p)) } else { None };
+    let hover_hit = if state.show_handles && state.drag.is_none() { pointer.and_then(|p| hit_test(doc, &mapper, p, state.controls.shape)) } else { None };
 
     if resp.drag_started_by(egui::PointerButton::Primary) || resp.drag_started_by(egui::PointerButton::Middle) || resp.drag_started_by(egui::PointerButton::Secondary) {
         // Hit-test where the press started, not where the drag threshold was crossed.
         if let Some(p) = ui.input(|i| i.pointer.press_origin()).or(resp.interact_pointer_pos()) {
             let world = mapper.to_world(p);
             let primary = resp.dragged_by(egui::PointerButton::Primary);
-            let hit = if primary && state.show_handles { hit_test(doc, &mapper, p) } else { None };
+            let hit = if primary && state.show_handles { hit_test(doc, &mapper, p, state.controls.shape) } else { None };
             let kind = match hit {
                 Some(h) => {
                     doc.selection = h.sel;
@@ -407,7 +438,7 @@ pub fn show(ui: &mut egui::Ui, frame: &eframe::Frame, doc: &mut Document, state:
     if resp.clicked()
         && let Some(p) = resp.interact_pointer_pos()
     {
-        if let Some(h) = hit_test(doc, &mapper, p).filter(|_| state.show_handles) {
+        if let Some(h) = hit_test(doc, &mapper, p, state.controls.shape).filter(|_| state.show_handles) {
             doc.selection = h.sel;
         }
     }
@@ -448,26 +479,54 @@ pub fn show(ui: &mut egui::Ui, frame: &eframe::Frame, doc: &mut Document, state:
                 Selection::XForm(i) => i,
                 _ => 7,
             };
+            let style = state.controls;
             let color = match sel {
                 Selection::Final(_) => Color32::from_rgb(0xd0, 0xd4, 0xdc),
                 Selection::Background(_) => Color32::from_rgb(0xc8, 0xa8, 0x70),
+                _ if !style.color => Color32::from_rgb(0xe4, 0xe6, 0xeb),
                 _ => xform_color(idx),
             };
             let selected = sel == doc.selection;
             let hovered = hover_hit.is_some_and(|h| h.sel == sel);
             let alpha = if selected { 255 } else if hovered { 200 } else { 110 };
             let c = color.gamma_multiply(alpha as f32 / 255.0);
-            if selected {
-                painter.add(Shape::convex_polygon(t.to_vec(), color.gamma_multiply(0.12), Stroke::NONE));
+            let far = t[1] + (t[2] - t[0]);
+            let outline: Vec<Pos2> = match style.shape {
+                ControlShape::Rectangle => vec![t[0], t[1], far, t[2]],
+                _ => t.to_vec(),
+            };
+            if selected && matches!(style.shape, ControlShape::Triangle | ControlShape::Rectangle) {
+                painter.add(Shape::convex_polygon(outline.clone(), color.gamma_multiply(0.12), Stroke::NONE));
             }
             let width = if selected { 2.0 } else { 1.2 };
             let dashed = matches!(sel, Selection::Final(_) | Selection::Background(_)) || doc.edit_post;
-            if dashed {
-                for (p, q) in [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
-                    painter.extend(Shape::dashed_line(&[p, q], Stroke::new(width, c), 6.0, 4.0));
+            for (stroke, shadow) in [(Stroke::new(width + 2.0, Color32::from_black_alpha(140)), true), (Stroke::new(width, c), false)] {
+                if shadow && !style.shadows {
+                    continue;
                 }
-            } else {
-                painter.add(Shape::closed_line(t.to_vec(), Stroke::new(width, c)));
+                for (p, q) in control_segments(style.shape, &t) {
+                    if dashed && !shadow {
+                        painter.extend(Shape::dashed_line(&[p, q], stroke, 6.0, 4.0));
+                    } else {
+                        painter.line_segment([p, q], stroke);
+                    }
+                }
+            }
+            if style.numbers {
+                let label = match sel {
+                    Selection::XForm(i) => (i + 1).to_string(),
+                    Selection::Final(i) => format!("F{}", i + 1),
+                    Selection::Background(i) => format!("B{}", i + 1),
+                    Selection::None => String::new(),
+                };
+                let centre = match style.shape {
+                    ControlShape::Rectangle => pos2((t[0].x + far.x) / 2.0, (t[0].y + far.y) / 2.0),
+                    _ => pos2((t[0].x + t[1].x + t[2].x) / 3.0, (t[0].y + t[1].y + t[2].y) / 3.0),
+                };
+                if style.shadows {
+                    painter.text(centre + vec2(1.0, 1.0), Align2::CENTER_CENTER, &label, FontId::proportional(12.0), Color32::from_black_alpha(200));
+                }
+                painter.text(centre, Align2::CENTER_CENTER, &label, FontId::proportional(12.0), c);
             }
             if selected || hovered {
                 let hv = hover_hit.filter(|h| h.sel == sel).map(|h| h.handle);
@@ -703,7 +762,9 @@ fn overlay(ui: &mut egui::Ui, avail: Rect, doc: &mut Document, state: &mut Canva
     let density = preview.density();
     let target = preview.target_quality;
     let progress = (density / target).clamp(0.0, 1.0) as f32;
-    let text = if preview.is_converged() {
+    let text = if preview.is_converged() && density < target {
+        format!("Quality {:.0}  ·  time limit reached", density)
+    } else if preview.is_converged() {
         format!("Quality {:.0}  ·  done", density)
     } else {
         format!("Quality {:.0} / {:.0}  ·  {:.1} M samples/s", density, target, preview.samples_per_sec() / 1e6)

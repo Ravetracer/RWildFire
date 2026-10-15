@@ -393,12 +393,12 @@ impl BatchView {
         let running = self.is_running();
         ui.horizontal(|ui| {
             if ui.button(format!("{}  Add files…", crate::icons::PLUS)).clicked()
-                && let Some(files) = rfd::FileDialog::new().add_filter("Flame", &["flame", "xml"]).pick_files()
+                && let Some(files) = crate::settings::dialog(crate::settings::Folder::Flames).add_filter("Flame", &["flame", "xml"]).pick_files()
             {
                 self.add_paths(&files);
             }
             if ui.button("Add folder…").on_hover_text("All .flame files of a folder").clicked()
-                && let Some(dir) = rfd::FileDialog::new().pick_folder()
+                && let Some(dir) = crate::settings::dialog(crate::settings::Folder::Flames).pick_folder()
             {
                 self.add_paths(&[dir]);
             }
@@ -638,7 +638,7 @@ impl BatchView {
                     next_to = false;
                 }
                 if ui.small_button("Choose…").clicked()
-                    && let Some(d) = rfd::FileDialog::new().pick_folder()
+                    && let Some(d) = crate::settings::dialog(crate::settings::Folder::Images).pick_folder()
                 {
                     self.settings.out_dir = Some(d);
                     next_to = false;

@@ -93,6 +93,21 @@ fn iteration_key(flame: &Flame) -> Flame {
 }
 
 /// True if `a` and `b` produce the same histogram (they may differ in tonemapping only).
+static CPU_THREADS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Sets the CPU threads of renders that choose their own count (0: all cores).
+pub fn set_cpu_threads(n: usize) {
+    CPU_THREADS.store(n, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// CPU threads for renders that choose their own count: the set number, or all cores.
+pub fn cpu_threads() -> usize {
+    match CPU_THREADS.load(std::sync::atomic::Ordering::Relaxed) {
+        0 => std::thread::available_parallelism().map_or(4, |n| n.get()),
+        n => n,
+    }
+}
+
 pub fn same_iteration(a: &Flame, b: &Flame) -> bool {
     iteration_key(a) == iteration_key(b)
 }

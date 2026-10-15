@@ -233,7 +233,7 @@ impl ExportDialog {
             let ctx = if self.backend == Backend::Gpu { gpu } else { None };
             let (f2, d2, p2) = (f.clone(), done.clone(), path.clone());
             std::thread::spawn(move || {
-                let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+                let threads = crate::settings::cpu_threads();
                 let mut progress = |n: u32, _| d2.store(n, std::sync::atomic::Ordering::Relaxed);
                 let result = rwf_gpu::stereo::render_stereo_image(&f2, w, h, q, ctx, threads, &mut progress).and_then(|img| {
                     rwf_core::output::write_rgba8(&p2, fmt, img.width, img.height, &img.rgba, jq)?;
@@ -265,7 +265,7 @@ impl ExportDialog {
                 Job::Gpu { renderer: Box::new(r), target }
             }
             _ => {
-                let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+                let threads = crate::settings::cpu_threads();
                 let render = CpuRender::start(
                     &f,
                     RenderOptions { width: self.width, height: self.height, threads, max_density: Some(self.quality), seed: 0x5EED, zbuffer: self.zbuffer },
@@ -377,7 +377,7 @@ impl ExportDialog {
                             img
                         }
                         None => {
-                            let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+                            let threads = crate::settings::cpu_threads();
                             CpuRender::start_frame(&flame, frame as f64, RenderOptions { width: w, height: h, threads, max_density: Some(q), seed: 0x5EED + frame as u64, zbuffer: false })
                                 .wait()
                                 .image(false)
@@ -551,8 +551,8 @@ impl ExportDialog {
             } else if self.mode == Mode::Animation {
                 if ui.add_sized([ui.available_width(), 30.0], egui::Button::new(RichText::new("Render animation…").strong()).fill(theme::ACCENT_DIM)).clicked() {
                     let target = match self.format.extension() {
-                        Some(ext) => rfd::FileDialog::new().add_filter(self.format.label(), &[ext]).set_file_name(format!("animation.{ext}")).save_file(),
-                        None => rfd::FileDialog::new().set_title("Folder for the PNG frames").pick_folder(),
+                        Some(ext) => crate::settings::dialog(crate::settings::Folder::Images).add_filter(self.format.label(), &[ext]).set_file_name(format!("animation.{ext}")).save_file(),
+                        None => crate::settings::dialog(crate::settings::Folder::Images).set_title("Folder for the PNG frames").pick_folder(),
                     };
                     if let Some(path) = target {
                         self.start_animation(flame, path, self.backend == Backend::Gpu && gpu.is_some());
@@ -564,7 +564,7 @@ impl ExportDialog {
             {
                 let ext = self.image_format.extension();
                 let default_name = format!("{}.{ext}", if flame.name.is_empty() { "flame" } else { &flame.name });
-                if let Some(path) = rfd::FileDialog::new().add_filter(self.image_format.label(), &[ext]).set_file_name(default_name).save_file() {
+                if let Some(path) = crate::settings::dialog(crate::settings::Folder::Images).add_filter(self.image_format.label(), &[ext]).set_file_name(default_name).save_file() {
                     self.start(flame, gpu.clone(), path);
                 }
             }

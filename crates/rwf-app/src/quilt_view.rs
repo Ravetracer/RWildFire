@@ -374,7 +374,7 @@ impl QuiltView {
             ui.horizontal(|ui| {
                 if ui.button("Choose…").clicked() {
                     let name = format!("{}.png", self.flame.as_ref().filter(|f| !f.name.is_empty()).map_or("quilt", |f| f.name.as_str()));
-                    if let Some(p) = rfd::FileDialog::new().add_filter("PNG", &["png"]).set_file_name(name).save_file() {
+                    if let Some(p) = crate::settings::dialog(crate::settings::Folder::Images).add_filter("PNG", &["png"]).set_file_name(name).save_file() {
                         self.output = Some(p.with_extension("png"));
                     }
                 }

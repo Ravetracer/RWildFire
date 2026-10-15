@@ -193,7 +193,7 @@ pub fn solid_section(ui: &mut Ui, f: &mut Flame) {
                 ui.horizontal(|ui| {
                     ui.add(egui::TextEdit::singleline(&mut m.refl_map_filename).desired_width(140.0).hint_text("PNG / JPEG file"));
                     if ui.small_button("…").clicked()
-                        && let Some(p) = rfd::FileDialog::new().add_filter("Image", &["png", "jpg", "jpeg"]).pick_file()
+                        && let Some(p) = crate::settings::dialog(crate::settings::Folder::Images).add_filter("Image", &["png", "jpg", "jpeg"]).pick_file()
                     {
                         m.refl_map_filename = p.display().to_string();
                     }

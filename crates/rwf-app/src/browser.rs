@@ -379,7 +379,7 @@ impl FlameBrowser {
     fn tree(&mut self, ui: &mut Ui, action: &mut Option<BrowserAction>) {
         ui.horizontal(|ui| {
             if ui.button(format!("{}  Folder…", icons::FOLDER_OPEN)).on_hover_text("Choose the folder to browse; its sub-folders are included").clicked() {
-                let mut dlg = rfd::FileDialog::new();
+                let mut dlg = crate::settings::dialog(crate::settings::Folder::Flames);
                 if let Some(r) = &self.root {
                     dlg = dlg.set_directory(r);
                 }

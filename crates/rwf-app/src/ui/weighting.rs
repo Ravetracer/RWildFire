@@ -74,7 +74,7 @@ pub fn section(ui: &mut Ui, xf: &mut XForm, preview: &mut FieldPreview) {
                 ui.horizontal(|ui| {
                     ui.add(egui::TextEdit::singleline(&mut w.cmap_filename).desired_width(140.0).hint_text("default image"));
                     if ui.small_button("…").clicked()
-                        && let Some(p) = rfd::FileDialog::new().add_filter("Image", &["png", "jpg", "jpeg"]).pick_file()
+                        && let Some(p) = crate::settings::dialog(crate::settings::Folder::Images).add_filter("Image", &["png", "jpg", "jpeg"]).pick_file()
                     {
                         w.cmap_filename = p.display().to_string();
                     }

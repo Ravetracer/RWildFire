@@ -114,7 +114,7 @@ impl Default for MovieView {
 }
 
 fn render_small(flame: &Flame, w: u32, h: u32, quality: f64) -> Vec<u8> {
-    let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).saturating_sub(1).max(1);
+    let threads = crate::settings::cpu_threads().saturating_sub(1).max(1);
     let opts = RenderOptions { width: w, height: h, threads, max_density: Some(quality), seed: 7, zbuffer: false };
     let mut f = flame.clone();
     f.bg_transparency = false;
@@ -296,7 +296,7 @@ impl MovieView {
                     self.file = None;
                 }
                 if ui.button("Open…").clicked()
-                    && let Some(p) = rfd::FileDialog::new().add_filter("JWildfire movie", &["jwfmovie"]).pick_file()
+                    && let Some(p) = crate::settings::dialog(crate::settings::Folder::Movies).add_filter("JWildfire movie", &["jwfmovie"]).pick_file()
                 {
                     match rwf_core::movie::read_movie_file(&p) {
                         Ok(m) => {
@@ -308,7 +308,7 @@ impl MovieView {
                     }
                 }
                 let save_as = |name: &str| {
-                    rfd::FileDialog::new().add_filter("JWildfire movie", &["jwfmovie"]).set_file_name(format!("{name}.jwfmovie")).save_file()
+                    crate::settings::dialog(crate::settings::Folder::Movies).add_filter("JWildfire movie", &["jwfmovie"]).set_file_name(format!("{name}.jwfmovie")).save_file()
                 };
                 if ui.add_enabled(!self.movie.parts.is_empty(), egui::Button::new("Save as…")).clicked()
                     && let Some(p) = save_as(if self.movie.name.is_empty() { "movie" } else { &self.movie.name })
@@ -396,12 +396,12 @@ impl MovieView {
                 if ui.button("Choose…").clicked() {
                     let name = if self.movie.name.is_empty() { "movie".to_string() } else { self.movie.name.clone() };
                     self.output = match self.format.extension() {
-                        Some(ext) => rfd::FileDialog::new()
+                        Some(ext) => crate::settings::dialog(crate::settings::Folder::Images)
                             .add_filter(self.format.label(), &[ext])
                             .set_file_name(format!("{name}.{ext}"))
                             .save_file()
                             .map(|p| p.with_extension(ext)),
-                        None => rfd::FileDialog::new().set_title("Folder for the PNG frames").pick_folder(),
+                        None => crate::settings::dialog(crate::settings::Folder::Images).set_title("Folder for the PNG frames").pick_folder(),
                     };
                 }
             });
@@ -546,7 +546,7 @@ impl MovieView {
                     self.add_part(doc.flame.at_frame(0.0));
                 }
                 if ui.button(format!("{}  Files…", icons::PLUS)).clicked()
-                    && let Some(files) = rfd::FileDialog::new().add_filter("Flame", &["flame", "xml"]).pick_files()
+                    && let Some(files) = crate::settings::dialog(crate::settings::Folder::Flames).add_filter("Flame", &["flame", "xml"]).pick_files()
                 {
                     for p in files {
                         match rwf_core::io::read_flames_from_file(&p) {
