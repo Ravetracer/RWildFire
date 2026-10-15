@@ -76,6 +76,28 @@ Each variation is a `VarDef` with a CPU function and a WGSL snippet that read th
 
 Done: core editor, file compatibility, CPU and GPU renderer, 1014 variations (incl. prepost, image and mesh resources, formula plots and curves, SVG and text, sub-flames; `taprats` as an optional GPL feature), gradient editing, 54 of JWildfire's random flame generators (all but Duckies, Color map, Wikimedia Commons and the script generator), JWildfire's random gradient, symmetry and weighting field generators (top bar, Explore strip and `rwf-cli random --symmetry/--weighting`), MutaGen with all 19 mutation types (no user lists, no morph amount), PNG export, density estimation, DOF, layers, animation and video export, movie maker (flames that fade or morph into each other, camera and transform scripts, motion blur; JWildfire `.jwfmovie` files; Render workspace and `rwf-cli movie`), dancing flames (a pool of flames moved by music in real time: FFT-band, sine and saw-tooth motions linked to any property or to xform rotate/move/zoom, flame switches with morphing, recorded shows rendered to video with the music; `.rwfdance` projects; Render workspace and `rwf-cli dance`), mesh generator (3D flames to triangle meshes: voxel sampling, Surface Nets, Taubin smoothing; OBJ and PLY with vertex colors; Render workspace and `rwf-cli mesh`), curve editor for animation tracks with envelopes from audio files (MP3, WAV, FLAC, Ogg: loudness of a frequency band per frame), adaptive filter, post blur, AI denoiser, solid rendering, xform weighting fields (parameter modulation on CPU and GPU, animated settings incl. JWildfire motion curves), channel mixer, background xforms, JPEG/HDR/OpenEXR and z-buffer output (CPU and GPU), interactive renderer (long progressive GPU renders with pause, resume and saved render state), batch renderer (render queue in the app and `rwf-cli batch`), quilt renderer (images larger than the GPU can render at once, in seamless tiles; app and `rwf-cli quilt`).
 
+Missing compared with JWildfire (from a feature comparison, by priority):
+
+- Compatibility / data loss:
+  - Write animation in JWildfire's motion-curve format (RWildFire's own `<track>` elements are lost in JWildfire)
+  - Import the remaining JWildfire motion curves: flame foreground opacity, dim distance, DOF shape parameters, post symmetry; xform opacity, `materialSpeed`, relative rotate/scale (XY/YZ/ZX, post); gradient shift; Bezier interpolation and parent curves (and make these properties animatable)
+  - Stereo 3D (anaglyph, side-by-side, interpolated images), background image, layer gradient map (image as 2D gradient with offset/scale), Z-dimming color
+- Editor:
+  - Transforms: YZ/ZX edit planes, arrow-key nudging, fine mode, scale X/Y only, linked transforms, xaos "to" view / set 0 or 1 / reset all, color helpers (random, distribute, apply to whole flame)
+  - Variations panel: reorder, convert to pre_/post_, randomize/reset parameters, favourites, variation profiles for the random generators
+  - Canvas: grid and guides (center, rule of thirds, golden ratio), variation effect overlay, DOF focus point drag mode, double-click actions, detached preview window
+  - Gradients: RGB, contrast, gamma, brightness, frequency, blur, sort, negative; range operations (copy/paste, fade, monochrome); gradient curve editor; gradient from an image, `.map` export, from/extract from flame; choice of random gradient generator
+  - Files and batches: flame XML to/from clipboard, quick save, folder browser with thumbnails (copy, move, rename, delete, to batch/mesh), configurable random batch (size, quality, snapshot), quick mutation strip
+  - Controls without UI: foreground opacity, z-buffer parameters (and "suggest parameters"), flame title, "reset to defaults" per section
+  - Resolution and quality profiles (editable, stored in flames, used by the batch renderer)
+  - Preferences: default folders, defaults for new flames (filter, oversampling, DE), preview quality and progressive limits, render threads, editor control style
+- Niche:
+  - Mesh generator: point cloud output, slice export / import as PNG stack, dilate pre-filter, Sunflow export
+  - Dancing flames: spline motion, balancing preprocessor, export of a recorded show as `.flame` files
+  - Movie maker: random movie generators; animation output as `.flame` sequence or ANB
+  - CLI: `random` with gradient generator, size, quality and GPU; denoiser override for `render`
+  - Help/FAQ window, choice of random number generator, denoiser for external images
+
 Optional / later:
 
 - Scripting (e.g. Lua or Rhai in place of JWildfire's Java scripts)
