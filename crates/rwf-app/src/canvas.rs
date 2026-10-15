@@ -19,7 +19,7 @@
 
 //! The main canvas: flame preview plus direct-manipulation handles for transforms.
 
-use egui::{Align2, Color32, CornerRadius, FontId, Pos2, Rect, Sense, Shape, Stroke, StrokeKind, Vec2, pos2, vec2};
+use egui::{Align2, Color32, CornerRadius, FontId, Pos2, Rect, RichText, Sense, Shape, Stroke, StrokeKind, Vec2, pos2, vec2};
 use rwf_core::render::View;
 use rwf_core::{Affine, Flame};
 
@@ -68,12 +68,17 @@ pub struct CanvasState {
     pub show_camera_gizmo: bool,
     /// Fraction of the canvas resolution used for rendering (performance knob).
     pub resolution_scale: f32,
+    /// Dragging moves, turns and scales at a tenth of the speed.
+    pub fine: bool,
+    /// Which axes Ctrl-drag scales.
+    pub scale_x: bool,
+    pub scale_y: bool,
     drag: Option<Drag>,
 }
 
 impl Default for CanvasState {
     fn default() -> Self {
-        Self { show_handles: true, show_denoised: false, denoised: Default::default(), denoised_for: None, denoised_rev: 0, show_camera_gizmo: true, resolution_scale: 1.0, drag: None }
+        Self { show_handles: true, show_denoised: false, denoised: Default::default(), denoised_for: None, denoised_rev: 0, show_camera_gizmo: true, resolution_scale: 1.0, fine: false, scale_x: true, scale_y: true, drag: None }
     }
 }
 
@@ -126,18 +131,14 @@ impl Mapper {
 fn affine_of(doc: &Document, sel: Selection) -> Option<Affine> {
     let (kind, i) = sel.kind()?;
     let xf = doc.layer().xforms_of(kind).get(i)?;
-    Some(if doc.edit_post { xf.post } else { xf.coefs })
+    Some(*crate::doc::edit_affine(xf, doc.edit_plane, doc.edit_post))
 }
 
 fn set_affine(doc: &mut Document, sel: Selection, a: Affine) {
-    let post = doc.edit_post;
+    let (plane, post) = (doc.edit_plane, doc.edit_post);
     let xf = sel.kind().and_then(|(kind, i)| doc.layer_mut().xforms_of_mut(kind).get_mut(i));
     if let Some(xf) = xf {
-        if post {
-            xf.post = a;
-        } else {
-            xf.coefs = a;
-        }
+        *crate::doc::edit_affine_mut(xf, plane, post) = a;
     }
 }
 
@@ -267,10 +268,21 @@ pub fn show(ui: &mut egui::Ui, frame: &eframe::Frame, doc: &mut Document, state:
             DragKind::Edit { sel, handle, rotate, scale } => {
                 let mut a = drag.start_affine;
                 let (ox, oy) = (a.c20, a.c21);
+                // fine mode: a tenth of the pointer movement
+                let f = if state.fine { 0.1 } else { 1.0 };
+                let (dx, dy) = ((wx - sx) * f, (wy - sy) * f);
                 match handle {
                     Handle::Origin | Handle::Body if !rotate && !scale => {
-                        a.c20 += wx - sx;
-                        a.c21 += wy - sy;
+                        a.c20 += dx;
+                        a.c21 += dy;
+                    }
+                    Handle::AxisX if !rotate && !scale && state.fine => {
+                        a.c00 += dx;
+                        a.c01 += dy;
+                    }
+                    Handle::AxisY if !rotate && !scale && state.fine => {
+                        a.c10 += dx;
+                        a.c11 += dy;
                     }
                     Handle::AxisX if !rotate && !scale => {
                         a.c00 = wx - ox;
@@ -284,12 +296,20 @@ pub fn show(ui: &mut egui::Ui, frame: &eframe::Frame, doc: &mut Document, state:
                         let a0 = (sy - oy).atan2(sx - ox);
                         let a1 = (wy - oy).atan2(wx - ox);
                         if rotate {
-                            a.rotate((a1 - a0).to_degrees());
+                            a.rotate((a1 - a0).to_degrees() * f);
                         }
                         if scale {
                             let d0 = ((sx - ox).powi(2) + (sy - oy).powi(2)).sqrt().max(1e-9);
                             let d1 = ((wx - ox).powi(2) + (wy - oy).powi(2)).sqrt();
-                            a.scale(d1 / d0);
+                            let s = (d1 / d0).powf(f);
+                            if state.scale_x {
+                                a.c00 *= s;
+                                a.c01 *= s;
+                            }
+                            if state.scale_y {
+                                a.c10 *= s;
+                                a.c11 *= s;
+                            }
                         }
                     }
                 }
@@ -423,6 +443,25 @@ fn overlay(ui: &mut egui::Ui, avail: Rect, doc: &mut Document, state: &mut Canva
         ui.add_enabled_ui(state.show_handles, |ui| {
             ui.selectable_value(&mut doc.edit_post, false, "Pre").on_hover_text("Edit the pre-affine transform");
             ui.selectable_value(&mut doc.edit_post, true, "Post").on_hover_text("Edit the post-affine transform");
+            let label = format!("{}{}", doc.edit_plane.label(), if state.fine { " · fine" } else { "" });
+            ui.menu_button(label, |ui| {
+                ui.label(RichText::new("Plane").small().color(theme::TEXT_MUTED));
+                for p in crate::doc::EditPlane::ALL {
+                    ui.radio_value(&mut doc.edit_plane, p, p.label()).on_hover_text(match p {
+                        crate::doc::EditPlane::XY => "The usual affine",
+                        _ => "The extra affine of 3D transforms in this plane",
+                    });
+                }
+                ui.separator();
+                ui.checkbox(&mut state.fine, "Fine movement").on_hover_text("Dragging moves, turns and scales at a tenth of the speed");
+                ui.label(RichText::new("Ctrl-drag scales").small().color(theme::TEXT_MUTED));
+                ui.checkbox(&mut state.scale_x, "X axis");
+                ui.checkbox(&mut state.scale_y, "Y axis");
+                ui.separator();
+                ui.label(RichText::new("Keys: arrows move, Alt+←/→ turn, Alt+↑/↓ scale;\nCtrl ×0.1, Shift ×10").small().color(theme::TEXT_MUTED));
+            })
+            .response
+            .on_hover_text("Edit plane, fine movement and scale axes");
         });
         ui.toggle_value(&mut state.show_camera_gizmo, format!("{} Camera", icons::GLOBE)).on_hover_text("Show the camera orbit globe on the canvas");
         ui.toggle_value(&mut state.show_denoised, format!("{} Denoised", icons::SPARKLE))

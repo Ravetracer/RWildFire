@@ -62,6 +62,25 @@ pub struct InspectorState {
     rotate_step: f64,
     scale_step: f64,
     move_step: f64,
+    /// Xaos shown as the probabilities into the selected transform instead of out of it.
+    xaos_to: bool,
+}
+
+impl InspectorState {
+    /// Rotate (degrees), scale (percent) and move steps of the transform buttons and keys.
+    pub fn steps(&self) -> (f64, f64, f64) {
+        if self.rotate_step == 0.0 { (15.0, 10.0, 0.1) } else { (self.rotate_step, self.scale_step, self.move_step) }
+    }
+}
+
+/// Layer-wide color actions (`Layer.distributeColors` etc.).
+#[derive(Clone, Copy)]
+enum ColorAction {
+    Distribute,
+    Random,
+    RandomSpeed,
+    Reset,
+    RandomCycle,
 }
 
 pub fn show(ui: &mut Ui, doc: &mut Document, st: &mut InspectorState, preview: &mut Preview, canvas: &mut CanvasState) {
@@ -86,6 +105,8 @@ fn transform_tab(ui: &mut Ui, doc: &mut Document, st: &mut InspectorState) {
     let gradient = doc.layer().gradient.clone();
     let sel = doc.selection;
     let edit_post = doc.edit_post;
+    let plane = doc.edit_plane;
+    let mut color_action = None;
     let Some(xf) = doc.selected_mut() else {
         ui.label(RichText::new("Select a transform on the left or on the canvas.").color(theme::TEXT_MUTED));
         return;
@@ -150,9 +171,29 @@ fn transform_tab(ui: &mut Ui, doc: &mut Document, st: &mut InspectorState) {
             ui.end_row();
         }
     });
+    ui.horizontal_wrapped(|ui| {
+        ui.label(RichText::new("All transforms:").small().color(theme::TEXT_MUTED));
+        for (a, label, tip) in [
+            (ColorAction::Distribute, "Distribute", "Spread the color positions evenly over the gradient"),
+            (ColorAction::Random, "Random", "Random color positions"),
+            (ColorAction::RandomSpeed, "Random speed", "Random color speeds"),
+            (ColorAction::Reset, "Reset", "Color positions and speeds to 0"),
+            (ColorAction::RandomCycle, "Random cycle", "Random gradient color cycle (Look tab)"),
+        ] {
+            if ui.small_button(label).on_hover_text(tip).clicked() {
+                color_action = Some(a);
+            }
+        }
+    });
 
-    theme::section_label(ui, if edit_post { "Post affine" } else { "Affine" });
-    let a = if edit_post { &mut xf.post } else { &mut xf.coefs };
+    let title = match (edit_post, plane) {
+        (false, crate::doc::EditPlane::XY) => "Affine".to_string(),
+        (true, crate::doc::EditPlane::XY) => "Post affine".to_string(),
+        (false, p) => format!("Affine ({})", p.label()),
+        (true, p) => format!("Post affine ({})", p.label()),
+    };
+    theme::section_label(ui, &title);
+    let a = crate::doc::edit_affine_mut(xf, plane, edit_post);
     egui::Grid::new("affine").num_columns(3).spacing([8.0, 6.0]).show(ui, |ui| {
         ui.label("");
         ui.label(RichText::new("x").color(theme::TEXT_MUTED));
@@ -215,25 +256,6 @@ fn transform_tab(ui: &mut Ui, doc: &mut Document, st: &mut InspectorState) {
         }
     });
 
-    if let Selection::XForm(_) = sel
-        && n_xforms > 1
-    {
-        ui.add_space(4.0);
-        egui::CollapsingHeader::new(RichText::new("Xaos (jump probabilities)").color(theme::TEXT_MUTED)).show(ui, |ui| {
-            if xf.chaos.len() < n_xforms {
-                xf.chaos.resize(n_xforms, 1.0);
-            }
-            grid(ui, "xaos", |ui| {
-                for j in 0..n_xforms {
-                    slider(ui, &format!("→ Transform {}", j + 1), &mut xf.chaos[j], 0.0..=2.0);
-                }
-            });
-            if ui.button("Reset xaos").clicked() {
-                xf.chaos.clear();
-            }
-        });
-    }
-
     ui.add_space(4.0);
     egui::CollapsingHeader::new(RichText::new("Color modulation").color(theme::TEXT_MUTED)).show(ui, |ui| {
         grid(ui, "mods", |ui| {
@@ -257,6 +279,81 @@ fn transform_tab(ui: &mut Ui, doc: &mut Document, st: &mut InspectorState) {
             });
         });
     }
+
+    if let Some(a) = color_action {
+        apply_color_action(doc, a);
+    }
+    if let Selection::XForm(i) = sel
+        && n_xforms > 1
+    {
+        xaos_section(ui, doc, st, i);
+    }
+}
+
+fn apply_color_action(doc: &mut Document, a: ColorAction) {
+    let layer = doc.layer_mut();
+    let n = layer.xforms.len();
+    let mut rng = rwf_core::rng::Rng::from_entropy();
+    match a {
+        ColorAction::Distribute if n > 1 => {
+            for (i, xf) in layer.xforms.iter_mut().enumerate() {
+                xf.color = i as f64 / (n - 1) as f64;
+            }
+        }
+        ColorAction::Random => layer.xforms.iter_mut().for_each(|xf| xf.color = rng.random()),
+        ColorAction::RandomSpeed => layer.xforms.iter_mut().for_each(|xf| xf.color_symmetry = rng.random()),
+        ColorAction::Reset => layer.xforms.iter_mut().for_each(|xf| {
+            xf.color = 0.0;
+            xf.color_symmetry = 0.0;
+        }),
+        // JWildfire: 255 - random(511)
+        ColorAction::RandomCycle => layer.gradient_shift = (255 - (rng.random() * 511.0) as i32) as f64,
+        _ => {}
+    }
+}
+
+/// Xaos of transform `i`: the probabilities to jump from it to each transform, or into it from
+/// each transform.
+fn xaos_section(ui: &mut Ui, doc: &mut Document, st: &mut InspectorState, i: usize) {
+    ui.add_space(4.0);
+    egui::CollapsingHeader::new(RichText::new("Xaos (jump probabilities)").color(theme::TEXT_MUTED)).id_salt("xaos").show(ui, |ui| {
+        let layer = doc.layer_mut();
+        let n = layer.xforms.len();
+        for xf in layer.xforms.iter_mut() {
+            if xf.chaos.len() < n {
+                xf.chaos.resize(n, 1.0);
+            }
+        }
+        ui.horizontal(|ui| {
+            ui.selectable_value(&mut st.xaos_to, false, "From this").on_hover_text("How likely the next transform after this one is each transform");
+            ui.selectable_value(&mut st.xaos_to, true, "To this").on_hover_text("How likely each transform is followed by this one");
+        });
+        grid(ui, "xaos", |ui| {
+            for j in 0..n {
+                if st.xaos_to {
+                    slider(ui, &format!("Transform {} →", j + 1), &mut layer.xforms[j].chaos[i], 0.0..=2.0);
+                } else {
+                    slider(ui, &format!("→ Transform {}", j + 1), &mut layer.xforms[i].chaos[j], 0.0..=2.0);
+                }
+            }
+        });
+        ui.horizontal(|ui| {
+            for (v, label) in [(0.0, "All 0"), (1.0, "All 1")] {
+                if ui.button(label).on_hover_text("Set all the values shown above").clicked() {
+                    for j in 0..n {
+                        if st.xaos_to {
+                            layer.xforms[j].chaos[i] = v;
+                        } else {
+                            layer.xforms[i].chaos[j] = v;
+                        }
+                    }
+                }
+            }
+            if ui.button("Reset all").on_hover_text("Xaos of every transform back to 1 (no xaos)").clicked() {
+                layer.xforms.iter_mut().for_each(|xf| xf.chaos.clear());
+            }
+        });
+    });
 }
 
 fn camera_tab(ui: &mut Ui, doc: &mut Document) {
@@ -708,4 +805,26 @@ fn render_tab(ui: &mut Ui, doc: &mut Document, preview: &mut Preview, canvas: &m
 
     theme::section_label(ui, "Advanced");
     ui.checkbox(&mut f.preserve_z, "Preserve Z (2D variations keep the z coordinate)");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn color_actions_cover_all_transforms() {
+        let mut flame = rwf_core::Flame::default();
+        for _ in 0..3 {
+            flame.first_layer_mut().xforms.push(rwf_core::XForm::with_variation("linear3D", 1.0));
+        }
+        let mut doc = Document::new(flame);
+        apply_color_action(&mut doc, ColorAction::Distribute);
+        assert_eq!(doc.layer().xforms.iter().map(|x| x.color).collect::<Vec<_>>(), vec![0.0, 0.5, 1.0]);
+        apply_color_action(&mut doc, ColorAction::RandomSpeed);
+        assert!(doc.layer().xforms.iter().all(|x| (0.0..1.0).contains(&x.color_symmetry)));
+        apply_color_action(&mut doc, ColorAction::Reset);
+        assert!(doc.layer().xforms.iter().all(|x| x.color == 0.0 && x.color_symmetry == 0.0));
+        apply_color_action(&mut doc, ColorAction::RandomCycle);
+        assert!((-255.0..=255.0).contains(&doc.layer().gradient_shift));
+    }
 }

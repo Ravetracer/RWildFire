@@ -22,7 +22,52 @@
 use std::path::PathBuf;
 
 use rwf_core::model::XFormKind;
-use rwf_core::{Flame, Layer, XForm};
+use rwf_core::{Affine, Flame, Layer, XForm};
+
+/// The affine plane being edited (JWildfire's `EditPlane`): XY, or the YZ / ZX affines of 3D
+/// transforms.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum EditPlane {
+    #[default]
+    XY,
+    YZ,
+    ZX,
+}
+
+impl EditPlane {
+    pub const ALL: [EditPlane; 3] = [EditPlane::XY, EditPlane::YZ, EditPlane::ZX];
+
+    pub fn label(&self) -> &'static str {
+        match self {
+            EditPlane::XY => "XY",
+            EditPlane::YZ => "YZ",
+            EditPlane::ZX => "ZX",
+        }
+    }
+}
+
+/// The affine of `xf` edited in `plane` (pre or post).
+pub fn edit_affine(xf: &XForm, plane: EditPlane, post: bool) -> &Affine {
+    match (plane, post) {
+        (EditPlane::XY, false) => &xf.coefs,
+        (EditPlane::XY, true) => &xf.post,
+        (EditPlane::YZ, false) => &xf.yz_coefs,
+        (EditPlane::YZ, true) => &xf.yz_post,
+        (EditPlane::ZX, false) => &xf.zx_coefs,
+        (EditPlane::ZX, true) => &xf.zx_post,
+    }
+}
+
+pub fn edit_affine_mut(xf: &mut XForm, plane: EditPlane, post: bool) -> &mut Affine {
+    match (plane, post) {
+        (EditPlane::XY, false) => &mut xf.coefs,
+        (EditPlane::XY, true) => &mut xf.post,
+        (EditPlane::YZ, false) => &mut xf.yz_coefs,
+        (EditPlane::YZ, true) => &mut xf.yz_post,
+        (EditPlane::ZX, false) => &mut xf.zx_coefs,
+        (EditPlane::ZX, true) => &mut xf.zx_post,
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Selection {
@@ -61,6 +106,7 @@ pub struct Document {
     pub selection: Selection,
     /// Edit post-affine instead of pre-affine.
     pub edit_post: bool,
+    pub edit_plane: EditPlane,
     undo: Vec<Flame>,
     redo: Vec<Flame>,
     committed: Flame,
@@ -80,6 +126,7 @@ impl Document {
             layer: 0,
             selection,
             edit_post: false,
+            edit_plane: EditPlane::XY,
             undo: Vec::new(),
             redo: Vec::new(),
             dirty: false,
@@ -194,5 +241,19 @@ impl Document {
             .map(|s| s.to_string_lossy().to_string())
             .unwrap_or_else(|| if self.flame.name.is_empty() { "Untitled".into() } else { self.flame.name.clone() });
         if self.dirty { format!("{name} •") } else { name }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn edit_planes_pick_their_affine() {
+        let mut xf = XForm::default();
+        edit_affine_mut(&mut xf, EditPlane::YZ, true).c20 = 3.0;
+        edit_affine_mut(&mut xf, EditPlane::ZX, false).c21 = 4.0;
+        assert_eq!((xf.yz_post.c20, xf.zx_coefs.c21, xf.coefs.c20), (3.0, 4.0, 0.0));
+        assert_eq!(edit_affine(&xf, EditPlane::YZ, true).c20, 3.0);
     }
 }

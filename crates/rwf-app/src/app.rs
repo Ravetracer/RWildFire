@@ -221,6 +221,37 @@ impl RwfApp {
         }
     }
 
+    /// Arrow keys on the selected transform (JWildfire's keys on the flame panel): move by the
+    /// move step (Ctrl ×0.1, Shift ×10); Alt+←/→ turns, Alt+↑/↓ scales by the inspector's steps.
+    fn nudge_selected(&mut self, ctx: &egui::Context) {
+        use egui::Key;
+        let (rot, scl, mv) = self.inspector.steps();
+        let (plane, post) = (self.doc.edit_plane, self.doc.edit_post);
+        let keys = ctx.input(|i| {
+            let m = i.modifiers;
+            let f = if m.command || m.ctrl { 0.1 } else if m.shift { 10.0 } else { 1.0 };
+            [Key::ArrowLeft, Key::ArrowRight, Key::ArrowUp, Key::ArrowDown].map(|k| i.key_pressed(k)).map(|p| p.then_some((m.alt, f)))
+        });
+        if keys.iter().all(Option::is_none) {
+            return;
+        }
+        let Some(xf) = self.doc.selected_mut() else { return };
+        let a = crate::doc::edit_affine_mut(xf, plane, post);
+        for (k, pressed) in keys.into_iter().enumerate() {
+            let Some((alt, f)) = pressed else { continue };
+            match (k, alt) {
+                (0, true) => a.rotate(-rot),
+                (1, true) => a.rotate(rot),
+                (2, true) => a.scale(1.0 + scl / 100.0),
+                (3, true) => a.scale(1.0 / (1.0 + scl / 100.0)),
+                (0, false) => a.translate(-mv * f, 0.0),
+                (1, false) => a.translate(mv * f, 0.0),
+                (2, false) => a.translate(0.0, -mv * f),
+                _ => a.translate(0.0, mv * f),
+            }
+        }
+    }
+
     fn shortcuts(&mut self, ctx: &egui::Context) -> Option<Action> {
         use egui::{Key, KeyboardShortcut, Modifiers};
         // The editing shortcuts act on the editor only.
@@ -259,6 +290,7 @@ impl RwfApp {
                     self.doc.flame = f;
                 }
             }
+            self.nudge_selected(ctx);
             if del {
                 if let Some((kind, i)) = self.doc.selection.kind() {
                     let list = self.doc.layer_mut().xforms_of_mut(kind);

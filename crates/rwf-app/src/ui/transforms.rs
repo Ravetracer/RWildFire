@@ -21,6 +21,7 @@
 
 use egui::{Color32, CornerRadius, RichText, Sense, Stroke, Ui, vec2};
 use rwf_core::variations;
+use rwf_core::model::{ColorType, DrawMode};
 use rwf_core::{VariationInstance, XForm};
 
 use super::widgets;
@@ -47,6 +48,8 @@ enum RowAction {
     Delete,
     MoveUp,
     MoveDown,
+    /// `TinaController.addLinkedXForm`
+    AddLinked,
 }
 
 fn row(ui: &mut Ui, title: &str, sub: &str, swatch: Color32, handle_color: Color32, selected: bool) -> Option<RowAction> {
@@ -111,6 +114,9 @@ fn row(ui: &mut Ui, title: &str, sub: &str, swatch: Color32, handle_color: Color
         }
         if ui.button("Move down").clicked() {
             action = Some(RowAction::MoveDown);
+        }
+        if ui.button("Add linked transform").on_hover_text("A new transform that always follows this one (via xaos); this one is hidden").clicked() {
+            action = Some(RowAction::AddLinked);
         }
         ui.separator();
         if ui.button("Delete").clicked() {
@@ -312,6 +318,29 @@ fn apply_row_action(doc: &mut Document, sel: Selection, a: RowAction) {
         RowAction::MoveDown if i + 1 < list.len() => {
             list.swap(i, i + 1);
             new_sel = Some(wrap(i + 1));
+        }
+        RowAction::AddLinked if is_xform => {
+            let to = list.len();
+            let mut xf = XForm::with_variation("linear3D", 1.0);
+            xf.weight = 0.5;
+            xf.color_type = ColorType::None;
+            xf.color_symmetry = 1.0;
+            list.push(xf);
+            let n = list.len();
+            for x in list.iter_mut() {
+                x.chaos.resize(n, 1.0);
+            }
+            // the new one takes over the xaos of `i`, which now only jumps to the new one
+            let from_chaos = std::mem::replace(&mut list[i].chaos, (0..n).map(|j| if j == to { 1.0 } else { 0.0 }).collect());
+            list[to].chaos = from_chaos;
+            list[i].draw_mode = DrawMode::Hidden;
+            list[i].opacity = 0.0;
+            for (k, x) in list.iter_mut().enumerate() {
+                if k != i {
+                    x.chaos[to] = 0.0;
+                }
+            }
+            new_sel = Some(wrap(to));
         }
         _ => {}
     }
@@ -649,4 +678,30 @@ fn preset_combo(ui: &mut Ui, vi: usize, current: i32, presets: &[variations::pre
         }
     });
     chosen
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn linked_transform_follows_its_source() {
+        let mut flame = rwf_core::Flame::default();
+        for _ in 0..3 {
+            flame.first_layer_mut().xforms.push(XForm::with_variation("linear3D", 1.0));
+        }
+        flame.first_layer_mut().xforms[1].chaos = vec![0.5, 2.0, 1.0];
+        let mut doc = Document::new(flame);
+        apply_row_action(&mut doc, Selection::XForm(1), RowAction::AddLinked);
+        let x = &doc.layer().xforms;
+        assert_eq!(x.len(), 4);
+        assert_eq!(doc.selection, Selection::XForm(3));
+        // the source only jumps to the new one and is hidden
+        assert_eq!(x[1].chaos, vec![0.0, 0.0, 0.0, 1.0]);
+        assert_eq!(x[1].draw_mode, DrawMode::Hidden);
+        // the new one continues like the source did, and nothing else jumps to it
+        assert_eq!(x[3].chaos, vec![0.5, 2.0, 1.0, 0.0]);
+        assert_eq!((x[0].chaos_to(3), x[2].chaos_to(3)), (0.0, 0.0));
+        assert_eq!((x[3].weight, x[3].color_type), (0.5, ColorType::None));
+    }
 }
