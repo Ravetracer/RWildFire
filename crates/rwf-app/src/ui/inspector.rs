@@ -45,10 +45,13 @@ pub enum Tab {
 pub struct GradientEdit {
     base: Option<Gradient>,
     last: Option<Gradient>,
-    shift: i32,
-    hue: f64,
-    sat: f64,
+    /// JWildfire's gradient modifications, plus a lightness change.
+    mods: rwf_core::gradient_ops::GradientMods,
     lum: f64,
+    /// Range of entries for the range operations, and copied colors.
+    from: usize,
+    to: usize,
+    clipboard: Vec<[u8; 3]>,
 }
 
 #[derive(Default)]
@@ -713,28 +716,99 @@ fn gradient_editor(ui: &mut Ui, doc: &mut Document, st: &mut InspectorState) {
     let ge = &mut st.gradient;
     if recapture || ge.last.as_ref() != Some(&layer.gradient) {
         ge.base = Some(layer.gradient.clone());
-        ge.shift = 0;
-        ge.hue = 0.0;
-        ge.sat = 0.0;
+        ge.mods = Default::default();
         ge.lum = 0.0;
     }
     egui::CollapsingHeader::new(RichText::new("Adjust").color(theme::TEXT_MUTED)).id_salt("grad-adjust").show(ui, |ui| {
         let mut changed = false;
+        let m = &mut ge.mods;
         grid(ui, "grad", |ui| {
-            widgets::label(ui, "Shift");
-            changed |= ui.add(egui::Slider::new(&mut ge.shift, -128..=128)).changed();
-            ui.end_row();
-            changed |= slider(ui, "Hue", &mut ge.hue, -0.5..=0.5).changed();
-            changed |= slider(ui, "Saturation", &mut ge.sat, -1.0..=1.0).changed();
+            let mut int = |ui: &mut Ui, label: &str, v: &mut i32, range: std::ops::RangeInclusive<i32>, tip: &str| {
+                widgets::label(ui, label);
+                changed |= ui.add(egui::Slider::new(v, range)).on_hover_text(tip).changed();
+                ui.end_row();
+            };
+            int(ui, "Shift", &mut m.shift, -255..=255, "Moves the colors along the gradient");
+            int(ui, "Frequency", &mut m.frequency, 1..=16, "Repeats the gradient");
+            int(ui, "Blur", &mut m.blur, 0..=127, "Averages neighbouring colors");
+            int(ui, "Hue", &mut m.hue, -255..=255, "Turns the hues");
+            int(ui, "Saturation", &mut m.saturation, -255..=255, "");
+            int(ui, "Brightness", &mut m.brightness, -255..=255, "");
+            int(ui, "Contrast", &mut m.contrast, -255..=255, "");
+            int(ui, "Gamma", &mut m.gamma, -255..=255, "Midtones");
+            int(ui, "Red", &mut m.red, -255..=255, "");
+            int(ui, "Green", &mut m.green, -255..=255, "");
+            int(ui, "Blue", &mut m.blue, -255..=255, "");
+            int(ui, "Swap RGB", &mut m.swap_rgb, 0..=255, "Swaps the color channels (RBG, GRB, GBR, BRG, BGR over the range)");
             changed |= slider(ui, "Lightness", &mut ge.lum, -0.5..=0.5).changed();
         });
+        if ui.small_button(format!("{} Reset", icons::REFRESH)).on_hover_text("Back to the gradient before these adjustments").clicked() {
+            ge.mods = Default::default();
+            ge.lum = 0.0;
+            changed = true;
+        }
         if changed && let Some(base) = &ge.base {
-            let mut g = base.clone();
-            g.shift(ge.shift);
-            if ge.hue != 0.0 || ge.sat != 0.0 || ge.lum != 0.0 {
-                g.adjust_hsl(ge.hue, ge.sat, ge.lum);
+            let mut g = base.with_mods(&ge.mods);
+            if ge.lum != 0.0 {
+                g.adjust_hsl(0.0, 0.0, ge.lum);
             }
             layer.gradient = g;
+        }
+    });
+    egui::CollapsingHeader::new(RichText::new("Range").color(theme::TEXT_MUTED)).id_salt("grad-range").show(ui, |ui| {
+        let n = layer.gradient.colors.len().max(1);
+        let strip = widgets::gradient_strip(ui, &layer.gradient, 14.0, None);
+        let r = strip.rect;
+        let (a, b) = (ge.from.min(ge.to), ge.from.max(ge.to));
+        let x = |i: usize| r.left() + r.width() * i as f32 / n as f32;
+        ui.painter().rect_stroke(egui::Rect::from_x_y_ranges(x(a)..=x(b + 1), r.y_range()), 0, egui::Stroke::new(2.0, theme::ACCENT), egui::StrokeKind::Outside);
+        // drag on the strip to select a range
+        if let Some(p) = strip.interact_pointer_pos() {
+            let i = (((p.x - r.left()) / r.width() * n as f32) as usize).min(n - 1);
+            if strip.drag_started() || strip.clicked() {
+                ge.from = i;
+            }
+            ge.to = i;
+        }
+        ui.horizontal(|ui| {
+            widgets::label(ui, "From");
+            ui.add(egui::DragValue::new(&mut ge.from).range(0..=n - 1));
+            widgets::label(ui, "to");
+            ui.add(egui::DragValue::new(&mut ge.to).range(0..=n - 1));
+            if ui.small_button("All").clicked() {
+                (ge.from, ge.to) = (0, n - 1);
+            }
+        });
+        let (a, b) = (ge.from.min(ge.to), ge.from.max(ge.to));
+        let g = &mut layer.gradient;
+        ui.horizontal_wrapped(|ui| {
+            if ui.small_button("Copy").clicked() {
+                ge.clipboard = g.copy_range(a, b);
+            }
+            if ui.add_enabled(!ge.clipboard.is_empty(), egui::Button::new("Paste").small()).on_hover_text("The copied colors from the start of the range").clicked() {
+                g.paste_range(a, b, &ge.clipboard);
+            }
+            if ui.small_button("Erase").on_hover_text("Black").clicked() {
+                g.erase_range(a, b);
+            }
+            if ui.small_button("Fade").on_hover_text("Straight transition between the range's first and last color").clicked() {
+                g.fade_range(a, b);
+            }
+            if ui.small_button("Monochrome").on_hover_text("One hue (the average) for the whole range").clicked() {
+                g.monochrome_range(a, b);
+            }
+            if ui.small_button("Reverse").clicked() {
+                g.reverse_range(a, b);
+            }
+            if ui.small_button("Sort").on_hover_text("By hue, then brightness").clicked() {
+                g.sort_range(a, b);
+            }
+            if ui.small_button("Negative").clicked() {
+                g.negative_range(a, b);
+            }
+        });
+        if ui.small_button("Fade all").on_hover_text("Fills the black gaps of the whole gradient with transitions between its colors").clicked() {
+            g.fade_all();
         }
     });
     ge.last = Some(layer.gradient.clone());

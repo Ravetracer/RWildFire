@@ -27,6 +27,7 @@ pub mod curves;
 pub mod dance;
 pub mod fastnoise;
 pub mod gradient;
+pub mod gradient_ops;
 pub mod gradient_io;
 pub mod io;
 pub mod math;
