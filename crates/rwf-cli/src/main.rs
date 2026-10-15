@@ -43,7 +43,7 @@ struct Args {
 
 fn usage() -> ! {
     eprintln!(
-        "usage: rwf-cli render <file.flame> [-o out.png|.jpg|.hdr|.exr] [-w width] [-h height] [-q quality] [-i flame-index] [--gpu] [-t threads] [--zbuffer] [--jpeg-quality 1-100] [--denoiser off|oidn|optix] [--blend 0..1]\n       rwf-cli batch [options] <files or folders...>   (rwf-cli batch for the options)\n       rwf-cli quilt <file.flame> -o out.png -w width [-h height] [-q quality] [--tiles COLSxROWS]\n       rwf-cli mesh <file.flame | --from-slices DIR> [-o out.obj|.ply|.sc] [--points out.ply|.obj] [--slices DIR] [--resolution N] [--quality Q] [--threshold T] [--dilate 3|5] [--blur B] [--smooth N]\n       rwf-cli movie <file.jwfmovie | --random [all|mandelbrots|bubbles|duckies]> -o out.mp4|.mov|.webm|.anb|out-dir|name.flame|name.jwfmovie [--cpu]\n       rwf-cli dance <file.rwfdance> -o out.mp4|.mov|.webm|out-dir|name.flame [--cpu]\n       rwf-cli random <out-dir> [count] [generator filter] [--symmetry NAME] [--weighting NAME] [--gradient NAME] [-w width] [-h height] [-q quality] [--gpu]"
+        "usage: rwf-cli render <file.flame> [-o out.png|.jpg|.hdr|.exr] [-w width] [-h height] [-q quality] [-i flame-index] [--gpu] [-t threads] [--zbuffer] [--jpeg-quality 1-100] [--denoiser off|oidn|optix] [--blend 0..1]\n       rwf-cli batch [options] <files or folders...>   (rwf-cli batch for the options)\n       rwf-cli quilt <file.flame> -o out.png -w width [-h height] [-q quality] [--tiles COLSxROWS]\n       rwf-cli mesh <file.flame | --from-slices DIR> [-o out.obj|.ply|.sc] [--points out.ply|.obj] [--slices DIR] [--resolution N] [--quality Q] [--threshold T] [--dilate 3|5] [--blur B] [--smooth N]\n       rwf-cli movie <file.jwfmovie | --random [all|mandelbrots|bubbles|duckies]> -o out.mp4|.mov|.webm|.anb|out-dir|name.flame|name.jwfmovie [--cpu]\n       rwf-cli dance <file.rwfdance> -o out.mp4|.mov|.webm|out-dir|name.flame [--cpu]\n       rwf-cli denoise <image> [-o out.png|.jpg] [--denoiser oidn|optix] [--blend 0..1]\n       rwf-cli random <out-dir> [count] [generator filter] [--symmetry NAME] [--weighting NAME] [--gradient NAME] [-w width] [-h height] [-q quality] [--gpu]"
     );
     std::process::exit(2);
 }
@@ -653,7 +653,50 @@ fn mesh_cmd() {
     eprintln!("done in {:.1} s", started.elapsed().as_secs_f64());
 }
 
+/// `rwf-cli denoise <image> -o out.png|.jpg [--denoiser oidn|optix] [--blend 0..1]`: runs the
+/// AI denoiser on an image file.
+fn denoise_cmd() {
+    let args: Vec<String> = std::env::args().skip(2).collect();
+    let (mut input, mut output, mut denoiser, mut blend) = (None, None, rwf_core::render::denoise::Denoiser::Oidn, 0.0);
+    let mut i = 0;
+    while i < args.len() {
+        let next = |i: &mut usize| {
+            *i += 1;
+            args.get(*i).cloned().unwrap_or_else(|| usage())
+        };
+        match args[i].as_str() {
+            "-o" => output = Some(PathBuf::from(next(&mut i))),
+            "--denoiser" => {
+                let v = next(&mut i).to_uppercase();
+                denoiser = rwf_core::render::denoise::Denoiser::parse(&v).filter(|d| *d != rwf_core::render::denoise::Denoiser::None).unwrap_or_else(|| {
+                    eprintln!("unknown denoiser {v:?} (oidn, optix)");
+                    std::process::exit(2);
+                });
+            }
+            "--blend" => blend = next(&mut i).parse::<f64>().map(|b| b.clamp(0.0, 0.99)).unwrap_or(0.0),
+            a => input = Some(PathBuf::from(a)),
+        }
+        i += 1;
+    }
+    let Some(input) = input else { usage() };
+    let output = output.unwrap_or_else(|| {
+        let stem = input.file_stem().map_or("image".into(), |s| s.to_string_lossy().to_string());
+        input.with_file_name(format!("{stem}_denoised.png"))
+    });
+    match rwf_core::render::denoise::denoise_image_file(&input, &output, denoiser, blend) {
+        Ok(o) => eprintln!("{} ({})", output.display(), o.describe()),
+        Err(e) => {
+            eprintln!("denoise failed: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
 fn main() {
+    if std::env::args().nth(1).as_deref() == Some("denoise") {
+        denoise_cmd();
+        return;
+    }
     if std::env::args().nth(1).as_deref() == Some("mesh") {
         mesh_cmd();
         return;

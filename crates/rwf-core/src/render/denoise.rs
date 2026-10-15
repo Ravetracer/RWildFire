@@ -157,6 +157,20 @@ pub fn apply_post_denoiser_with(flame: &Flame, rgba: &mut [u8], width: u32, heig
     Ok(DenoiseOutcome::Denoised("the oidnDenoise tool".into()))
 }
 
+/// Denoises an image file (JWildfire's "denoise external image"): PNG, JPEG, … from `src`,
+/// written to `dst` as PNG or JPEG by its extension, with `denoiser` and `blend` as the post
+/// denoiser of a flame. Tells what happened.
+pub fn denoise_image_file(src: &Path, dst: &Path, denoiser: Denoiser, blend: f64) -> Result<DenoiseOutcome, String> {
+    let img = image::open(src).map_err(|e| format!("{}: {e}", src.display()))?.to_rgba8();
+    let (w, h) = img.dimensions();
+    let mut rgba = img.into_raw();
+    let settings = Flame { ai_post_denoiser: denoiser, post_denoiser_blend: blend, ..Flame::default() };
+    let outcome = apply_post_denoiser(&settings, &mut rgba, w, h, false)?;
+    let format = crate::output::ImageFormat::from_path(dst).filter(|f| !f.is_hdr()).ok_or_else(|| format!("{}: save as PNG or JPEG", dst.display()))?;
+    crate::output::write_rgba8(dst, format, w, h, &rgba, 95)?;
+    Ok(outcome)
+}
+
 /// What denoises images: the OIDN library, the `oidnDenoise` tool, or `Err` with a hint.
 pub fn backend() -> Result<String, String> {
     match oidn::library() {

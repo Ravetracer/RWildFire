@@ -30,6 +30,8 @@ mod denoise_view;
 mod doc;
 mod export;
 mod explorer;
+mod help;
+mod image_denoise;
 mod gradients;
 mod icons;
 mod mesh_view;

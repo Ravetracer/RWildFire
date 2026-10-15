@@ -43,6 +43,10 @@ pub enum Action {
     ToggleTimeline,
     ToggleRender,
     ToggleBrowser,
+    Help,
+    VariationList,
+    About,
+    DenoiseImage,
 }
 
 pub struct TopBarInfo<'a> {
@@ -90,6 +94,9 @@ pub fn show(ui: &mut Ui, info: &TopBarInfo, generator: &mut Generator, extras: &
             if item(ui, "Export image…", "Ctrl+E").clicked() {
                 action = Some(Action::Export);
             }
+            if ui.button("Denoise image…").on_hover_text("Runs the AI denoiser on any image file").clicked() {
+                action = Some(Action::DenoiseImage);
+            }
         });
         ui.menu_button("Edit", |ui| {
             ui.set_min_width(200.0);
@@ -109,6 +116,20 @@ pub fn show(ui: &mut Ui, info: &TopBarInfo, generator: &mut Generator, extras: &
             ui.separator();
             if ui.button("Preferences…").on_hover_text("Settings that stay between sessions, e.g. always denoise").clicked() {
                 action = Some(Action::Preferences);
+            }
+        });
+
+        ui.menu_button("Help", |ui| {
+            ui.set_min_width(200.0);
+            if ui.add(egui::Button::new("Help…").shortcut_text("F1")).on_hover_text("Getting started, shortcuts, FAQ and coloring types").clicked() {
+                action = Some(Action::Help);
+            }
+            if ui.button("Variation list…").on_hover_text("All variations with their parameters, searchable").clicked() {
+                action = Some(Action::VariationList);
+            }
+            ui.separator();
+            if ui.button("About RWildFire").clicked() {
+                action = Some(Action::About);
             }
         });
 

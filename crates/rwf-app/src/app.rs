@@ -77,6 +77,8 @@ pub struct RwfApp {
     last_title: String,
     prefs: crate::prefs::Prefs,
     prefs_window: crate::prefs::PrefsWindow,
+    help: crate::help::HelpWindow,
+    image_denoiser: crate::image_denoise::ImageDenoiser,
     /// "Paste flame" was chosen: the next paste event is read as a flame.
     paste_requested: Option<Instant>,
 }
@@ -116,6 +118,8 @@ impl RwfApp {
             last_title: String::new(),
             prefs,
             prefs_window: Default::default(),
+            help: Default::default(),
+            image_denoiser: Default::default(),
             paste_requested: None,
         };
         app.transforms.favourites = app.prefs.favourites.clone();
@@ -255,6 +259,10 @@ impl RwfApp {
                 self.export.open_for(&self.doc.flame, self.preview.gpu_available(), &self.prefs.render_profiles);
             }
             Action::Preferences => self.prefs_window.open = true,
+            Action::Help => self.help.open_at(crate::help::Tab::Start),
+            Action::VariationList => self.help.open_at(crate::help::Tab::Variations),
+            Action::About => self.help.open_at(crate::help::Tab::About),
+            Action::DenoiseImage => self.image_denoiser.open = true,
             Action::Undo => self.doc.undo(),
             Action::Redo => self.doc.redo(),
             Action::Randomize => {
@@ -349,6 +357,8 @@ impl RwfApp {
                 act = Some(Action::New);
             } else if i.consume_shortcut(&KeyboardShortcut::new(c, Key::E)) {
                 act = Some(Action::Export);
+            } else if i.consume_key(Modifiers::NONE, Key::F1) {
+                act = Some(Action::Help);
             } else if !typing && i.consume_key(Modifiers::NONE, Key::Space) {
                 if self.timeline.open {
                     self.timeline.playing = !self.timeline.playing;
@@ -590,6 +600,8 @@ impl eframe::App for RwfApp {
             });
         }
 
+        self.help.show(&ctx);
+        self.image_denoiser.show(&ctx);
         self.export.show(&ctx, &self.doc.flame, self.preview.gpu_context(), &self.prefs.render_profiles);
         if let Some((res, qual)) = self.export.chosen_profiles.take()
             && (self.doc.flame.resolution_profile != res || self.doc.flame.quality_profile != qual)
