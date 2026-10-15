@@ -68,6 +68,7 @@ pub struct RwfApp {
     mesh: crate::mesh_view::MeshView,
     dance: crate::dance_view::DanceView,
     render_tab: RenderTab,
+    browser: crate::browser::FlameBrowser,
     generator: Generator,
     rng: Rng,
     /// A random flame being generated on a background thread.
@@ -107,6 +108,7 @@ impl RwfApp {
             mesh: Default::default(),
             dance: Default::default(),
             render_tab: RenderTab::Interactive,
+            browser: Default::default(),
             generator: Generator::Classic,
             rng,
             randomizing: None,
@@ -123,6 +125,11 @@ impl RwfApp {
             app.open_path(&p);
         }
         app
+    }
+
+    /// A workspace (render or browser) replaces the editor panels.
+    fn workspace_open(&self) -> bool {
+        self.render.open || self.browser.open
     }
 
     fn notify(&mut self, msg: impl Into<String>) {
@@ -154,6 +161,12 @@ impl RwfApp {
             }
             Ok(_) => self.notify("No flame found in file"),
             Err(e) => self.notify(format!("Could not open file: {e}")),
+        }
+    }
+
+    fn save_prefs(&mut self) {
+        if let Err(e) = self.prefs.save() {
+            self.notify(format!("Could not save preferences: {e}"));
         }
     }
 
@@ -250,6 +263,14 @@ impl RwfApp {
                     self.render.open_with(&self.doc.flame);
                 }
             }
+            Action::ToggleBrowser => {
+                if self.browser.open {
+                    self.browser.open = false;
+                } else {
+                    self.render.open = false;
+                    self.browser.open_with(&self.prefs.browser_dir);
+                }
+            }
             Action::ToggleExplorer => {
                 self.explorer_open = !self.explorer_open;
                 if self.explorer_open {
@@ -294,7 +315,7 @@ impl RwfApp {
     fn shortcuts(&mut self, ctx: &egui::Context) -> Option<Action> {
         use egui::{Key, KeyboardShortcut, Modifiers};
         // The editing shortcuts act on the editor only.
-        let typing = (ctx.memory(|m| m.focused().is_some()) && ctx.egui_wants_keyboard_input()) || self.render.open;
+        let typing = (ctx.memory(|m| m.focused().is_some()) && ctx.egui_wants_keyboard_input()) || self.workspace_open();
         let mut act = None;
         ctx.input_mut(|i| {
             let c = Modifiers::COMMAND;
@@ -352,10 +373,18 @@ impl eframe::App for RwfApp {
 
         // Dropped files
         let dropped: Vec<PathBuf> = ctx.input(|i| i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).filter(|p| !p.as_os_str().is_empty()).collect());
-        if self.render.open && self.render_tab == RenderTab::Batch && !dropped.is_empty() {
+        if self.render.open {
+            self.browser.open = false;
+        }
+        if self.browser.open && dropped.first().is_some_and(|p| p.is_dir()) {
+            self.prefs.browser_dir = dropped[0].to_string_lossy().to_string();
+            self.browser.set_root(dropped[0].clone());
+            self.save_prefs();
+        } else if self.render.open && self.render_tab == RenderTab::Batch && !dropped.is_empty() {
             let flames: Vec<PathBuf> = dropped.iter().filter(|p| crate::batch_view::is_flame_file(p)).cloned().collect();
             self.batch.add_paths(&flames);
         } else if let Some(p) = dropped.first() {
+            self.browser.open = false;
             self.open_path(p);
         }
         self.batch.poll(&ctx);
@@ -384,12 +413,12 @@ impl eframe::App for RwfApp {
         // a menu paste request expires (empty clipboards send no paste event)
         self.paste_requested = self.paste_requested.filter(|t| t.elapsed().as_secs_f32() < 1.0);
         if let Some(text) = pasted
-            && (self.paste_requested.is_some() || (!typing && !self.render.open))
+            && (self.paste_requested.is_some() || (!typing && !self.workspace_open()))
         {
             let explicit = self.paste_requested.take().is_some();
             self.paste_flames(&text, explicit);
         }
-        if copy && !typing && !self.render.open {
+        if copy && !typing && !self.workspace_open() {
             action = Some(Action::CopyFlame);
         }
         self.timeline.update(&ctx, &mut self.doc);
@@ -404,6 +433,7 @@ impl eframe::App for RwfApp {
                 explorer_open: self.explorer_open,
                 timeline_open: self.timeline.open,
                 render_open: self.render.open,
+                browser_open: self.browser.open,
                 render_busy: self.batch.is_running() || self.quilt.is_running() || self.movie.is_running() || self.mesh.is_running() || self.dance.is_running(),
                 randomizing: self.randomizing.is_some(),
             };
@@ -468,8 +498,40 @@ impl eframe::App for RwfApp {
             }
         }
 
+        // ---- flame browser (replaces the editor panels) ----
+        if self.browser.open {
+            match self.browser.show(ui) {
+                Some(crate::browser::BrowserAction::Open(p)) => {
+                    self.browser.open = false;
+                    self.open_path(&p);
+                }
+                Some(crate::browser::BrowserAction::ToBatch(p)) => {
+                    self.batch.add_paths(&[p]);
+                    self.browser.open = false;
+                    self.render.open = true;
+                    self.render_tab = RenderTab::Batch;
+                }
+                Some(crate::browser::BrowserAction::ToMesh(p)) => match rwf_core::io::read_flames_from_file(&p) {
+                    _ if self.mesh.is_running() => self.notify("The mesh generator is busy"),
+                    Ok(flames) if !flames.is_empty() => {
+                        self.mesh.load_flame(&flames[0]);
+                        self.browser.open = false;
+                        self.render.open = true;
+                        self.render_tab = RenderTab::Mesh;
+                    }
+                    Ok(_) => self.notify("No flame found in file"),
+                    Err(e) => self.notify(format!("Could not open file: {e}")),
+                },
+                Some(crate::browser::BrowserAction::FolderChosen(p)) => {
+                    self.prefs.browser_dir = p.to_string_lossy().to_string();
+                    self.save_prefs();
+                }
+                None => {}
+            }
+        }
+
         // ---- explorer strip ----
-        if self.explorer_open && !self.render.open {
+        if self.explorer_open && !self.workspace_open() {
             egui::Panel::bottom("explorer").resizable(false).frame(egui::Frame::new().fill(theme::PANEL).inner_margin(egui::Margin::symmetric(12, 8))).show(ui, |ui| {
                 if let Some(f) = self.explorer.show(ui, &self.doc.flame, &self.doc.library) {
                     self.doc.replace(self.prefs.adopt(f));
@@ -481,7 +543,7 @@ impl eframe::App for RwfApp {
         }
 
         // ---- timeline ----
-        if self.timeline.open && !self.render.open {
+        if self.timeline.open && !self.workspace_open() {
             egui::Panel::bottom("timeline").resizable(false).exact_size(crate::timeline::Timeline::panel_height(&self.doc.flame)).frame(egui::Frame::new().fill(theme::PANEL).inner_margin(egui::Margin::symmetric(12, 8))).show(ui, |ui| {
                 self.timeline.show(ui, &mut self.doc);
             });
@@ -490,7 +552,7 @@ impl eframe::App for RwfApp {
             self.curves.open_with(path);
         }
 
-        if !self.render.open {
+        if !self.workspace_open() {
             // ---- left: transforms ----
             egui::Panel::left("transforms").resizable(true).default_size(290.0).size_range(240.0..=460.0).frame(egui::Frame::new().fill(theme::PANEL).inner_margin(egui::Margin::symmetric(10, 8))).show(ui, |ui| {
                 egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {

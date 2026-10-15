@@ -128,6 +128,11 @@ impl MeshView {
         SurfaceKey { threshold: s.threshold, blur: s.blur, smooth_passes: s.smooth_passes, smooth_lambda: s.smooth_lambda, smooth_mu: s.smooth_mu }
     }
 
+    /// Uses `flame` (frame 0) for the next mesh.
+    pub fn load_flame(&mut self, flame: &Flame) {
+        self.take_flame(flame);
+    }
+
     fn take_flame(&mut self, flame: &Flame) {
         let mut f = flame.at_frame(0.0);
         f.animation = Default::default();

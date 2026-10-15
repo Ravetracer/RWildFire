@@ -42,6 +42,7 @@ pub enum Action {
     ToggleExplorer,
     ToggleTimeline,
     ToggleRender,
+    ToggleBrowser,
 }
 
 pub struct TopBarInfo<'a> {
@@ -51,6 +52,7 @@ pub struct TopBarInfo<'a> {
     pub explorer_open: bool,
     pub timeline_open: bool,
     pub render_open: bool,
+    pub browser_open: bool,
     /// A batch render is running.
     pub render_busy: bool,
     /// A random flame is being generated.
@@ -149,6 +151,10 @@ pub fn show(ui: &mut Ui, info: &TopBarInfo, generator: &mut Generator, extras: &
             ui.spinner();
         } else if ui.add(egui::Button::new(RichText::new(format!("{}  Random flame", icons::DICE)).strong()).fill(theme::ACCENT_DIM)).on_hover_text("New random flame (Space)").clicked() {
             action = Some(Action::Randomize);
+        }
+        let mut br = info.browser_open;
+        if ui.toggle_value(&mut br, format!("{}  Browse", icons::FOLDER_OPEN)).on_hover_text("Flame browser: the flames of a folder as thumbnails, by date").clicked() {
+            action = Some(Action::ToggleBrowser);
         }
         let mut open = info.explorer_open;
         if ui.toggle_value(&mut open, format!("{}  Explore", icons::SPARKLE)).on_hover_text("Browse random flames and mutations").clicked() {

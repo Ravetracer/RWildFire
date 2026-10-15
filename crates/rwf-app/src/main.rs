@@ -22,6 +22,7 @@
 mod app;
 mod audio_player;
 mod batch_view;
+mod browser;
 mod canvas;
 mod curve_editor;
 mod dance_view;

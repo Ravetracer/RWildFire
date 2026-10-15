@@ -61,6 +61,8 @@ pub struct Prefs {
     /// Double-click on the canvas, and the grid spacing of the canvas grid.
     pub double_click: crate::canvas::DoubleClick,
     pub grid_size: f64,
+    /// Folder of the flame browser (empty: none chosen yet).
+    pub browser_dir: String,
 }
 
 /// A set of variations the random generators may use (JWildfire's variation profiles, by
@@ -102,6 +104,7 @@ impl Default for Prefs {
             active_profile: String::new(),
             double_click: crate::canvas::DoubleClick::Nothing,
             grid_size: 0.5,
+            browser_dir: String::new(),
         }
     }
 }
@@ -123,6 +126,7 @@ impl Prefs {
                 "variation_profile" => p.profiles.extend(VariationProfile::from_line(v)),
                 "active_profile" => p.active_profile = v.to_string(),
                 "double_click" => p.double_click = crate::canvas::DoubleClick::parse(v),
+                "browser_dir" => p.browser_dir = v.to_string(),
                 "grid_size" => p.grid_size = v.parse::<f64>().ok().filter(|g| *g > 0.0).unwrap_or(p.grid_size),
                 _ => {}
             }
@@ -147,7 +151,7 @@ impl Prefs {
             text += &format!("variation_profile = {}\n", pr.to_line());
         }
         text += &format!("active_profile = {}\n", self.active_profile);
-        text += &format!("double_click = {}\ngrid_size = {}\n", self.double_click.as_str(), self.grid_size);
+        text += &format!("double_click = {}\ngrid_size = {}\nbrowser_dir = {}\n", self.double_click.as_str(), self.grid_size, self.browser_dir);
         std::fs::write(&path, text).map_err(|e| format!("{}: {e}", path.display()))?;
         Ok(path)
     }
@@ -279,7 +283,14 @@ pub fn profile_combo(ui: &mut egui::Ui, id: &str, names: &[String], active: &mut
 
 /// Today's date (UTC) as `yyyy-mm-dd`.
 fn today() -> String {
-    let days = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() / 86_400) as i64;
+    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    date_time(secs)[..10].to_string()
+}
+
+/// `YYYY-MM-DD HH:MM` (UTC) of seconds since 1970-01-01.
+pub fn date_time(secs: u64) -> String {
+    let days = (secs / 86_400) as i64;
+    let mins = secs % 86_400 / 60;
     // civil date from days since 1970-01-01 (H. Hinnant)
     let z = days + 719_468;
     let era = z.div_euclid(146_097);
@@ -290,7 +301,7 @@ fn today() -> String {
     let d = doy - (153 * mp + 2) / 5 + 1;
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
     let y = yoe + era * 400 + (m <= 2) as i64;
-    format!("{y:04}-{m:02}-{d:02}")
+    format!("{y:04}-{m:02}-{d:02} {:02}:{:02}", mins / 60, mins % 60)
 }
 
 /// The Preferences window; saves on every change.
