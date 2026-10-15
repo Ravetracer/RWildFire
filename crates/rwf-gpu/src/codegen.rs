@@ -50,7 +50,10 @@ mod xo {
     /// Material blending (`material1`, `material2`), used by solid rendering.
     pub const MAT1: usize = 45;
     pub const MAT2: usize = 46;
-    pub const VARS: usize = 47;
+    /// Color modulation (gamma, contrast, saturation, hue): factors, then offsets.
+    pub const MOD1: usize = 47;
+    pub const MOD2: usize = 51;
+    pub const VARS: usize = 55;
 }
 
 /// Offsets inside a layer header block.
@@ -482,6 +485,12 @@ fn emit_affine(out: &mut String, mode: AffineMode, b: &str, xy: usize, yz: usize
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Some xform of the layer modulates the plot color (`modGamma`, `modContrast`,
+/// `modSaturation`, `modHue`); starting from zero the values stay zero otherwise.
+fn uses_color_mods(xforms: &[PreparedXForm]) -> bool {
+    xforms.iter().any(|x| [x.mod_gamma.1, x.mod_contrast.1, x.mod_saturation.1, x.mod_hue.1].iter().any(|v| *v != 0.0))
+}
+
 fn emit_xform(out: &mut String, fname: &str, xf: &PreparedXForm, base: usize, layer: usize, layout_cmap: usize, smooth: bool, gmap: Option<usize>) {
     let b = format!("{base}u");
     let _ = writeln!(out, "fn {fname}(src: Pt) -> Pt {{");
@@ -647,7 +656,7 @@ impl Layout {
             });
             let mut xforms = Vec::new();
             let mut finals = Vec::new();
-            let _ = write!(sig, "L{}s{}:", li, layer.smooth_gradient as u8);
+            let _ = write!(sig, "L{}s{}m{}:", li, layer.smooth_gradient as u8, uses_color_mods(&layer.xforms) as u8);
             for (k, xf) in layer.xforms.iter().chain(layer.finals.iter()).enumerate() {
                 let is_final = k >= layer.xforms.len();
                 if is_final {
@@ -761,6 +770,15 @@ fn emit_functions(w: &mut String, prepared: &PreparedFlame, layout: &Layout, sol
                     m1 = xo::MAT1,
                     m2 = xo::MAT2
                 );
+            }
+            let _ = writeln!(w, "    default: {{ return m; }}\n  }}\n}}");
+        }
+        if !solid && uses_color_mods(&layer.xforms) {
+            let _ = writeln!(w, "fn mod_xf_{li}(idx: u32, m: vec4<f32>) -> vec4<f32> {{\n  switch idx {{");
+            for k in 0..layer.xforms.len() {
+                let (b, m1, m2) = (lay.xforms[k], xo::MOD1, xo::MOD2);
+                let v = |o: usize| format!("vec4<f32>(prm[{b}u + {o}u], prm[{b}u + {}u], prm[{b}u + {}u], prm[{b}u + {}u])", o + 1, o + 2, o + 3);
+                let _ = writeln!(w, "    case {k}u: {{ return m * {} + {}; }}", v(m1), v(m2));
             }
             let _ = writeln!(w, "    default: {{ return m; }}\n  }}\n}}");
         }
@@ -904,9 +922,10 @@ impl Program {
         w.push_str(ITER_MAIN_HEAD);
         for li in 0..prepared.layers.len() {
             let lay = &layers[li];
+            let mods = !solid && uses_color_mods(&prepared.layers[li].xforms);
             let _ = writeln!(
                 w,
-                "    case {li}u: {{\n      cmap_base = {cb}u;\n      let density = prm[{h}u + {d}u];\n      let weight = prm[{h}u + {wt}u];\n      for (var i = 0u; i < U.iters; i++) {{\n        if (density < 1.0 && rnd() > density * density) {{ continue; }}\n        if (!has_next_{li}(xf)) {{ break; }}\n        xf = nxt[{nb}u + xf * {ts}u + (rnd_u32() & {mask}u)];\n        p = apply_xf_{li}(xf, p);{mat_step}\n        if (bad(p)) {{ p = fresh_point(); skip = FUSE_ITERS;{mat_reset} continue; }}\n        if (skip > 0u) {{ skip -= 1u; continue; }}\n        if (!visible_{li}(xf)) {{ continue; }}\n        let q = finals_{li}(p);\n        if (q.hide != 0.0) {{ continue; }}{mat_plot}\n        cur_w = weight;\n        plot_sym(q, vec3<f32>(q.r, q.g, q.b) * weight);\n      }}\n    }}",
+                "    case {li}u: {{\n      cmap_base = {cb}u;\n      let density = prm[{h}u + {d}u];\n      let weight = prm[{h}u + {wt}u];\n      for (var i = 0u; i < U.iters; i++) {{\n        if (density < 1.0 && rnd() > density * density) {{ continue; }}\n        if (!has_next_{li}(xf)) {{ break; }}\n        xf = nxt[{nb}u + xf * {ts}u + (rnd_u32() & {mask}u)];\n        p = apply_xf_{li}(xf, p);{mat_step}{mod_step}\n        if (bad(p)) {{ p = fresh_point(); skip = FUSE_ITERS;{mat_reset}{mod_reset} continue; }}\n        if (skip > 0u) {{ skip -= 1u; continue; }}\n        if (!visible_{li}(xf)) {{ continue; }}\n        let q = finals_{li}(p);\n        if (q.hide != 0.0) {{ continue; }}{mat_plot}\n        cur_w = weight;\n        plot_sym(q, {col} * weight);\n      }}\n    }}",
                 h = lay.header,
                 d = lo::DENSITY,
                 wt = lo::WEIGHT,
@@ -917,6 +936,9 @@ impl Program {
                 mat_step = if solid { format!(" mat = mat_xf_{li}(xf, mat);") } else { String::new() },
                 mat_reset = if solid { " mat = rnd();" } else { "" },
                 mat_plot = if solid { " cur_rso = p.rso; cur_mat = select(mat, -1.0, p.rso != 0.0);" } else { "" },
+                mod_step = if mods { format!(" md = mod_xf_{li}(xf, md);") } else { String::new() },
+                mod_reset = if mods { " md = vec4<f32>(0.0);" } else { "" },
+                col = if mods { "color_mod(vec3<f32>(q.r, q.g, q.b), md)" } else { "vec3<f32>(q.r, q.g, q.b)" },
             );
         }
         w.push_str(ITER_MAIN_TAIL);
@@ -1140,6 +1162,10 @@ fn pack_xform(p: &mut [f32], base: usize, xf: &PreparedXForm) {
     p[base + xo::COLOR] = xf.color as f32;
     p[base + xo::MAT1] = xf.material.0 as f32;
     p[base + xo::MAT2] = xf.material.1 as f32;
+    for (i, m) in [xf.mod_gamma, xf.mod_contrast, xf.mod_saturation, xf.mod_hue].iter().enumerate() {
+        p[base + xo::MOD1 + i] = m.0 as f32;
+        p[base + xo::MOD2 + i] = m.1 as f32;
+    }
     let mut off = base + xo::VARS;
     for s in steps(xf) {
         p[off] = s.amount as f32;
@@ -1335,7 +1361,7 @@ fn dim_col(col: vec3<f32>, intensity: f32) -> vec3<f32> {
 
 /// Parameters, xform tables and chaos-game states (iterate and sub-flame kernels).
 const ITER_COMMON: &str = r#"
-struct State { x: f32, y: f32, z: f32, color: f32, r: f32, g: f32, b: f32, xf: u32, rng: u32, skip: u32, hide: f32, mat: f32 }
+struct State { x: f32, y: f32, z: f32, color: f32, r: f32, g: f32, b: f32, xf: u32, rng: u32, skip: u32, hide: f32, mat: f32, mg: f32, mc: f32, ms: f32, mh: f32 }
 
 @group(0) @binding(1) var<storage, read> prm: array<f32>;
 @group(0) @binding(2) var<storage, read> nxt: array<u32>;
@@ -1346,6 +1372,68 @@ const FUSE_ITERS: u32 = 30u;
 fn bad(p: Pt) -> bool {
     let s = p.x + p.y + p.z;
     return !(s == s) || abs(p.x) > 1.0e18 || abs(p.y) > 1.0e18 || abs(p.z) > 1.0e18;
+}
+
+// `transformPlotColor`: the color modulation (gamma, contrast, saturation, hue) of a point.
+fn color_mod(c_in: vec3<f32>, m: vec4<f32>) -> vec3<f32> {
+    var c = c_in;
+    let eps = 1.0e-8;
+    if (abs(m.x) > eps) {
+        let gamma = 4.2 / (4.2 - m.x);
+        let alpha = c.r * 0.299 + c.g * 0.588 + c.b * 0.113;
+        if (alpha > eps) { c *= pow(alpha, gamma) / alpha; }
+    }
+    if (abs(m.y) > eps) {
+        let gamma = 1.2 / (1.2 - m.y * 0.5);
+        c = (c - vec3<f32>(127.5)) * gamma + vec3<f32>(127.5);
+    }
+    if (abs(m.z) > eps) {
+        let avg = c.r * 0.299 + c.g * 0.588 + c.b * 0.113;
+        c += (c - vec3<f32>(avg)) * m.z;
+    }
+    if (abs(m.w) > eps) {
+        // HSLRGBConverter
+        let rgb = c / 255.0;
+        let mx = max(rgb.r, max(rgb.g, rgb.b));
+        let mn = min(rgb.r, min(rgb.g, rgb.b));
+        let l = (mx + mn) * 0.5;
+        var h = 0.0;
+        var s = 0.0;
+        let d = mx - mn;
+        if (abs(d) >= eps) {
+            s = select(d / (mx + mn), d / (2.0 - mx - mn), l > 0.5);
+            if (mx == rgb.r) {
+                h = (rgb.g - rgb.b) / d + select(0.0, 6.0, rgb.g < rgb.b);
+            } else if (mx == rgb.g) {
+                h = (rgb.b - rgb.r) / d + 2.0;
+            } else {
+                h = (rgb.r - rgb.g) / d + 4.0;
+            }
+            h /= 6.0;
+        }
+        let hh = clamp(h + m.w, 0.0, 1.0);
+        let ss = clamp(s, 0.0, 1.0);
+        let ll = clamp(l, 0.0, 1.0);
+        let v = select(ll + ss - ll * ss, ll * (1.0 + ss), ll <= 0.5);
+        var o = vec3<f32>(0.0);
+        if (v > 0.0) {
+            let h6 = clamp(hh * 6.0, 0.0, 6.0);
+            let y = ll + ll - v;
+            let f = h6 - trunc(h6);
+            let x = y + (v - y) * f;
+            let z = v - (v - y) * f;
+            switch i32(h6) {
+                case 1: { o = vec3<f32>(z, v, y); }
+                case 2: { o = vec3<f32>(y, v, x); }
+                case 3: { o = vec3<f32>(y, z, v); }
+                case 4: { o = vec3<f32>(x, y, v); }
+                case 5: { o = vec3<f32>(v, y, z); }
+                default: { o = vec3<f32>(v, x, y); }
+            }
+        }
+        c = clamp(floor(o * 255.0 + vec3<f32>(0.5)), vec3<f32>(0.0), vec3<f32>(255.0));
+    }
+    return c;
 }
 
 fn fresh_point() -> Pt {
@@ -1480,6 +1568,7 @@ fn iterate(@builtin(global_invocation_id) gid: vec3<u32>) {
     var xf = s.xf;
     var skip = s.skip;
     var mat = s.mat;
+    var md = vec4<f32>(s.mg, s.mc, s.ms, s.mh);
     let layer = tid % max(U.layer_count, 1u);
     switch layer {
 "#;
@@ -1489,6 +1578,7 @@ const ITER_MAIN_TAIL: &str = r#"
     }
     s.x = p.x; s.y = p.y; s.z = p.z; s.color = p.color; s.r = p.r; s.g = p.g; s.b = p.b;
     s.xf = xf; s.skip = skip; s.rng = rng_state; s.hide = p.hide; s.mat = mat;
+    s.mg = md.x; s.mc = md.y; s.ms = md.z; s.mh = md.w;
     states[tid] = s;
 }
 "#;

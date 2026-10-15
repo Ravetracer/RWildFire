@@ -103,12 +103,12 @@ fn initial_states(seed: u32) -> Vec<u32> {
         seed ^= seed << 5;
         seed
     };
-    let mut data = Vec::with_capacity(THREADS as usize * 12);
+    let mut data = Vec::with_capacity(THREADS as usize * 16);
     for _ in 0..THREADS {
         let fx = (next() >> 8) as f32 / 16_777_216.0 - 0.5;
         let fy = (next() >> 8) as f32 / 16_777_216.0 - 0.5;
         let fc = (next() >> 8) as f32 / 16_777_216.0;
-        data.extend_from_slice(&[fx.to_bits(), fy.to_bits(), 0, fc.to_bits(), 0, 0, 0, 0, next() | 1, 30, 0, 0]);
+        data.extend_from_slice(&[fx.to_bits(), fy.to_bits(), 0, fc.to_bits(), 0, 0, 0, 0, next() | 1, 30, 0, 0, 0, 0, 0, 0]);
     }
     data
 }

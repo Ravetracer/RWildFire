@@ -35,7 +35,7 @@ use crate::state::RenderState;
 /// Fixed-point scale for colors in the integer histogram.
 const COLOR_SCALE: f32 = 8.0;
 const WORKGROUP: u32 = 64;
-const STATE_SIZE: u64 = 48;
+const STATE_SIZE: u64 = 64;
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -811,13 +811,13 @@ impl GpuRenderer {
             seed ^= seed << 5;
             seed
         };
-        let mut data: Vec<u32> = Vec::with_capacity(self.thread_count as usize * 12);
+        let mut data: Vec<u32> = Vec::with_capacity(self.thread_count as usize * 16);
         for _ in 0..self.thread_count {
             let fx = (next() >> 8) as f32 / 16_777_216.0 * 2.0 - 1.0;
             let fy = (next() >> 8) as f32 / 16_777_216.0 * 2.0 - 1.0;
             let fc = (next() >> 8) as f32 / 16_777_216.0;
             let fm = (next() >> 8) as f32 / 16_777_216.0;
-            data.extend_from_slice(&[fx.to_bits(), fy.to_bits(), 0f32.to_bits(), fc.to_bits(), 0, 0, 0, 0, next() | 1, FUSE_ITERS, 0, fm.to_bits()]);
+            data.extend_from_slice(&[fx.to_bits(), fy.to_bits(), 0f32.to_bits(), fc.to_bits(), 0, 0, 0, 0, next() | 1, FUSE_ITERS, 0, fm.to_bits(), 0, 0, 0, 0]);
         }
         self.ctx.queue.write_buffer(&self.states, 0, bytemuck::cast_slice(&data));
         self.frame_seed = self.frame_seed.wrapping_add(1);
