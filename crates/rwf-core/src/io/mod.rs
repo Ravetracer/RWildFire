@@ -311,45 +311,84 @@ fn parse_animation(el: &Element, flame: &mut Flame) {
     }
 }
 
-/// Converts JWildfire motion curves (`<name>Curve_*` attributes) into animation tracks.
+/// Converts JWildfire motion curves (`<name>Curve_*` attributes) into animation tracks. The
+/// attributes of curves that are understood are removed; others stay as unknown attributes.
 fn import_jwf_curves(flame: &mut Flame) {
-    use crate::animation::{jwf_curve_track, jwf_flame_curve_path, jwf_xform_curve_suffix};
-    let is_curve_attr = |k: &str, prefix: &str| k.starts_with(prefix);
-    // Flame-level curves
-    let names: Vec<String> = flame.extra_attrs.iter().filter_map(|(k, _)| k.strip_suffix("Curve_enabled").map(str::to_string)).collect();
-    for n in names {
-        let prefix = format!("{n}Curve_");
-        if let Some(path) = jwf_flame_curve_path(&n)
-            && let Some(t) = jwf_curve_track(&flame.extra_attrs, &prefix, path)
-        {
-            flame.animation.tracks.push(t);
-        }
-        flame.extra_attrs.retain(|(k, _)| !is_curve_attr(k, &prefix));
+    use crate::animation::{bake_relative_affine_curves, jwf_curve_prefixes, jwf_curve_track, jwf_flame_curve_path, jwf_relative_curve, jwf_xform_curve_suffix};
+    /// Removes the attributes of a curve and its parent curves.
+    fn strip(attrs: &mut Vec<(String, String)>, prefix: &str) {
+        let prefixes = jwf_curve_prefixes(attrs, prefix);
+        attrs.retain(|(k, _)| !prefixes.iter().any(|p| k.starts_with(p.as_str())));
     }
-    // XForm and variation parameter curves
+    let curve_names = |attrs: &[(String, String)]| -> Vec<String> { attrs.iter().filter_map(|(k, _)| k.strip_suffix("Curve_enabled").map(str::to_string)).collect() };
+    // Flame-level curves
+    for n in curve_names(&flame.extra_attrs) {
+        let prefix = format!("{n}Curve_");
+        if let Some(path) = jwf_flame_curve_path(&n) {
+            if let Some(t) = jwf_curve_track(&flame.extra_attrs, &prefix, path) {
+                flame.animation.tracks.push(t);
+            }
+            strip(&mut flame.extra_attrs, &prefix);
+        }
+    }
+    // Layer, xform and variation curves
     let mut tracks = Vec::new();
+    let mut relative: Vec<(String, Vec<crate::animation::RelativeCurve>)> = Vec::new();
     for (li, layer) in flame.layers.iter_mut().enumerate() {
+        for n in curve_names(&layer.extra_attrs) {
+            let prefix = format!("{n}Curve_");
+            if matches!(n.as_str(), "weight" | "density") {
+                if let Some(t) = jwf_curve_track(&layer.extra_attrs, &prefix, &format!("layer{li}.{n}")) {
+                    tracks.push(t);
+                }
+                strip(&mut layer.extra_attrs, &prefix);
+            }
+        }
         for kind in XFormKind::ALL {
             for (xi, xf) in layer.xforms_of_mut(kind).iter_mut().enumerate() {
                 let base = format!("layer{li}.{}{xi}", kind.path_prefix());
-                let names: Vec<String> = xf.extra_attrs.iter().filter_map(|(k, _)| k.strip_suffix("Curve_enabled").map(str::to_string)).collect();
-                for n in names {
+                let mut rel = Vec::new();
+                for n in curve_names(&xf.extra_attrs) {
                     let prefix = format!("{n}Curve_");
-                    if let Some(suffix) = jwf_xform_curve_suffix(&n)
-                        && let Some(t) = jwf_curve_track(&xf.extra_attrs, &prefix, &format!("{base}.{suffix}"))
-                    {
-                        tracks.push(t);
+                    if let Some(suffix) = jwf_xform_curve_suffix(&n) {
+                        if let Some(t) = jwf_curve_track(&xf.extra_attrs, &prefix, &format!("{base}.{suffix}")) {
+                            tracks.push(t);
+                        }
+                    } else if let Some((affine, rotate)) = jwf_relative_curve(&n) {
+                        if let Some(t) = jwf_curve_track(&xf.extra_attrs, &prefix, &n) {
+                            rel.push((n.clone(), affine, rotate, t));
+                        }
+                    } else {
+                        continue;
                     }
-                    xf.extra_attrs.retain(|(k, _)| !is_curve_attr(k, &prefix));
+                    strip(&mut xf.extra_attrs, &prefix);
                 }
+                if !rel.is_empty() {
+                    // JWildfire applies them in declaration order: rotate, scale, post rotate,
+                    // post scale; XY, YZ, ZX
+                    const ORDER: [&str; 12] = ["xyRotate", "xyScale", "xyPostRotate", "xyPostScale", "yzRotate", "yzScale", "yzPostRotate", "yzPostScale", "zxRotate", "zxScale", "zxPostRotate", "zxPostScale"];
+                    let order = |n: &str| ORDER.iter().position(|o| *o == n).unwrap_or(ORDER.len());
+                    rel.sort_by_key(|(n, ..)| order(n));
+                    relative.push((base.clone(), rel.into_iter().map(|(_, a, r, t)| (a, r, t)).collect()));
+                }
+                let names: Vec<String> = xf.variations.iter().map(|v| v.name.clone()).collect();
                 for (vi, var) in xf.variations.iter_mut().enumerate() {
+                    let def = crate::variations::find(&names[vi]);
                     let pnames: Vec<String> = var.raw_params.iter().filter_map(|(k, _)| k.strip_suffix("_enabled").map(str::to_string)).collect();
                     for p in pnames {
                         let prefix = format!("{p}_");
-                        if let Some(t) = jwf_curve_track(&var.raw_params, &prefix, &format!("{base}.var{vi}.p.{p}")) {
+                        let path = if p == "amountCurve" {
+                            format!("{base}.var{vi}.amount")
+                        } else if def.is_some_and(|d| d.params.iter().any(|pd| pd.name == p)) {
+                            format!("{base}.var{vi}.p.{p}")
+                        } else {
+                            continue;
+                        };
+                        if let Some(t) = jwf_curve_track(&var.raw_params, &prefix, &path) {
                             tracks.push(t);
                         }
-                        var.raw_params.retain(|(k, _)| !(k.starts_with(&prefix) && k != &p));
+                        let prefixes = jwf_curve_prefixes(&var.raw_params, &prefix);
+                        var.raw_params.retain(|(k, _)| !prefixes.iter().any(|pre| k.starts_with(pre.as_str())) || k == &p);
                     }
                 }
             }
@@ -362,10 +401,14 @@ fn import_jwf_curves(flame: &mut Flame) {
             if let Some(t) = jwf_curve_track(&flame.extra_attrs, &prefix, &format!("solid.light{i}.{field}")) {
                 tracks.push(t);
             }
-            flame.extra_attrs.retain(|(k, _)| !k.starts_with(&prefix));
+            strip(&mut flame.extra_attrs, &prefix);
         }
     }
     flame.animation.tracks.extend(tracks);
+    // after the coefficient curves, which they act on
+    for (base, rel) in relative {
+        bake_relative_affine_curves(flame, &base, &rel);
+    }
 }
 
 fn parse_layer_content(el: &Element) -> Layer {

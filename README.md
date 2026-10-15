@@ -66,11 +66,11 @@ Each variation is a `VarDef` with a CPU function and a WGSL snippet that read th
 
 ## Animation
 
-- Keyframe tracks on any numeric property (camera, tone, layers, transform coefficients, variation amounts and parameters) with smooth, linear or hold interpolation
+- Keyframe tracks on any numeric property (camera, tone, layers, transform coefficients, variation amounts and parameters) with smooth, linear or hold interpolation, or JWildfire's spline and Bezier
 - Timeline with playback, scrubbing, per-track keyframe lanes, auto-key (edits at the current frame create keyframes) and quick keying of camera / transform / tone
 - Motion blur (JWildfire-compatible sub-frames)
 - Export as MP4 (H.264), MOV (ProRes), WebM (VP9) via ffmpeg, or PNG sequences, rendered in the background on the GPU or CPU
-- JWildfire motion curves are imported when opening animated `.flame` files
+- JWildfire motion curves are imported when opening animated `.flame` files: flame, layer, transform (incl. relative rotate/scale), variation amount and parameter curves and solid light curves, with JWildfire's spline/Bezier evaluation; parent curves and relative rotate/scale are baked into a key per frame
 
 ## Status / roadmap
 
@@ -78,9 +78,8 @@ Done: core editor, file compatibility, CPU and GPU renderer, 1014 variations (in
 
 Missing compared with JWildfire (from a feature comparison, by priority):
 
-- Compatibility / data loss:
-  - Write animation in JWildfire's motion-curve format (RWildFire's own `<track>` elements are lost in JWildfire)
-  - Import the remaining JWildfire motion curves: flame foreground opacity, dim distance, DOF shape parameters, post symmetry; xform opacity, `materialSpeed`, relative rotate/scale (XY/YZ/ZX, post); gradient shift; Bezier interpolation and parent curves (and make these properties animatable)
+- Complete JWildfire import (loading only; RWildFire does not write files for JWildfire):
+  - Import the gradient shift motion curve (`palette_modShiftCurve`; needs an animatable gradient shift)
   - Stereo 3D (anaglyph, side-by-side, interpolated images), background image, layer gradient map (image as 2D gradient with offset/scale), Z-dimming color
 - Editor:
   - Transforms: YZ/ZX edit planes, arrow-key nudging, fine mode, scale X/Y only, linked transforms, xaos "to" view / set 0 or 1 / reset all, color helpers (random, distribute, apply to whole flame)

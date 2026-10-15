@@ -194,8 +194,8 @@ impl CurveEditor {
             let Some(path) = self.path.clone() else { return };
             if let Some(t) = flame.animation.tracks.iter_mut().find(|t| t.path == path) {
                 egui::ComboBox::from_id_salt("curve-interp").width(80.0).selected_text(t.interp.as_str()).show_ui(ui, |ui| {
-                    for i in [Interp::Smooth, Interp::Linear, Interp::Hold] {
-                        changed |= ui.selectable_value(&mut t.interp, i, i.as_str()).changed();
+                    for i in Interp::ALL {
+                        changed |= ui.selectable_value(&mut t.interp, i, i.as_str()).on_hover_text(i.help()).changed();
                     }
                 });
                 if ui.button("Smooth").on_hover_text("Average every key with its neighbours").clicked() {

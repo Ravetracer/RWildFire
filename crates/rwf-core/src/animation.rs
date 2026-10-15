@@ -36,21 +36,42 @@ pub enum Interp {
     Smooth,
     /// Step: keeps the value until the next keyframe.
     Hold,
+    /// JWildfire's "SPLINE": a Catmull-Rom spline through the keys in both frame and value,
+    /// sampled and evaluated like JWildfire's `Envelope` (imported motion curves).
+    Spline,
+    /// JWildfire's "BEZIER": quadratic Bezier segments between the key midpoints.
+    Bezier,
 }
 
 impl Interp {
+    pub const ALL: [Interp; 5] = [Interp::Smooth, Interp::Linear, Interp::Hold, Interp::Spline, Interp::Bezier];
+
     pub fn as_str(&self) -> &'static str {
         match self {
             Interp::Linear => "linear",
             Interp::Smooth => "smooth",
             Interp::Hold => "hold",
+            Interp::Spline => "spline",
+            Interp::Bezier => "bezier",
         }
     }
     pub fn parse(s: &str) -> Self {
         match s.to_lowercase().as_str() {
             "linear" => Interp::Linear,
             "hold" | "step" => Interp::Hold,
+            "spline" => Interp::Spline,
+            "bezier" => Interp::Bezier,
             _ => Interp::Smooth,
+        }
+    }
+    /// Tooltip for the interpolation pickers.
+    pub fn help(&self) -> &'static str {
+        match self {
+            Interp::Smooth => "Smooth curve through the keys",
+            Interp::Linear => "Straight lines between the keys",
+            Interp::Hold => "Keeps each value until the next key",
+            Interp::Spline => "JWildfire's spline (as in imported JWildfire motion curves)",
+            Interp::Bezier => "JWildfire's Bezier curve: passes near, not through, the inner keys",
         }
     }
 }
@@ -83,11 +104,15 @@ impl Track {
         if frame >= k[k.len() - 1].frame {
             return Some(k[k.len() - 1].value);
         }
+        if matches!(self.interp, Interp::Spline | Interp::Bezier) {
+            return Some(jwf_envelope_eval(k, self.interp, frame));
+        }
         let i = k.partition_point(|key| key.frame <= frame) - 1;
         let (a, b) = (k[i], k[i + 1]);
         let t = (frame - a.frame) / (b.frame - a.frame).max(1e-12);
         Some(match self.interp {
             Interp::Hold => a.value,
+            Interp::Spline | Interp::Bezier => unreachable!(),
             Interp::Linear => a.value + (b.value - a.value) * t,
             Interp::Smooth => {
                 // Catmull-Rom with clamped end tangents, non-uniform spacing aware.
@@ -137,6 +162,110 @@ impl Track {
         let n = self.keys.len();
         self.keys.retain(|k| (k.frame - frame).abs() >= 1e-6);
         self.keys.len() != n
+    }
+}
+
+/// `Interpolation.calcSubDivPRV`: samples per segment from the largest key distance.
+fn jwf_subdiv(x: &[f64]) -> usize {
+    let xdistmax = x.windows(2).map(|w| (w[1] - w[0]) as i64).max().unwrap_or(0);
+    ((1.6 * xdistmax as f64 + 0.5) as i64).max(3) as usize
+}
+
+/// `SplineInterpolation` / `BezierInterpolation` / `LinearInterpolation.interpolate`.
+fn jwf_interpolate(src: &[f64], interp: Interp, subdiv: usize) -> Vec<f64> {
+    const SMALL: f64 = 1.0e-5;
+    let n = src.len();
+    let du = 1.0 / subdiv as f64;
+    let mut dest = Vec::with_capacity(n * (subdiv + 5));
+    match interp {
+        Interp::Spline if n > 2 => {
+            let eval = |u: f64, xa: f64, xb: f64, xc: f64, xd: f64| {
+                let b = 0.5;
+                let mut c = u * u * u * (-b * xa + (2.0 - b) * xb + (b - 2.0) * xc + b * xd);
+                c += u * u * (2.0 * b * xa + (b - 3.0) * xb + (3.0 - 2.0 * b) * xc - b * xd);
+                c += u * (-b * xa + b * xc);
+                c + xb
+            };
+            for i in 0..n - 1 {
+                let xa = if i == 0 { src[i] } else { src[i - 1] };
+                let xd = if i == n - 2 { src[i + 1] } else { src[i + 2] };
+                let mut u = 0.0;
+                loop {
+                    dest.push(eval(u, xa, src[i], src[i + 1], xd));
+                    u += du;
+                    if u >= 1.0 + SMALL {
+                        break;
+                    }
+                }
+            }
+        }
+        Interp::Bezier if n > 2 => {
+            for i in 1..n - 1 {
+                let xm1 = if i == 1 { src[i - 1] } else { 0.5 * (src[i - 1] + src[i]) };
+                let xm3 = if i == n - 2 { src[i + 1] } else { 0.5 * (src[i] + src[i + 1]) };
+                let xm2 = src[i];
+                let mut u = 0.0;
+                loop {
+                    let mut c = (xm1 - xm2 - xm2 + xm3) * (u * u);
+                    c += (-xm1 - xm1 + xm2 + xm2) * u;
+                    dest.push(c + xm1);
+                    u += du;
+                    if u >= 1.0 + SMALL {
+                        break;
+                    }
+                }
+            }
+        }
+        _ => {
+            for i in 0..n - 1 {
+                let (mut x0, x1) = (src[i], src[i + 1]);
+                let dx = (x1 - x0) / (subdiv as f64 - 1.0);
+                for _ in 0..subdiv {
+                    dest.push(x0);
+                    x0 += dx;
+                }
+            }
+        }
+    }
+    dest
+}
+
+/// `Tools.FTOI`: rounds half away from zero.
+fn jwf_ftoi(v: f64) -> f64 {
+    if v > 0.0 {
+        (v + 0.5).trunc()
+    } else if v < 0.0 {
+        (v - 0.5).trunc()
+    } else {
+        0.0
+    }
+}
+
+/// `Envelope.evaluate` for more than one key and `frame` inside their range: frames and values
+/// are interpolated separately, then the value is read off the sampled curve at `frame`.
+fn jwf_envelope_eval(keys: &[Key], interp: Interp, frame: f64) -> f64 {
+    let xs: Vec<f64> = keys.iter().map(|k| k.frame).collect();
+    let ys: Vec<f64> = keys.iter().map(|k| k.value).collect();
+    let subdiv = jwf_subdiv(&xs);
+    let vx = jwf_interpolate(&xs, interp, subdiv);
+    let vy = jwf_interpolate(&ys, interp, subdiv);
+    let (mut indl, mut indr) = (None, None);
+    for (i, x) in vx.iter().enumerate() {
+        if jwf_ftoi(*x) <= frame {
+            indl = Some(i);
+        } else {
+            indr = Some(i);
+            break;
+        }
+    }
+    match (indl, indr) {
+        (Some(l), Some(r)) => {
+            let xdist = vx[r] - vx[l];
+            if xdist < 0.00000001 { vy[l] } else { vy[l] + (frame - vx[l]) / xdist * (vy[r] - vy[l]) }
+        }
+        (Some(l), None) => vy[l],
+        (None, Some(r)) => vy[r],
+        (None, None) => 0.0,
     }
 }
 
@@ -190,12 +319,30 @@ type Getter = fn(&Flame) -> f64;
 type Setter = fn(&mut Flame, f64);
 
 macro_rules! flame_props {
-    ($($name:literal => $field:ident),* $(,)?) => {
-        /// Animatable flame-level properties: (path, getter, setter).
+    ($($name:literal => $($field:ident).+),* $(,)?) => {
+        /// Animatable flame-level properties: (path, getter, setter). Integer fields take the
+        /// rounded value (as JWildfire's motion curves do).
         pub static FLAME_PROPS: &[(&str, Getter, Setter)] = &[
-            $(($name, |f: &Flame| f.$field as f64, |f: &mut Flame, v: f64| f.$field = v as _)),*
+            $(($name, |f: &Flame| f.$($field).+ as f64, |f: &mut Flame, v: f64| f.$($field).+ = Settable::from_f64(v))),*
         ];
     };
+}
+
+/// Conversion of an animated value into a property's type.
+trait Settable {
+    fn from_f64(v: f64) -> Self;
+}
+
+impl Settable for f64 {
+    fn from_f64(v: f64) -> Self {
+        v
+    }
+}
+
+impl Settable for i32 {
+    fn from_f64(v: f64) -> Self {
+        (v + 0.5).floor() as i32
+    }
 }
 
 flame_props! {
@@ -207,12 +354,18 @@ flame_props! {
     "brightness" => brightness, "contrast" => contrast, "gamma" => gamma, "gamma_threshold" => gamma_threshold,
     "vibrancy" => vibrancy, "white_level" => white_level, "saturation" => saturation,
     "low_density_brightness" => low_density_brightness, "balance_red" => balance_red, "balance_green" => balance_green,
-    "balance_blue" => balance_blue,
+    "balance_blue" => balance_blue, "dim_z_distance" => dim_z_distance, "fg_opacity" => fg_opacity,
+    "cam_dof_scale" => cam_dof_scale, "cam_dof_angle" => cam_dof_angle, "cam_dof_fade" => cam_dof_fade,
+    "cam_dof_param1" => cam_dof_param1, "cam_dof_param2" => cam_dof_param2, "cam_dof_param3" => cam_dof_param3,
+    "cam_dof_param4" => cam_dof_param4, "cam_dof_param5" => cam_dof_param5, "cam_dof_param6" => cam_dof_param6,
+    "post_symmetry_order" => post_symmetry.order, "post_symmetry_centre_x" => post_symmetry.centre_x,
+    "post_symmetry_centre_y" => post_symmetry.centre_y, "post_symmetry_distance" => post_symmetry.distance,
+    "post_symmetry_rotation" => post_symmetry.rotation,
 }
 
 const AFFINE_FIELDS: [&str; 6] = ["c00", "c01", "c10", "c11", "c20", "c21"];
 const AFFINES: [&str; 6] = ["coefs", "post", "yz_coefs", "yz_post", "zx_coefs", "zx_post"];
-const XFORM_SCALARS: [&str; 5] = ["weight", "color", "color_symmetry", "opacity", "material"];
+const XFORM_SCALARS: [&str; 6] = ["weight", "color", "color_symmetry", "opacity", "material", "material_speed"];
 
 /// Animatable weighting field settings of an xform (`wfield.<name>`) with the name of their
 /// JWildfire motion curve.
@@ -350,6 +503,7 @@ fn get_xform_prop(xf: &XForm, rest: &str) -> Option<f64> {
         "color_symmetry" => Some(xf.color_symmetry),
         "opacity" => Some(xf.opacity),
         "material" => Some(xf.material),
+        "material_speed" => Some(xf.material_speed),
         _ => {
             let mut parts = rest.splitn(3, '.');
             let vi = index_after(parts.next()?, "var")?;
@@ -378,6 +532,7 @@ fn set_xform_prop(xf: &mut XForm, rest: &str, v: f64) -> bool {
         "color_symmetry" => xf.color_symmetry = v,
         "opacity" => xf.opacity = v,
         "material" => xf.material = v,
+        "material_speed" => xf.material_speed = v,
         _ => {
             let mut parts = rest.splitn(3, '.');
             let Some(vi) = parts.next().and_then(|p| index_after(p, "var")) else { return false };
@@ -627,6 +782,22 @@ pub fn jwf_flame_curve_path(name: &str) -> Option<&'static str> {
         "balanceRed" => "balance_red",
         "balanceGreen" => "balance_green",
         "balanceBlue" => "balance_blue",
+        "dimZDistance" => "dim_z_distance",
+        "foregroundOpacity" => "fg_opacity",
+        "camDOFScale" => "cam_dof_scale",
+        "camDOFAngle" => "cam_dof_angle",
+        "camDOFFade" => "cam_dof_fade",
+        "camDOFParam1" => "cam_dof_param1",
+        "camDOFParam2" => "cam_dof_param2",
+        "camDOFParam3" => "cam_dof_param3",
+        "camDOFParam4" => "cam_dof_param4",
+        "camDOFParam5" => "cam_dof_param5",
+        "camDOFParam6" => "cam_dof_param6",
+        "postSymmetryOrder" => "post_symmetry_order",
+        "postSymmetryCentreX" => "post_symmetry_centre_x",
+        "postSymmetryCentreY" => "post_symmetry_centre_y",
+        "postSymmetryDistance" => "post_symmetry_distance",
+        "postSymmetryRotation" => "post_symmetry_rotation",
         _ => return None,
     })
 }
@@ -638,6 +809,8 @@ pub fn jwf_xform_curve_suffix(name: &str) -> Option<String> {
         "color" => Some("color"),
         "colorSymmetry" => Some("color_symmetry"),
         "material" => Some("material"),
+        "materialSpeed" => Some("material_speed"),
+        "opacity" => Some("opacity"),
         _ => None,
     };
     if let Some(s) = simple {
@@ -656,26 +829,136 @@ pub fn jwf_xform_curve_suffix(name: &str) -> Option<String> {
     None
 }
 
-/// Builds a track from JWildfire curve attributes `<prefix>enabled`, `<prefix>point_count`,
-/// `<prefix>x0`/`<prefix>y0`, ..., `<prefix>interpolation`.
-pub fn jwf_curve_track(attrs: &[(String, String)], prefix: &str, path: &str) -> Option<Track> {
-    let get = |k: &str| attrs.iter().find(|(n, _)| n == &format!("{prefix}{k}")).map(|(_, v)| v.as_str());
-    if get("enabled") != Some("true") {
-        return None;
-    }
-    let n: usize = get("point_count")?.parse().ok()?;
+/// Reads one JWildfire curve (`<prefix>point_count`, `<prefix>x0`/`<prefix>y0`, ...,
+/// `<prefix>interpolation`) as keys and interpolation, whether enabled or not.
+fn jwf_curve_keys(get: &dyn Fn(&str) -> Option<String>, prefix: &str) -> Option<(Vec<Key>, Interp)> {
+    let n: usize = get(&format!("{prefix}point_count"))?.parse().ok()?;
     let mut keys = Vec::with_capacity(n);
     for i in 0..n {
-        let x: f64 = get(&format!("x{i}"))?.parse().ok()?;
-        let y: f64 = get(&format!("y{i}"))?.parse().ok()?;
+        let x: f64 = get(&format!("{prefix}x{i}")).and_then(|v| v.parse().ok()).unwrap_or(0.0);
+        let y: f64 = get(&format!("{prefix}y{i}")).and_then(|v| v.parse().ok()).unwrap_or(0.0);
         keys.push(Key { frame: x, value: y });
     }
-    keys.sort_by(|a, b| a.frame.total_cmp(&b.frame));
-    let interp = match get("interpolation") {
+    let interp = match get(&format!("{prefix}interpolation")).as_deref() {
         Some("LINEAR") => Interp::Linear,
-        _ => Interp::Smooth,
+        Some("BEZIER") => Interp::Bezier,
+        _ => Interp::Spline,
     };
-    (!keys.is_empty()).then(|| Track { path: path.to_string(), interp, keys })
+    Some((keys, interp))
+}
+
+/// The attribute prefixes of a JWildfire curve and its parent curves (`<prefix>parent_curve`
+/// names a curve whose values are added).
+pub fn jwf_curve_prefixes(attrs: &[(String, String)], prefix: &str) -> Vec<String> {
+    let mut out = vec![prefix.to_string()];
+    while out.len() < 16 {
+        let key = format!("{}parent_curve", out[out.len() - 1]);
+        match attrs.iter().find(|(n, _)| *n == key) {
+            Some((_, v)) if !out.contains(&format!("{v}_")) => out.push(format!("{v}_")),
+            _ => break,
+        }
+    }
+    out
+}
+
+/// Builds a track from an enabled JWildfire motion curve (`<prefix>enabled`, `<prefix>point_count`,
+/// `<prefix>x0`/`<prefix>y0`, ..., `<prefix>interpolation`), evaluated like JWildfire: keys with
+/// its interpolation, or, with parent curves (their values are added), the sum baked into a key
+/// per frame.
+pub fn jwf_curve_track(attrs: &[(String, String)], prefix: &str, path: &str) -> Option<Track> {
+    let get = |k: &str| attrs.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone());
+    if get(&format!("{prefix}enabled")).as_deref() != Some("true") {
+        return None;
+    }
+    let curves: Vec<Track> = jwf_curve_prefixes(attrs, prefix)
+        .iter()
+        .filter_map(|p| jwf_curve_keys(&get, p))
+        .map(|(keys, interp)| Track { path: path.to_string(), interp, keys })
+        .collect();
+    let first = curves.first()?;
+    if first.keys.is_empty() {
+        return None;
+    }
+    if curves.len() == 1 {
+        return Some(curves.into_iter().next().unwrap());
+    }
+    let frames = curves.iter().flat_map(|c| c.keys.iter().map(|k| k.frame));
+    let (lo, hi) = frames.fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), f| (a.min(f), b.max(f)));
+    let keys = (lo.floor() as i64..=hi.ceil() as i64)
+        .map(|f| Key { frame: f as f64, value: curves.iter().map(|c| c.eval(f as f64).unwrap_or(0.0)).sum() })
+        .collect();
+    Some(Track { path: path.to_string(), interp: Interp::Linear, keys })
+}
+
+/// A relative rotate/scale curve: the affine it acts on, rotate (or scale), its values.
+pub type RelativeCurve = (&'static str, bool, Track);
+
+/// JWildfire's relative rotate/scale curves of an xform (`xyRotate`, `xyPostScale`, ...): the
+/// affine they act on and whether they rotate (degrees) or scale.
+pub fn jwf_relative_curve(name: &str) -> Option<(&'static str, bool)> {
+    let (plane, rest) = name.split_at_checked(2)?;
+    let post = rest.starts_with("Post");
+    let op = rest.strip_prefix("Post").unwrap_or(rest);
+    let affine = match (plane, post) {
+        ("xy", false) => "coefs",
+        ("xy", true) => "post",
+        ("yz", false) => "yz_coefs",
+        ("yz", true) => "yz_post",
+        ("zx", false) => "zx_coefs",
+        ("zx", true) => "zx_post",
+        _ => return None,
+    };
+    match op {
+        "Rotate" => Some((affine, true)),
+        "Scale" => Some((affine, false)),
+        _ => None,
+    }
+}
+
+/// Applies JWildfire's relative rotate/scale curves of the xform at `base` (`layer0.xf1`) by
+/// baking them into keys per frame on the affine coefficients they change: at every frame the
+/// (animated) coefficients are rotated or scaled by the curves' values, as JWildfire does on
+/// each frame's copy of the flame. `curves` are (affine, rotate?, values) in JWildfire's order.
+pub fn bake_relative_affine_curves(flame: &mut Flame, base: &str, curves: &[RelativeCurve]) {
+    let Some(xf) = xform_at_mut(flame, base).map(|x| x.clone()) else { return };
+    let mut affines: Vec<&str> = curves.iter().map(|(a, _, _)| *a).collect();
+    affines.dedup();
+    for affine in affines {
+        let fields = ["c00", "c01", "c10", "c11"];
+        let paths: Vec<String> = fields.iter().map(|f| format!("{base}.{affine}.{f}")).collect();
+        let own: Vec<&RelativeCurve> = curves.iter().filter(|(a, _, _)| *a == affine).collect();
+        let coef_tracks: Vec<Option<Track>> = paths.iter().map(|p| flame.animation.track(p).cloned()).collect();
+        let frames = own.iter().map(|(_, _, t)| &t.keys).chain(coef_tracks.iter().flatten().map(|t| &t.keys)).flatten().map(|k| k.frame);
+        let (lo, hi) = frames.fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), f| (a.min(f), b.max(f)));
+        if lo > hi {
+            continue;
+        }
+        let stat = affine_ref(&xf, affine).map(|a| a.as_array()).unwrap_or_default();
+        let mut baked: Vec<Vec<Key>> = vec![Vec::new(); 4];
+        for f in lo.floor() as i64..=hi.ceil() as i64 {
+            let frame = f as f64;
+            let mut c: [f64; 4] = std::array::from_fn(|i| coef_tracks[i].as_ref().and_then(|t| t.eval(frame)).unwrap_or(stat[i]));
+            for (_, rotate, t) in &own {
+                let v = t.eval(frame).unwrap_or(0.0);
+                if *rotate {
+                    // XFormTransformService.rotate: coefficients times the rotation matrix
+                    if v.abs() >= 1.0e-300 {
+                        let (sn, cs) = (v * std::f64::consts::PI / 180.0).sin_cos();
+                        c = [c[0] * cs + c[1] * sn, -c[0] * sn + c[1] * cs, c[2] * cs + c[3] * sn, -c[2] * sn + c[3] * cs];
+                    }
+                } else if (v - 1.0).abs() >= 1.0e-300 {
+                    c = c.map(|x| x * v);
+                }
+            }
+            for i in 0..4 {
+                baked[i].push(Key { frame, value: c[i] });
+            }
+        }
+        for (path, keys) in paths.iter().zip(baked) {
+            flame.animation.tracks.retain(|t| &t.path != path);
+            flame.animation.tracks.push(Track { path: path.clone(), interp: Interp::Linear, keys });
+        }
+    }
 }
 
 #[cfg(test)]
@@ -695,6 +978,37 @@ mod tests {
         assert_eq!(flame.layers[0].xforms[0].weighting.noise_seed, 42);
         assert_eq!(jwf_xform_curve_suffix("weightingFieldVarParam2Intensity").as_deref(), Some("wfield.param2_intensity"));
         assert_eq!(label(&flame, path), "Transform 1 · weighting noise frequency");
+    }
+
+    /// Compares the JWildfire interpolations with JWildfire's `Envelope.evaluate`: `JWF_CURVES`
+    /// holds lines `INTERP x0 y0 x1 y1 ...`, `JWF_CURVE_VALUES` lines `<line> <frame> <value>`.
+    #[test]
+    #[ignore]
+    fn jwf_curves_match_jwildfire() {
+        let curves = std::fs::read_to_string(std::env::var("JWF_CURVES").expect("JWF_CURVES")).unwrap();
+        let tracks: Vec<Track> = curves
+            .lines()
+            .map(|l| {
+                let t: Vec<&str> = l.split_whitespace().collect();
+                let interp = match t[0] {
+                    "LINEAR" => Interp::Linear,
+                    "BEZIER" => Interp::Bezier,
+                    _ => Interp::Spline,
+                };
+                let keys = t[1..].chunks(2).map(|c| Key { frame: c[0].parse().unwrap(), value: c[1].parse().unwrap() }).collect();
+                Track { path: String::new(), interp, keys }
+            })
+            .collect();
+        let values = std::fs::read_to_string(std::env::var("JWF_CURVE_VALUES").expect("JWF_CURVE_VALUES")).unwrap();
+        let mut worst: f64 = 0.0;
+        for l in values.lines() {
+            let t: Vec<f64> = l.split_whitespace().map(|v| v.parse().unwrap()).collect();
+            let ours = tracks[t[0] as usize].eval(t[1]).unwrap();
+            let d = (ours - t[2]).abs();
+            assert!(d < 1e-9, "curve {} frame {}: {ours} vs {}", t[0], t[1], t[2]);
+            worst = worst.max(d);
+        }
+        println!("{} values, largest difference {worst:e}", values.lines().count());
     }
 
     #[test]

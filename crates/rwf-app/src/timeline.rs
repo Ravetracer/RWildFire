@@ -211,8 +211,8 @@ impl Timeline {
                 ui.separator();
                 if let Some(t) = doc.flame.animation.tracks.iter_mut().find(|t| t.path == path) {
                     egui::ComboBox::from_id_salt("interp").selected_text(t.interp.as_str()).width(80.0).show_ui(ui, |ui| {
-                        for i in [Interp::Smooth, Interp::Linear, Interp::Hold] {
-                            ui.selectable_value(&mut t.interp, i, i.as_str());
+                        for i in Interp::ALL {
+                            ui.selectable_value(&mut t.interp, i, i.as_str()).on_hover_text(i.help());
                         }
                     });
                 }
