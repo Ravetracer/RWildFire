@@ -117,6 +117,7 @@ impl RwfApp {
             paste_requested: None,
         };
         app.transforms.favourites = app.prefs.favourites.clone();
+        app.canvas.grid_size = app.prefs.grid_size;
         app.prefs.apply_profile();
         if let Some(p) = initial {
             app.open_path(&p);
@@ -524,7 +525,12 @@ impl eframe::App for RwfApp {
             self.doc.layer_mut().gradient = g;
         }
 
+        self.canvas.double_click = self.prefs.double_click;
+        if std::mem::take(&mut self.canvas.open_render) && !self.render.open {
+            self.render.open_with(&self.doc.flame);
+        }
         if self.prefs_window.show(&ctx, &mut self.prefs) {
+            self.canvas.grid_size = self.prefs.grid_size;
             self.prefs.apply(&mut self.doc.flame);
             self.prefs.apply_profile();
             self.transforms.favourites = self.prefs.favourites.clone();

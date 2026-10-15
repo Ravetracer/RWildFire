@@ -81,7 +81,6 @@ Done: core editor, file compatibility, CPU and GPU renderer, 1014 variations (in
 Missing compared with JWildfire (from a feature comparison, by priority):
 
 - Editor:
-  - Canvas: grid and guides (center, rule of thirds, golden ratio), variation effect overlay, DOF focus point drag mode, double-click actions, detached preview window
   - Gradients: RGB, contrast, gamma, brightness, frequency, blur, sort, negative; range operations (copy/paste, fade, monochrome); gradient curve editor; gradient from an image, `.map` export, from/extract from flame; choice of random gradient generator
   - Files and batches: folder browser with thumbnails (copy, move, rename, delete, to batch/mesh), configurable random batch (size, quality, snapshot), quick mutation strip
   - Resolution and quality profiles (editable, stored in flames, used by the batch renderer)

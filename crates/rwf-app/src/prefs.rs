@@ -58,6 +58,9 @@ pub struct Prefs {
     /// Variation profiles for the random generators, and the active one (empty: none).
     pub profiles: Vec<VariationProfile>,
     pub active_profile: String,
+    /// Double-click on the canvas, and the grid spacing of the canvas grid.
+    pub double_click: crate::canvas::DoubleClick,
+    pub grid_size: f64,
 }
 
 /// A set of variations the random generators may use (JWildfire's variation profiles, by
@@ -97,6 +100,8 @@ impl Default for Prefs {
             favourites: BTreeSet::new(),
             profiles: Vec::new(),
             active_profile: String::new(),
+            double_click: crate::canvas::DoubleClick::Nothing,
+            grid_size: 0.5,
         }
     }
 }
@@ -117,6 +122,8 @@ impl Prefs {
                 "favourite_variations" => p.favourites = v.split(',').filter(|s| !s.is_empty()).map(str::to_string).collect(),
                 "variation_profile" => p.profiles.extend(VariationProfile::from_line(v)),
                 "active_profile" => p.active_profile = v.to_string(),
+                "double_click" => p.double_click = crate::canvas::DoubleClick::parse(v),
+                "grid_size" => p.grid_size = v.parse::<f64>().ok().filter(|g| *g > 0.0).unwrap_or(p.grid_size),
                 _ => {}
             }
         }
@@ -140,6 +147,7 @@ impl Prefs {
             text += &format!("variation_profile = {}\n", pr.to_line());
         }
         text += &format!("active_profile = {}\n", self.active_profile);
+        text += &format!("double_click = {}\ngrid_size = {}\n", self.double_click.as_str(), self.grid_size);
         std::fs::write(&path, text).map_err(|e| format!("{}: {e}", path.display()))?;
         Ok(path)
     }
@@ -322,6 +330,21 @@ impl PrefsWindow {
                     Ok(b) => ui.label(RichText::new(format!("Denoiser found: {b}")).small().color(theme::TEXT_MUTED)),
                     Err(e) => ui.label(RichText::new(format!("{e}; flames get the setting, but images stay un-denoised")).small().color(theme::WARN)),
                 };
+            });
+            theme::section_label(ui, "Editor");
+            widgets::grid(ui, "prefs-editor", |ui| {
+                widgets::label(ui, "Double-click");
+                egui::ComboBox::from_id_salt("prefs-dblclick").selected_text(prefs.double_click.label()).show_ui(ui, |ui| {
+                    for d in crate::canvas::DoubleClick::ALL {
+                        ui.selectable_value(&mut prefs.double_click, d, d.label());
+                    }
+                })
+                .response
+                .on_hover_text("What a double-click on the canvas does");
+                ui.end_row();
+                widgets::label(ui, "Grid spacing");
+                ui.add(egui::DragValue::new(&mut prefs.grid_size).speed(0.01).range(0.01..=100.0)).on_hover_text("Default spacing of the canvas grid (View › Grid)");
+                ui.end_row();
             });
             theme::section_label(ui, "Random flames");
             profiles_ui(ui, prefs, &mut self.profile_search);

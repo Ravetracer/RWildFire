@@ -45,6 +45,41 @@ struct Hit {
 enum DragKind {
     Edit { sel: Selection, handle: Handle, rotate: bool, scale: bool },
     Pan,
+    /// Moves the depth-of-field focus point (focus mode).
+    Focus,
+}
+
+/// What a double-click on the canvas does (JWildfire's editor double-click action).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum DoubleClick {
+    #[default]
+    Nothing,
+    OpenRender,
+    ToggleHandles,
+}
+
+impl DoubleClick {
+    pub const ALL: [DoubleClick; 3] = [DoubleClick::Nothing, DoubleClick::OpenRender, DoubleClick::ToggleHandles];
+
+    pub fn label(&self) -> &'static str {
+        match self {
+            DoubleClick::Nothing => "Nothing",
+            DoubleClick::OpenRender => "Open the render window",
+            DoubleClick::ToggleHandles => "Show/hide transform handles",
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            DoubleClick::Nothing => "none",
+            DoubleClick::OpenRender => "render",
+            DoubleClick::ToggleHandles => "handles",
+        }
+    }
+
+    pub fn parse(s: &str) -> Self {
+        Self::ALL.into_iter().find(|d| d.as_str() == s).unwrap_or_default()
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -53,6 +88,7 @@ struct Drag {
     start_world: (f64, f64),
     start_affine: Affine,
     start_centre: (f64, f64),
+    start_focus: (f64, f64),
     start_view: View,
 }
 
@@ -73,12 +109,39 @@ pub struct CanvasState {
     /// Which axes Ctrl-drag scales.
     pub scale_x: bool,
     pub scale_y: bool,
+    /// Grid in world units, `grid_size` apart; composition guides over the image.
+    pub show_grid: bool,
+    pub grid_size: f64,
+    pub show_guides: bool,
+    /// The selected transform applied to a grid ("variation effect").
+    pub show_var_effect: bool,
+    var_mesh: Option<(Flame, usize, Selection, Vec<[f64; 2]>)>,
+    /// Dragging on the canvas moves the depth-of-field focus point.
+    pub focus_mode: bool,
+    pub double_click: DoubleClick,
+    /// Set by a double-click that asks for the render window.
+    pub open_render: bool,
+    /// The preview is also shown in a window of its own.
+    pub detached: bool,
     drag: Option<Drag>,
 }
 
 impl Default for CanvasState {
     fn default() -> Self {
-        Self { show_handles: true, show_denoised: false, denoised: Default::default(), denoised_for: None, denoised_rev: 0, show_camera_gizmo: true, resolution_scale: 1.0, fine: false, scale_x: true, scale_y: true, drag: None }
+        Self { show_handles: true, show_denoised: false, denoised: Default::default(), denoised_for: None, denoised_rev: 0, show_camera_gizmo: true, resolution_scale: 1.0, fine: false,
+            scale_x: true,
+            scale_y: true,
+            show_grid: false,
+            grid_size: 0.5,
+            show_guides: false,
+            show_var_effect: false,
+            var_mesh: None,
+            focus_mode: false,
+            double_click: DoubleClick::Nothing,
+            open_render: false,
+            detached: false,
+            drag: None,
+        }
     }
 }
 
@@ -220,6 +283,12 @@ pub fn show(ui: &mut egui::Ui, frame: &eframe::Frame, doc: &mut Document, state:
 
     let map_size = image.as_ref().map(|i| i.size).unwrap_or((iw, ih));
     let mapper = Mapper::new(&doc.flame, img_rect, map_size.0, map_size.1);
+    draw_overlays(&ui.painter_at(img_rect), doc, state, &mapper, img_rect);
+    if state.detached
+        && let Some(img) = &image
+    {
+        detached_preview(ui.ctx(), img.texture, flame_aspect, &mut state.detached);
+    }
 
     // ---- interaction ----
     let pointer = resp.hover_pos();
@@ -237,17 +306,19 @@ pub fn show(ui: &mut egui::Ui, frame: &eframe::Frame, doc: &mut Document, state:
                     doc.selection = h.sel;
                     DragKind::Edit { sel: h.sel, handle: h.handle, rotate: modifiers.shift, scale: modifiers.command || modifiers.ctrl }
                 }
+                None if primary && state.focus_mode => DragKind::Focus,
                 None => DragKind::Pan,
             };
             let start_affine = match kind {
                 DragKind::Edit { sel, .. } => affine_of(doc, sel).unwrap_or_default(),
-                DragKind::Pan => Affine::IDENTITY,
+                DragKind::Pan | DragKind::Focus => Affine::IDENTITY,
             };
             state.drag = Some(Drag {
                 kind,
                 start_world: world,
                 start_affine,
                 start_centre: (doc.flame.centre_x, doc.flame.centre_y),
+                start_focus: (doc.flame.focus_x, doc.flame.focus_y),
                 start_view: mapper.view.clone(),
             });
         }
@@ -264,6 +335,11 @@ pub fn show(ui: &mut egui::Ui, frame: &eframe::Frame, doc: &mut Document, state:
             DragKind::Pan => {
                 doc.flame.centre_x = drag.start_centre.0 - (wx - sx);
                 doc.flame.centre_y = drag.start_centre.1 - (wy - sy);
+            }
+            DragKind::Focus => {
+                let f = if state.fine { 0.1 } else { 1.0 };
+                doc.flame.focus_x = drag.start_focus.0 + (wx - sx) * f;
+                doc.flame.focus_y = drag.start_focus.1 + (wy - sy) * f;
             }
             DragKind::Edit { sel, handle, rotate, scale } => {
                 let mut a = drag.start_affine;
@@ -321,6 +397,13 @@ pub fn show(ui: &mut egui::Ui, frame: &eframe::Frame, doc: &mut Document, state:
         state.drag = None;
     }
 
+    if resp.double_clicked() {
+        match state.double_click {
+            DoubleClick::Nothing => {}
+            DoubleClick::OpenRender => state.open_render = true,
+            DoubleClick::ToggleHandles => state.show_handles = !state.show_handles,
+        }
+    }
     if resp.clicked()
         && let Some(p) = resp.interact_pointer_pos()
     {
@@ -433,6 +516,118 @@ fn update_denoised(ctx: &egui::Context, doc: &Document, state: &mut CanvasState,
     state.denoised.is_current(key).then(|| state.denoised.texture()).flatten()
 }
 
+/// Grid, guides, variation effect and focus point.
+fn draw_overlays(painter: &egui::Painter, doc: &Document, state: &mut CanvasState, m: &Mapper, img_rect: Rect) {
+    if state.show_grid && state.grid_size > 1e-6 {
+        let step = state.grid_size;
+        let (a, b) = (m.to_world(img_rect.left_top()), m.to_world(img_rect.right_bottom()));
+        let (x0, x1, y0, y1) = (a.0.min(b.0), a.0.max(b.0), a.1.min(b.1), a.1.max(b.1));
+        // no more than ~200 lines per direction
+        if (x1 - x0) / step < 200.0 && (y1 - y0) / step < 200.0 {
+            let line = |v: f64| if v.abs() < step * 1e-6 { Stroke::new(1.2, Color32::from_white_alpha(110)) } else { Stroke::new(1.0, Color32::from_white_alpha(40)) };
+            let mut x = (x0 / step).floor() * step;
+            while x <= x1 {
+                painter.line_segment([m.to_screen(x, y0), m.to_screen(x, y1)], line(x));
+                x += step;
+            }
+            let mut y = (y0 / step).floor() * step;
+            while y <= y1 {
+                painter.line_segment([m.to_screen(x0, y), m.to_screen(x1, y)], line(y));
+                y += step;
+            }
+        }
+    }
+    if state.show_guides {
+        // as in JWildfire (from Apophysis): center, rule of thirds, golden ratio
+        let r = img_rect;
+        let both = |f: f32, color: Color32| {
+            let s = Stroke::new(1.2, color);
+            for t in [f, 1.0 - f] {
+                let x = r.left() + r.width() * t;
+                let y = r.top() + r.height() * t;
+                painter.line_segment([pos2(x, r.top()), pos2(x, r.bottom())], s);
+                painter.line_segment([pos2(r.left(), y), pos2(r.right(), y)], s);
+            }
+        };
+        both(0.5, Color32::from_white_alpha(150));
+        both(1.0 / 3.0, Color32::from_rgba_unmultiplied(255, 60, 60, 150));
+        both(0.618_034, Color32::from_rgba_unmultiplied(60, 255, 60, 150));
+    }
+    if state.show_var_effect {
+        let key_ok = state.var_mesh.as_ref().is_some_and(|(f, l, s, _)| *l == doc.layer && *s == doc.selection && *f == doc.flame);
+        if !key_ok {
+            state.var_mesh = variation_mesh(doc).map(|mesh| (doc.flame.clone(), doc.layer, doc.selection, mesh));
+        }
+        if let Some((_, _, _, mesh)) = &state.var_mesh {
+            let n = VAR_GRID;
+            let s = Stroke::new(1.0, Color32::from_rgba_unmultiplied(255, 200, 80, 120));
+            let ok = |p: [f64; 2]| p[0].is_finite() && p[1].is_finite() && p[0].abs() < 1e4 && p[1].abs() < 1e4;
+            for y in 0..n {
+                for x in 0..n {
+                    let p = mesh[y * n + x];
+                    for q in [(x + 1 < n).then(|| mesh[y * n + x + 1]), (y + 1 < n).then(|| mesh[(y + 1) * n + x])].into_iter().flatten() {
+                        if ok(p) && ok(q) {
+                            painter.line_segment([m.to_screen(p[0], p[1]), m.to_screen(q[0], q[1])], s);
+                        }
+                    }
+                }
+            }
+        }
+    } else {
+        state.var_mesh = None;
+    }
+    if state.focus_mode {
+        let c = m.to_screen(doc.flame.focus_x, doc.flame.focus_y);
+        let s = Stroke::new(1.5, theme::ACCENT);
+        painter.circle_stroke(c, 9.0, s);
+        painter.line_segment([c - vec2(16.0, 0.0), c + vec2(16.0, 0.0)], s);
+        painter.line_segment([c - vec2(0.0, 16.0), c + vec2(0.0, 16.0)], s);
+    }
+}
+
+/// Points per side of the variation effect grid.
+const VAR_GRID: usize = 32;
+
+/// The selected transform applied to a 32 × 32 grid over [-1, 1]² (JWildfire's "variation
+/// effect" display), row by row.
+fn variation_mesh(doc: &Document) -> Option<Vec<[f64; 2]>> {
+    use rwf_core::model::XFormKind;
+    let (kind, i) = doc.selection.kind()?;
+    let prepared = rwf_core::render::PreparedFlame::new(&doc.flame);
+    let layer = prepared.layers.get(doc.layer)?;
+    let xf = match kind {
+        XFormKind::Normal => layer.xforms.get(i)?,
+        XFormKind::Final => layer.finals.get(i)?,
+        XFormKind::Background => return None,
+    };
+    let mut ctx = rwf_core::variations::Ctx::new(1, false);
+    let n = VAR_GRID;
+    let mut out = Vec::with_capacity(n * n);
+    for yi in 0..n {
+        for xi in 0..n {
+            let p = rwf_core::variations::Pt { x: -1.0 + 2.0 * xi as f64 / (n - 1) as f64, y: -1.0 + 2.0 * yi as f64 / (n - 1) as f64, ..Default::default() };
+            let q = xf.transform(&mut ctx, &layer.colormap, layer.smooth_gradient, &p);
+            out.push([q.x, q.y]);
+        }
+    }
+    Some(out)
+}
+
+/// The preview in a window of its own (JWildfire's detached preview).
+fn detached_preview(ctx: &egui::Context, texture: egui::TextureId, aspect: f32, open: &mut bool) {
+    let id = egui::ViewportId::from_hash_of("rwf-detached-preview");
+    let builder = egui::ViewportBuilder::default().with_title("RWildFire preview").with_inner_size([800.0, 800.0 / aspect.max(0.1)]);
+    ctx.show_viewport_immediate(id, builder, |ctx, _class| {
+        egui::CentralPanel::default().frame(egui::Frame::new().fill(theme::CANVAS)).show(ctx, |ui| {
+            let r = fit_rect(ui.available_rect_before_wrap(), aspect);
+            ui.painter().image(texture, r, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+        });
+        if ctx.input(|i| i.viewport().close_requested()) {
+            *open = false;
+        }
+    });
+}
+
 fn overlay(ui: &mut egui::Ui, avail: Rect, doc: &mut Document, state: &mut CanvasState, preview: &Preview) {
     // Floating toolbar (top-left of the canvas).
     let tb = Rect::from_min_size(avail.min + vec2(12.0, 10.0), vec2(avail.width() - 24.0, 30.0));
@@ -466,6 +661,17 @@ fn overlay(ui: &mut egui::Ui, avail: Rect, doc: &mut Document, state: &mut Canva
         ui.toggle_value(&mut state.show_camera_gizmo, format!("{} Camera", icons::GLOBE)).on_hover_text("Show the camera orbit globe on the canvas");
         ui.toggle_value(&mut state.show_denoised, format!("{} Denoised", icons::SPARKLE))
             .on_hover_text("Show the finished preview through the flame's AI denoiser, as saved images get it");
+        ui.menu_button("View", |ui| {
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut state.show_grid, "Grid").on_hover_text("Lines in world units, the zero lines brighter");
+                ui.add_enabled(state.show_grid, egui::DragValue::new(&mut state.grid_size).speed(0.01).range(0.01..=100.0)).on_hover_text("Grid spacing");
+            });
+            ui.checkbox(&mut state.show_guides, "Guides").on_hover_text("Center (white), rule of thirds (red) and golden ratio (green)");
+            ui.checkbox(&mut state.show_var_effect, "Variation effect").on_hover_text("How the selected transform bends a grid over [-1, 1]²");
+            ui.checkbox(&mut state.focus_mode, "Focus point").on_hover_text("Dragging on the canvas moves the depth-of-field focus point (\"Focus point\" DOF mode)");
+            ui.separator();
+            ui.checkbox(&mut state.detached, "Detached preview").on_hover_text("Shows the preview in a window of its own, e.g. on a second screen");
+        });
         ui.separator();
         if ui.button(format!("{} Fit", icons::FIT)).on_hover_text("Center and fit the flame (F)").clicked() {
             let mut f = doc.flame.clone();
@@ -523,5 +729,27 @@ fn overlay(ui: &mut egui::Ui, avail: Rect, doc: &mut Document, state: &mut Canva
         let r = Rect::from_min_size(pos2(avail.max.x - galley.size().x - 32.0, avail.max.y - galley.size().y - 22.0), galley.size() + Vec2::splat(16.0));
         painter.rect_filled(r, 8, theme::PANEL.gamma_multiply(0.95));
         painter.galley(r.min + Vec2::splat(8.0), galley, theme::WARN);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn variation_mesh_applies_the_transform() {
+        let mut flame = Flame::default();
+        let mut xf = rwf_core::XForm::with_variation("linear3D", 1.0);
+        xf.coefs.scale(0.5);
+        xf.coefs.c20 = 0.25;
+        flame.first_layer_mut().xforms.push(xf);
+        let mut doc = Document::new(flame);
+        doc.selection = Selection::XForm(0);
+        let mesh = variation_mesh(&doc).unwrap();
+        assert_eq!(mesh.len(), VAR_GRID * VAR_GRID);
+        // corner (-1, -1) -> 0.5 * (-1, -1) + (0.25, 0)
+        assert!((mesh[0][0] + 0.25).abs() < 1e-9 && (mesh[0][1] + 0.5).abs() < 1e-9, "{:?}", mesh[0]);
+        doc.selection = Selection::None;
+        assert!(variation_mesh(&doc).is_none());
     }
 }
