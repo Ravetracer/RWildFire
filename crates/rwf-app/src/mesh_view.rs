@@ -41,6 +41,7 @@ const PREVIEW_H: u32 = 640;
 #[derive(Clone, Copy, PartialEq)]
 struct SurfaceKey {
     threshold: f64,
+    dilate: u32,
     blur: f64,
     smooth_passes: u32,
     smooth_lambda: f64,
@@ -68,6 +69,18 @@ enum ViewMode {
 enum Format {
     Obj,
     Ply,
+    /// A Sunflow scene (`.sc`) with the mesh.
+    Sunflow,
+}
+
+impl Format {
+    fn ext(self) -> &'static str {
+        match self {
+            Format::Obj => "obj",
+            Format::Ply => "ply",
+            Format::Sunflow => "sc",
+        }
+    }
 }
 
 pub struct MeshView {
@@ -75,8 +88,8 @@ pub struct MeshView {
     settings: MeshSettings,
     sampling: Option<Sampling>,
     volume: Option<Arc<Volume>>,
-    /// Density of the volume for the current blur (slices and surface).
-    density: Option<(f64, Arc<Vec<f32>>)>,
+    /// Density of the volume for the current pre-filter and blur (slices and surface).
+    density: Option<((u32, f64), Arc<Vec<f32>>)>,
     surface: Option<(SurfaceKey, Arc<Mesh>)>,
     surface_job: Option<(SurfaceKey, Receiver<SurfaceResult>)>,
     view: ViewMode,
@@ -125,7 +138,7 @@ impl MeshView {
 
     fn surface_key(&self) -> SurfaceKey {
         let s = &self.settings;
-        SurfaceKey { threshold: s.threshold, blur: s.blur, smooth_passes: s.smooth_passes, smooth_lambda: s.smooth_lambda, smooth_mu: s.smooth_mu }
+        SurfaceKey { threshold: s.threshold, dilate: s.dilate, blur: s.blur, smooth_passes: s.smooth_passes, smooth_lambda: s.smooth_lambda, smooth_mu: s.smooth_mu }
     }
 
     /// Uses `flame` (frame 0) for the next mesh.
@@ -185,7 +198,7 @@ impl MeshView {
         if let Some((key, rx)) = &self.surface_job
             && let Ok((density, mesh)) = rx.try_recv()
         {
-            self.density = Some((key.blur, density));
+            self.density = Some(((key.dilate, key.blur), density));
             self.surface = Some((*key, Arc::new(mesh)));
             self.surface_job = None;
         }
@@ -199,9 +212,9 @@ impl MeshView {
             && !pointer_down
         {
             let (tx, rx) = channel();
-            let cached = self.density.as_ref().filter(|(b, _)| *b == key.blur).map(|(_, d)| d.clone());
+            let cached = self.density.as_ref().filter(|(f, _)| *f == (key.dilate, key.blur)).map(|(_, d)| d.clone());
             std::thread::spawn(move || {
-                let density = cached.unwrap_or_else(|| Arc::new(volume.density(key.blur)));
+                let density = cached.unwrap_or_else(|| Arc::new(volume.density_filtered(key.dilate, key.blur)));
                 let mut mesh = meshgen::surface_nets(&volume, &density, key.threshold as f32);
                 if key.smooth_passes > 0 {
                     mesh.taubin_smooth(key.smooth_passes, key.smooth_lambda, key.smooth_mu);
@@ -303,6 +316,21 @@ impl MeshView {
             widgets::label(ui, "Threshold");
             ui.add(egui::Slider::new(&mut s.threshold, 0.01..=0.99)).on_hover_text("Density level of the surface (higher: thinner)");
             ui.end_row();
+            widgets::label(ui, "Pre-filter");
+            egui::ComboBox::from_id_salt("mesh-dilate")
+                .selected_text(match s.dilate {
+                    3 => "Dilate 3×3",
+                    5 => "Dilate 5×5",
+                    _ => "None",
+                })
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut s.dilate, 0, "None");
+                    ui.selectable_value(&mut s.dilate, 3, "Dilate 3×3");
+                    ui.selectable_value(&mut s.dilate, 5, "Dilate 5×5");
+                })
+                .response
+                .on_hover_text("Thickens thin structures slice by slice before the blur (JWildfire's dilate pre-filters)");
+            ui.end_row();
             widgets::label(ui, "Blur");
             ui.add(egui::Slider::new(&mut s.blur, 0.0..=4.0).suffix(" vx")).on_hover_text("Smooths the density before the surface is extracted");
             ui.end_row();
@@ -335,7 +363,8 @@ impl MeshView {
         ui.horizontal(|ui| {
             ui.selectable_value(&mut self.format, Format::Obj, "OBJ");
             ui.selectable_value(&mut self.format, Format::Ply, "PLY");
-            ui.checkbox(&mut self.colors, "Colors");
+            ui.selectable_value(&mut self.format, Format::Sunflow, "Sunflow").on_hover_text("A Sunflow scene (.sc): the mesh on a ground plate with camera and sky light");
+            ui.add_enabled(self.format != Format::Sunflow, egui::Checkbox::new(&mut self.colors, "Colors"));
             ui.add_enabled(self.format == Format::Obj, egui::Checkbox::new(&mut self.normals, "Normals"));
         });
         let ready = self.surface.as_ref().filter(|(k, _)| *k == self.surface_key()).map(|(_, m)| m.clone());
@@ -344,7 +373,7 @@ impl MeshView {
             .clicked()
             && let Some(mesh) = ready
         {
-            let ext = if self.format == Format::Obj { "obj" } else { "ply" };
+            let ext = self.format.ext();
             let name = self.flame.as_ref().filter(|f| !f.name.is_empty()).map_or("mesh".to_string(), |f| f.name.clone());
             if let Some(p) = crate::settings::dialog(crate::settings::Folder::Meshes).add_filter(ext.to_uppercase(), &[ext]).set_file_name(format!("{name}.{ext}")).save_file() {
                 let p: PathBuf = p.with_extension(ext);
@@ -356,6 +385,59 @@ impl MeshView {
                     Ok(()) => format!("Saved {}", p.display()),
                     Err(e) => format!("Cannot save: {e}"),
                 });
+            }
+        }
+        let density = self.volume.clone().zip(self.density.as_ref().filter(|(f, _)| *f == (self.settings.dilate, self.settings.blur)).map(|(_, d)| d.clone()));
+        ui.horizontal(|ui| {
+            if ui
+                .add_enabled(density.is_some(), egui::Button::new("Point cloud…"))
+                .on_hover_text("One point per voxel above the threshold, with its color and density (PLY in JWildfire's layout, or OBJ)")
+                .clicked()
+                && let Some((v, d)) = &density
+            {
+                let name = self.flame.as_ref().filter(|f| !f.name.is_empty()).map_or("points".to_string(), |f| f.name.clone());
+                if let Some(p) = crate::settings::dialog(crate::settings::Folder::Meshes)
+                    .add_filter("PLY", &["ply"])
+                    .add_filter("OBJ", &["obj"])
+                    .set_file_name(format!("{name}.ply"))
+                    .save_file()
+                {
+                    let points = v.point_cloud(d, self.settings.threshold);
+                    self.status = Some(match meshgen::save_points(&points, &p) {
+                        Ok(()) => format!("Saved {} points to {}", points.len(), p.display()),
+                        Err(e) => format!("Cannot save: {e}"),
+                    });
+                }
+            }
+            if ui
+                .add_enabled(density.is_some(), egui::Button::new("Export slices…"))
+                .on_hover_text("The volume as PNG images, one per z slice (brightness = density), into a folder")
+                .clicked()
+                && let Some((v, d)) = &density
+                && let Some(dir) = crate::settings::dialog(crate::settings::Folder::Meshes).set_title("Folder for the slice images").pick_folder()
+            {
+                self.status = Some(match meshgen::save_slices(v, d, &dir) {
+                    Ok(n) => format!("Saved {n} slices to {}", dir.display()),
+                    Err(e) => format!("Cannot save the slices: {e}"),
+                });
+            }
+        });
+        if ui
+            .add_enabled(!running, egui::Button::new("Import slices…"))
+            .on_hover_text("A volume from an image stack (one image per slice, sorted by name, bottom first; brightness = density), e.g. exported slices or JWildfire's slice renders. Uses the resolution above.")
+            .clicked()
+            && let Some(files) = crate::settings::dialog(crate::settings::Folder::Meshes).add_filter("Images", &["png", "jpg", "jpeg"]).pick_files()
+        {
+            match meshgen::load_slices(&files, self.settings.resolution) {
+                Ok(v) => {
+                    self.status = Some(format!("Imported {} slices ({} × {} × {} voxels)", files.len(), v.dims[0], v.dims[1], v.dims[2]));
+                    self.settings.bounds = v.bounds;
+                    self.slice = v.dims[2] / 2;
+                    self.volume = Some(Arc::new(v));
+                    self.density = None;
+                    self.surface = None;
+                }
+                Err(e) => self.status = Some(format!("Cannot import the slices: {e}")),
             }
         }
         if let Some(s) = &self.status {

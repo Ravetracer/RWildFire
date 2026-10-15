@@ -64,6 +64,9 @@ pub struct MeshSettings {
     pub threshold: f64,
     /// Gaussian blur of the density before the surface is extracted (voxels, 0 = off).
     pub blur: f64,
+    /// Dilation of every slice before the blur (JWildfire's "Dilate 3x3/5x5" pre-filters):
+    /// kernel size 3 or 5, 0 = off.
+    pub dilate: u32,
     /// Taubin smoothing passes of the mesh (0 = off) and its factors.
     pub smooth_passes: u32,
     pub smooth_lambda: f64,
@@ -72,7 +75,7 @@ pub struct MeshSettings {
 
 impl MeshSettings {
     pub fn new(bounds: Bounds) -> Self {
-        Self { bounds, resolution: 160, quality: 20.0, threshold: 0.3, blur: 0.8, smooth_passes: 8, smooth_lambda: 0.5, smooth_mu: -0.52 }
+        Self { bounds, resolution: 160, quality: 20.0, threshold: 0.3, blur: 0.8, dilate: 0, smooth_passes: 8, smooth_lambda: 0.5, smooth_mu: -0.52 }
     }
 }
 
@@ -84,6 +87,8 @@ pub struct Volume {
     pub counts: Vec<u32>,
     /// Sums of the sample colors (0..31 per sample and channel).
     pub colors: Vec<[u32; 3]>,
+    /// The counts are a density already (0..255, from images), not hits.
+    pub linear: bool,
 }
 
 const COLOR_SHIFT: u32 = 3;
@@ -93,8 +98,28 @@ impl Volume {
         (z * self.dims[1] + y) * self.dims[0] + x
     }
 
+    /// Normalized log density (0..1, 1 = the busiest voxels), dilated slice by slice
+    /// (kernel `dilate`, 0 = off) and blurred by `blur` voxels.
+    pub fn density_filtered(&self, dilate: u32, blur: f64) -> Vec<f32> {
+        let mut d = self.density(0.0);
+        if dilate >= 3 {
+            dilate_slices(&mut d, self.dims, (dilate / 2) as isize);
+        }
+        if blur > 0.05 {
+            gaussian_blur(&mut d, self.dims, blur);
+        }
+        d
+    }
+
     /// Normalized log density (0..1, 1 = the busiest voxels), blurred by `blur` voxels.
     pub fn density(&self, blur: f64) -> Vec<f32> {
+        if self.linear {
+            let mut d: Vec<f32> = self.counts.iter().map(|&c| c as f32 / 255.0).collect();
+            if blur > 0.05 {
+                gaussian_blur(&mut d, self.dims, blur);
+            }
+            return d;
+        }
         let mut nonzero: Vec<u32> = self.counts.iter().copied().filter(|c| *c > 0).collect();
         if nonzero.is_empty() {
             return vec![0.0; self.counts.len()];
@@ -142,6 +167,27 @@ impl Volume {
 }
 
 /// Separable gaussian blur of a 3D field.
+/// Maximum over a disk of radius `r` in every z slice (`ErodeTransformer` in dilate mode).
+fn dilate_slices(d: &mut [f32], dims: [usize; 3], r: isize) {
+    let [nx, ny, nz] = dims;
+    let offsets: Vec<(isize, isize)> = (-r..=r).flat_map(|dy| (-r..=r).map(move |dx| (dx, dy))).filter(|(dx, dy)| dx * dx + dy * dy <= r * r).collect();
+    d.par_chunks_mut(nx * ny).take(nz).for_each(|slice| {
+        let src = slice.to_vec();
+        for y in 0..ny as isize {
+            for x in 0..nx as isize {
+                let mut m = 0.0f32;
+                for (dx, dy) in &offsets {
+                    let (sx, sy) = (x + dx, y + dy);
+                    if sx >= 0 && sy >= 0 && sx < nx as isize && sy < ny as isize {
+                        m = m.max(src[sy as usize * nx + sx as usize]);
+                    }
+                }
+                slice[y as usize * nx + x as usize] = m;
+            }
+        }
+    });
+}
+
 fn gaussian_blur(d: &mut [f32], dims: [usize; 3], sigma: f64) {
     let r = (sigma * 2.5).ceil() as isize;
     let kernel: Vec<f32> = (-r..=r).map(|i| (-(i * i) as f64 / (2.0 * sigma * sigma)).exp() as f32).collect();
@@ -297,7 +343,163 @@ pub fn sample_volume(flame: &Flame, settings: &MeshSettings, progress: &AtomicU6
         bounds,
         counts: counts.into_iter().map(AtomicU32::into_inner).collect(),
         colors: colors.into_iter().map(|c| c.map(AtomicU32::into_inner)).collect(),
+        linear: false,
     }
+}
+
+/// A point of a point cloud (JWildfire's `PCPoint`): position, color (0..1), intensity.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CloudPoint {
+    pub position: [f32; 3],
+    pub color: [f32; 3],
+    pub intensity: f32,
+}
+
+impl Volume {
+    /// The centre of a voxel in world coordinates.
+    fn centre(&self, x: usize, y: usize, z: usize) -> [f32; 3] {
+        let s = self.bounds.size();
+        let c = [x, y, z];
+        std::array::from_fn(|i| (self.bounds.min[i] + (c[i] as f64 + 0.5) / self.dims[i] as f64 * s[i]) as f32)
+    }
+
+    /// A point cloud (JWildfire's point cloud output): one point per voxel whose density is
+    /// above `threshold`, with its average color; the density is the intensity.
+    pub fn point_cloud(&self, density: &[f32], threshold: f64) -> Vec<CloudPoint> {
+        let [nx, ny, nz] = self.dims;
+        let mut out = Vec::new();
+        for z in 0..nz {
+            for y in 0..ny {
+                for x in 0..nx {
+                    let d = density[self.index(x, y, z)];
+                    if d as f64 > threshold {
+                        let color = self.color(x, y, z).unwrap_or([1.0; 3]);
+                        out.push(CloudPoint { position: self.centre(x, y, z), color, intensity: d });
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// A slice as RGBA8 for an image stack (bottom slice first, y up): the voxel color times
+    /// the density, so the brightness carries the density (as JWildfire's slice images).
+    pub fn slice_image(&self, density: &[f32], z: usize) -> Vec<u8> {
+        let [nx, ny, _] = self.dims;
+        let mut out = Vec::with_capacity(nx * ny * 4);
+        for y in (0..ny).rev() {
+            for x in 0..nx {
+                let d = density[self.index(x, y, z)].clamp(0.0, 1.0);
+                let c = self.color(x, y, z).unwrap_or([0.0; 3]);
+                out.extend(c.map(|v| (v * d * 255.0).round() as u8));
+                out.push(255);
+            }
+        }
+        out
+    }
+
+    /// A volume from an image stack (RGBA8 slices of equal size, bottom first, y up), scaled
+    /// so the longest side has `resolution` voxels; the brightness is the density, the hue the
+    /// color. The box is centred, 2 units along its longest side.
+    pub fn from_slices(slices: &[Vec<u8>], width: usize, height: usize, resolution: u32) -> Option<Volume> {
+        let depth = slices.len();
+        if depth < 2 || width < 2 || height < 2 || slices.iter().any(|s| s.len() != width * height * 4) {
+            return None;
+        }
+        let longest = width.max(height).max(depth) as f64;
+        let f = (resolution as f64 / longest).min(1.0);
+        let dims = [((width as f64 * f).round() as usize).max(2), ((height as f64 * f).round() as usize).max(2), ((depth as f64 * f).round() as usize).max(2)];
+        let half: [f64; 3] = std::array::from_fn(|i| [width, height, depth][i] as f64 / longest);
+        let bounds = Bounds { min: half.map(|h| -h), max: half };
+        let n = dims[0] * dims[1] * dims[2];
+        let (mut counts, mut colors) = (vec![0u32; n], vec![[0u32; 3]; n]);
+        for z in 0..dims[2] {
+            let img = &slices[(z * depth / dims[2]).min(depth - 1)];
+            for y in 0..dims[1] {
+                // images are stored top row first
+                let sy = height - 1 - (y * height / dims[1]).min(height - 1);
+                for x in 0..dims[0] {
+                    let sx = (x * width / dims[0]).min(width - 1);
+                    let p = &img[(sy * width + sx) * 4..(sy * width + sx) * 4 + 4];
+                    let a = p[3] as f32 / 255.0;
+                    let rgb = [p[0] as f32 * a, p[1] as f32 * a, p[2] as f32 * a];
+                    let lum = 0.299 * rgb[0] + 0.588 * rgb[1] + 0.113 * rgb[2];
+                    let max = rgb[0].max(rgb[1]).max(rgb[2]);
+                    let i = (z * dims[1] + y) * dims[0] + x;
+                    let count = lum.round().clamp(0.0, 255.0) as u32;
+                    counts[i] = count;
+                    if max > 0.0 {
+                        // full-brightness hue, scaled like summed samples
+                        colors[i] = rgb.map(|v| ((v / max * 255.0) as u32 * count) >> COLOR_SHIFT);
+                    }
+                }
+            }
+        }
+        Some(Volume { dims, bounds, counts, colors, linear: true })
+    }
+}
+
+/// Writes the slices of a volume as `slice_0001.png`, … into `dir` (bottom slice first);
+/// returns the number of files.
+pub fn save_slices(volume: &Volume, density: &[f32], dir: &Path) -> Result<usize, String> {
+    std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let [nx, ny, nz] = volume.dims;
+    for z in 0..nz {
+        let path = dir.join(format!("slice_{:04}.png", z + 1));
+        crate::video::write_png(&path, nx as u32, ny as u32, &volume.slice_image(density, z)).map_err(|e| format!("{}: {e}", path.display()))?;
+    }
+    Ok(nz)
+}
+
+/// A volume from image files (one slice each, sorted by name, bottom first; PNG, JPEG, …).
+pub fn load_slices(paths: &[std::path::PathBuf], resolution: u32) -> Result<Volume, String> {
+    let mut paths = paths.to_vec();
+    paths.sort();
+    let mut slices = Vec::with_capacity(paths.len());
+    let mut size = None;
+    for p in &paths {
+        let img = image::open(p).map_err(|e| format!("{}: {e}", p.display()))?.to_rgba8();
+        let dims = (img.width() as usize, img.height() as usize);
+        if *size.get_or_insert(dims) != dims {
+            return Err(format!("{} is {}×{}, the other slices are {}×{}", p.display(), dims.0, dims.1, size.unwrap().0, size.unwrap().1));
+        }
+        slices.push(img.into_raw());
+    }
+    let (w, h) = size.ok_or("no slices")?;
+    Volume::from_slices(&slices, w, h, resolution).ok_or_else(|| "at least 2 slices of at least 2×2 pixels are needed".to_string())
+}
+
+/// Writes a point cloud as ASCII PLY in JWildfire's layout (position, RGBA, intensity, scale).
+pub fn write_points_ply(points: &[CloudPoint], w: &mut impl std::io::Write) -> std::io::Result<()> {
+    write!(
+        w,
+        "ply\nformat ascii 1.0\ncomment RWildFire point cloud\nelement vertex {}\nproperty float x\nproperty float y\nproperty float z\nproperty uchar red\nproperty uchar green\nproperty uchar blue\nproperty uchar alpha\nproperty float intensity\nproperty float pscale\nelement face 0\nproperty list uchar int vertex_indices\nend_header\n",
+        points.len()
+    )?;
+    for p in points {
+        let [r, g, b] = p.color.map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8);
+        writeln!(w, "{} {} {} {r} {g} {b} 255 {} 1", p.position[0], p.position[1], p.position[2], p.intensity)?;
+    }
+    Ok(())
+}
+
+/// Writes a point cloud as OBJ vertices with colors (`v x y z r g b`).
+pub fn write_points_obj(points: &[CloudPoint], w: &mut impl std::io::Write) -> std::io::Result<()> {
+    writeln!(w, "# RWildFire point cloud, {} points", points.len())?;
+    for p in points {
+        writeln!(w, "v {} {} {} {} {} {}", p.position[0], p.position[1], p.position[2], p.color[0], p.color[1], p.color[2])?;
+    }
+    Ok(())
+}
+
+/// Writes a point cloud as OBJ or PLY by the file extension.
+pub fn save_points(points: &[CloudPoint], path: &Path) -> std::io::Result<()> {
+    let mut w = std::io::BufWriter::new(std::fs::File::create(path)?);
+    match path.extension().and_then(|e| e.to_str()).map(|e| e.to_lowercase()).as_deref() {
+        Some("ply") => write_points_ply(points, &mut w)?,
+        _ => write_points_obj(points, &mut w)?,
+    }
+    w.flush()
 }
 
 /// A triangle mesh with optional vertex colors.
@@ -525,11 +727,59 @@ impl Mesh {
         w.write_all(&buf)
     }
 
-    /// Writes OBJ or PLY by the file extension.
+    /// A Sunflow scene with the mesh (JWildfire's "Sunflow export" of the mesh generator):
+    /// JWildfire's example scene (camera, sun-sky light, ground plate) with the mesh scaled to
+    /// 4 units, centred and standing on the plate, in a shiny shader of its average color.
+    pub fn write_sunflow(&self, w: &mut impl std::io::Write) -> std::io::Result<()> {
+        let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
+        for p in &self.positions {
+            for i in 0..3 {
+                lo[i] = lo[i].min(p[i]);
+                hi[i] = hi[i].max(p[i]);
+            }
+        }
+        let extent = (0..3).map(|i| hi[i] - lo[i]).fold(1e-6f32, f32::max);
+        let scale = 4.0 / extent;
+        let centre = [(lo[0] + hi[0]) / 2.0, (lo[1] + hi[1]) / 2.0];
+        let n = self.colors.len().max(1) as f32;
+        let avg: [f32; 3] = if self.colors.is_empty() { [0.49, 0.91, 0.0] } else { std::array::from_fn(|k| self.colors.iter().map(|c| c[k]).sum::<f32>() / n) };
+        let rgb = |c: [f32; 3]| format!("{{ \"sRGB nonlinear\" {} {} {} }}", c[0], c[1], c[2]);
+        write!(
+            w,
+            "image {{\n  resolution 640 480\n  aa 1 1\n  samples 4\n  filter gaussian\n}}\n\
+             camera {{\n  type pinhole\n  eye 3.27743673325 -9.07978439331 9.93055152893\n  target 0.0 0.0 0.0\n  up 0.0 0.0 1.0\n  fov 60.0\n  aspect 1.0\n}}\n\
+             light {{\n  type sunsky\n  up 0.0 0.0 1.0\n  east 0.0 1.0 0.0\n  sundir 1.0 -1.0 0.31\n  turbidity 2.0\n  samples 16\n}}\n\
+             shader {{\n  name ground\n  type diffuse\n  diff {}\n}}\n\
+             shader {{\n  name shader_shiny\n  type shiny\n  diff {}\n  refl 0.1\n}}\n",
+            rgb([0.7, 0.5, 0.5]),
+            rgb(avg)
+        )?;
+        // ground plate (JWildfire's example scene)
+        write!(
+            w,
+            "object {{\n  shader ground\n  type generic-mesh\n  name Plane\n  points 8\n    7.1 7.1 -1.0\n    7.1 -7.1 -1.0\n    -7.1 -7.1 -1.0\n    -7.1 7.1 -1.0\n    -7.1 7.1 -1.61\n    -7.1 -7.1 -1.61\n    7.1 -7.1 -1.61\n    7.1 7.1 -1.61\n  triangles 12\n    0 3 2\n    0 2 1\n    2 3 4\n    2 4 5\n    3 0 7\n    3 7 4\n    0 1 6\n    0 6 7\n    1 2 5\n    1 5 6\n    5 4 7\n    5 7 6\n  normals none\n  uvs none\n}}\n"
+        )?;
+        writeln!(w, "object {{\n  shader shader_shiny\n  type generic-mesh\n  name \"generated mesh\"\n  points {}", self.positions.len())?;
+        for p in &self.positions {
+            writeln!(w, "    {} {} {}", (p[0] - centre[0]) * scale, (p[1] - centre[1]) * scale, (p[2] - lo[2]) * scale - 1.0)?;
+        }
+        writeln!(w, "  triangles {}", self.triangles.len())?;
+        for t in &self.triangles {
+            writeln!(w, "    {} {} {}", t[0], t[1], t[2])?;
+        }
+        writeln!(w, "  normals vertex")?;
+        for nrm in self.normals() {
+            writeln!(w, "    {} {} {}", nrm[0], nrm[1], nrm[2])?;
+        }
+        writeln!(w, "  uvs none\n}}")
+    }
+
+    /// Writes OBJ, PLY or a Sunflow scene (`.sc`) by the file extension.
     pub fn save(&self, path: &Path, colors: bool, normals: bool) -> std::io::Result<()> {
         let mut w = std::io::BufWriter::new(std::fs::File::create(path)?);
         match path.extension().and_then(|e| e.to_str()).map(|e| e.to_lowercase()).as_deref() {
             Some("ply") => self.write_ply(&mut w)?,
+            Some("sc") => self.write_sunflow(&mut w)?,
             _ => self.write_obj(&mut w, colors, normals)?,
         }
         w.flush()
@@ -627,7 +877,7 @@ pub fn generate(flame: &Flame, settings: &MeshSettings, progress: &AtomicU64, ca
     if cancel.load(Ordering::Relaxed) {
         return None;
     }
-    let density = volume.density(settings.blur);
+    let density = volume.density_filtered(settings.dilate, settings.blur);
     let mut mesh = surface_nets(&volume, &density, settings.threshold as f32);
     if settings.smooth_passes > 0 {
         mesh.taubin_smooth(settings.smooth_passes, settings.smooth_lambda, settings.smooth_mu);
@@ -657,7 +907,7 @@ mod tests {
             }
         }
         let colors = counts.iter().map(|&c| [c * 31, 0, 0]).collect();
-        (Volume { dims: [n; 3], bounds, counts, colors }, field)
+        (Volume { dims: [n; 3], bounds, counts, colors, linear: false }, field)
     }
 
     #[test]
@@ -732,5 +982,54 @@ mod tests {
         let (vol, mesh) = generate(&flame, &s, &AtomicU64::new(0), &AtomicBool::new(false)).unwrap();
         assert!(vol.counts.iter().any(|c| *c > 0));
         assert!(mesh.triangles.len() > 100, "{} triangles", mesh.triangles.len());
+    }
+
+    #[test]
+    fn dilate_grows_a_point_to_a_disk() {
+        let dims = [9, 9, 2];
+        let mut d = vec![0.0f32; 9 * 9 * 2];
+        d[4 * 9 + 4] = 1.0;
+        dilate_slices(&mut d, dims, 1);
+        assert_eq!(d[..81].iter().filter(|v| **v == 1.0).count(), 5, "radius 1 disk: centre and 4 neighbours");
+        assert!(d[81..].iter().all(|v| *v == 0.0), "other slices untouched");
+    }
+
+    #[test]
+    fn point_cloud_covers_the_ball() {
+        let (volume, field) = ball();
+        let pts = volume.point_cloud(&field, 0.5);
+        assert_eq!(pts.len(), field.iter().filter(|v| **v > 0.5).count());
+        assert!(pts.iter().all(|p| p.position.iter().all(|c| c.abs() < 1.0) && p.color[0] > 0.9));
+        let mut ply = Vec::new();
+        write_points_ply(&pts, &mut ply).unwrap();
+        let text = String::from_utf8(ply).unwrap();
+        assert!(text.contains(&format!("element vertex {}", pts.len())) && text.lines().count() == pts.len() + 16);
+    }
+
+    #[test]
+    fn slices_round_trip_to_a_mesh() {
+        let (volume, field) = ball();
+        let slices: Vec<Vec<u8>> = (0..volume.dims[2]).map(|z| volume.slice_image(&field, z)).collect();
+        let back = Volume::from_slices(&slices, volume.dims[0], volume.dims[1], 64).unwrap();
+        assert_eq!(back.dims, volume.dims);
+        let d = back.density(0.0);
+        // the red ball comes back where it was, with its color
+        let i = (10 * 20 + 10) * 20 + 10;
+        assert!(d[i] > 0.2 && d[0] == 0.0, "{} {}", d[i], d[0]);
+        assert!(back.color(10, 10, 10).unwrap()[0] > 0.9);
+        let mesh = surface_nets(&back, &d, 0.1);
+        assert!(!mesh.triangles.is_empty());
+    }
+
+    #[test]
+    fn sunflow_scene_holds_the_mesh() {
+        let (volume, field) = ball();
+        let mesh = surface_nets(&volume, &field, 0.5);
+        let mut sc = Vec::new();
+        mesh.write_sunflow(&mut sc).unwrap();
+        let text = String::from_utf8(sc).unwrap();
+        assert!(text.contains(&format!("points {}", mesh.positions.len())));
+        assert!(text.contains(&format!("triangles {}", mesh.triangles.len())));
+        assert_eq!(text.matches("object {").count(), 2);
     }
 }

@@ -40,7 +40,7 @@ struct Args {
 
 fn usage() -> ! {
     eprintln!(
-        "usage: rwf-cli render <file.flame> [-o out.png|.jpg|.hdr|.exr] [-w width] [-h height] [-q quality] [-i flame-index] [--gpu] [-t threads] [--zbuffer] [--jpeg-quality 1-100]\n       rwf-cli batch [options] <files or folders...>   (rwf-cli batch for the options)\n       rwf-cli quilt <file.flame> -o out.png -w width [-h height] [-q quality] [--tiles COLSxROWS]\n       rwf-cli mesh <file.flame> -o out.obj|out.ply [--resolution N] [--quality Q] [--threshold T] [--blur B] [--smooth N]\n       rwf-cli movie <file.jwfmovie> -o out.mp4|.mov|.webm|out-dir [--cpu]\n       rwf-cli dance <file.rwfdance> -o out.mp4|.mov|.webm|out-dir [--cpu]\n       rwf-cli random <out-dir> [count] [generator filter] [--symmetry NAME] [--weighting NAME]"
+        "usage: rwf-cli render <file.flame> [-o out.png|.jpg|.hdr|.exr] [-w width] [-h height] [-q quality] [-i flame-index] [--gpu] [-t threads] [--zbuffer] [--jpeg-quality 1-100]\n       rwf-cli batch [options] <files or folders...>   (rwf-cli batch for the options)\n       rwf-cli quilt <file.flame> -o out.png -w width [-h height] [-q quality] [--tiles COLSxROWS]\n       rwf-cli mesh <file.flame | --from-slices DIR> [-o out.obj|.ply|.sc] [--points out.ply|.obj] [--slices DIR] [--resolution N] [--quality Q] [--threshold T] [--dilate 3|5] [--blur B] [--smooth N]\n       rwf-cli movie <file.jwfmovie> -o out.mp4|.mov|.webm|out-dir [--cpu]\n       rwf-cli dance <file.rwfdance> -o out.mp4|.mov|.webm|out-dir [--cpu]\n       rwf-cli random <out-dir> [count] [generator filter] [--symmetry NAME] [--weighting NAME]"
     );
     std::process::exit(2);
 }
@@ -451,21 +451,34 @@ fn dance_cmd() {
     eprintln!("{}", output.display());
 }
 
-/// `rwf-cli mesh <file.flame> -o out.obj|out.ply [--resolution N] [--quality Q] [--threshold T]
-/// [--blur B] [--smooth PASSES] [--no-colors]`: a 3D mesh of the flame (mesh generator).
+/// `rwf-cli mesh <file.flame | --from-slices DIR> [-o out.obj|.ply|.sc] [--points out.ply|.obj]
+/// [--slices DIR] [--resolution N] [--quality Q] [--threshold T] [--dilate 3|5] [--blur B]
+/// [--smooth PASSES] [--no-colors]`: a 3D mesh, point cloud or slice stack of the flame (mesh
+/// generator); `--from-slices` builds the volume from an image stack instead.
 fn mesh_cmd() {
+    const USAGE: &str = "usage: rwf-cli mesh <file.flame | --from-slices DIR> [-o out.obj|out.ply|out.sc] [--points out.ply|out.obj] [--slices DIR] [--resolution N] [--quality Q] [--threshold T] [--dilate 3|5] [--blur B] [--smooth PASSES] [--no-colors]";
     let args: Vec<String> = std::env::args().skip(2).collect();
     let (mut input, mut output, mut colors) = (None, None, true);
+    let (mut points, mut slices, mut from_slices) = (None, None, None);
     let mut opts: Vec<(String, f64)> = Vec::new();
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
-            "-o" => {
+            o @ ("-o" | "--points" | "--slices" | "--from-slices") => {
                 i += 1;
-                output = args.get(i).map(PathBuf::from);
+                let Some(p) = args.get(i).map(PathBuf::from) else {
+                    eprintln!("{o} needs a path");
+                    std::process::exit(2);
+                };
+                *match o {
+                    "-o" => &mut output,
+                    "--points" => &mut points,
+                    "--slices" => &mut slices,
+                    _ => &mut from_slices,
+                } = Some(p);
             }
             "--no-colors" => colors = false,
-            o @ ("--resolution" | "--quality" | "--threshold" | "--blur" | "--smooth") => {
+            o @ ("--resolution" | "--quality" | "--threshold" | "--blur" | "--smooth" | "--dilate") => {
                 i += 1;
                 let v = args.get(i).and_then(|v| v.parse().ok()).unwrap_or_else(|| {
                     eprintln!("{o} needs a number");
@@ -477,36 +490,66 @@ fn mesh_cmd() {
         }
         i += 1;
     }
-    let (Some(input), Some(output)) = (input, output) else {
-        eprintln!("usage: rwf-cli mesh <file.flame> -o out.obj|out.ply [--resolution N] [--quality Q] [--threshold T] [--blur B] [--smooth PASSES] [--no-colors]");
+    if (input.is_none() && from_slices.is_none()) || (output.is_none() && points.is_none() && slices.is_none()) {
+        eprintln!("{USAGE}");
         std::process::exit(2);
-    };
-    let flame = read_flames_from_file(&input).ok().and_then(|f| f.into_iter().next()).unwrap_or_else(|| {
-        eprintln!("failed to read {}", input.display());
-        std::process::exit(1);
+    }
+    let flame = input.as_ref().map(|input| {
+        let flame = read_flames_from_file(input).ok().and_then(|f| f.into_iter().next()).unwrap_or_else(|| {
+            eprintln!("failed to read {}", input.display());
+            std::process::exit(1);
+        });
+        flame.at_frame(0.0)
     });
-    let flame = flame.at_frame(0.0);
-    let mut s = rwf_core::meshgen::MeshSettings::new(rwf_core::meshgen::auto_bounds(&flame));
+    let bounds = flame.as_ref().map_or(rwf_core::meshgen::Bounds { min: [-1.0; 3], max: [1.0; 3] }, rwf_core::meshgen::auto_bounds);
+    let mut s = rwf_core::meshgen::MeshSettings::new(bounds);
     for (o, v) in opts {
         match o.as_str() {
             "--resolution" => s.resolution = v.clamp(8.0, 2048.0) as u32,
             "--quality" => s.quality = v.max(0.1),
             "--threshold" => s.threshold = v.clamp(0.0, 1.0),
             "--blur" => s.blur = v.max(0.0),
+            "--dilate" => s.dilate = if v >= 4.0 { 5 } else if v >= 2.0 { 3 } else { 0 },
             _ => s.smooth_passes = v.max(0.0) as u32,
         }
     }
     let started = std::time::Instant::now();
-    let progress = std::sync::atomic::AtomicU64::new(0);
-    let Some((_, mut mesh)) = rwf_core::meshgen::generate(&flame, &s, &progress, &std::sync::atomic::AtomicBool::new(false)) else { return };
-    if !colors {
-        mesh.colors.clear();
-    }
-    if let Err(e) = mesh.save(&output, colors, true) {
-        eprintln!("cannot write {}: {e}", output.display());
+    let fail = |what: &str, e: String| -> ! {
+        eprintln!("{what}: {e}");
         std::process::exit(1);
+    };
+    let volume = match (&from_slices, &flame) {
+        (Some(dir), _) => {
+            let files: Vec<PathBuf> = std::fs::read_dir(dir)
+                .map(|d| d.filter_map(|e| e.ok().map(|e| e.path())).filter(|p| p.extension().is_some_and(|e| matches!(e.to_ascii_lowercase().to_str(), Some("png" | "jpg" | "jpeg")))).collect())
+                .unwrap_or_default();
+            rwf_core::meshgen::load_slices(&files, s.resolution).unwrap_or_else(|e| fail("cannot read the slices", e))
+        }
+        (None, Some(flame)) => rwf_core::meshgen::sample_volume(flame, &s, &std::sync::atomic::AtomicU64::new(0), &std::sync::atomic::AtomicBool::new(false)),
+        (None, None) => unreachable!("checked above"),
+    };
+    let density = volume.density_filtered(s.dilate, s.blur);
+    if let Some(dir) = &slices {
+        let n = rwf_core::meshgen::save_slices(&volume, &density, dir).unwrap_or_else(|e| fail("cannot write the slices", e));
+        eprintln!("{} ({n} slices)", dir.display());
     }
-    eprintln!("{} ({} vertices, {} triangles, {:.1} s)", output.display(), mesh.positions.len(), mesh.triangles.len(), started.elapsed().as_secs_f64());
+    if let Some(path) = &points {
+        let pts = volume.point_cloud(&density, s.threshold);
+        rwf_core::meshgen::save_points(&pts, path).unwrap_or_else(|e| fail(&format!("cannot write {}", path.display()), e.to_string()));
+        eprintln!("{} ({} points)", path.display(), pts.len());
+    }
+    if let Some(output) = &output {
+        let mut mesh = rwf_core::meshgen::surface_nets(&volume, &density, s.threshold as f32);
+        if s.smooth_passes > 0 {
+            mesh.taubin_smooth(s.smooth_passes, s.smooth_lambda, s.smooth_mu);
+        }
+        if !colors {
+            mesh.colors.clear();
+        }
+        mesh.save(output, colors, true).unwrap_or_else(|e| fail(&format!("cannot write {}", output.display()), e.to_string()));
+        eprintln!("{} ({} vertices, {} triangles)", output.display(), mesh.positions.len(), mesh.triangles.len());
+    }
+    eprintln!("done in {:.1} s", started.elapsed().as_secs_f64());
 }
 
 fn main() {
