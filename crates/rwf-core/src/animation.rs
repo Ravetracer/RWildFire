@@ -585,6 +585,7 @@ pub fn get_prop(flame: &Flame, path: &str) -> Option<f64> {
         return match rest {
             "weight" => Some(layer.weight),
             "density" => Some(layer.density),
+            "gradient_shift" => Some(layer.gradient_shift),
             _ => None,
         };
     }
@@ -609,6 +610,7 @@ pub fn set_prop(flame: &mut Flame, path: &str, v: f64) -> bool {
         match rest {
             "weight" => layer.weight = v,
             "density" => layer.density = v,
+            "gradient_shift" => layer.gradient_shift = v,
             _ => return false,
         }
         return true;
@@ -631,6 +633,7 @@ pub fn all_props(flame: &Flame) -> Vec<(String, f64)> {
     for (li, layer) in flame.layers.iter().enumerate() {
         out.push((format!("layer{li}.weight"), layer.weight));
         out.push((format!("layer{li}.density"), layer.density));
+        out.push((format!("layer{li}.gradient_shift"), layer.gradient_shift));
         for kind in XFormKind::ALL {
             for (xi, xf) in layer.xforms_of(kind).iter().enumerate() {
                 let p = format!("layer{li}.{}{xi}", kind.path_prefix());

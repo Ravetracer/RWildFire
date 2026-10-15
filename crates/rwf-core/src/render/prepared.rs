@@ -288,7 +288,8 @@ fn step_weighting(xf: &XForm, def: &'static VarDef, var: &VariationInstance, fra
 }
 
 fn prepare_layer(layer: &Layer, frame: u32, missing: &mut Vec<String>) -> PreparedLayer {
-    let colormap = layer.gradient.render_colors();
+    let gradient = layer.render_gradient();
+    let colormap = gradient.render_colors();
     let mut xforms: Vec<PreparedXForm> = layer
         .xforms
         .iter()
@@ -337,7 +338,7 @@ fn prepare_layer(layer: &Layer, frame: u32, missing: &mut Vec<String>) -> Prepar
         xforms,
         finals,
         colormap,
-        palette: layer.gradient.colors.clone(),
+        palette: gradient.colors.clone(),
         smooth_gradient: layer.smooth_gradient,
     }
 }

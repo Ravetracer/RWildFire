@@ -320,6 +320,9 @@ pub struct Layer {
     pub density: f64,
     pub visible: bool,
     pub gradient: Gradient,
+    /// Moves the colors along the gradient when rendering (entries; fractional values blend);
+    /// animatable for color cycling. JWildfire's `palette_modShift`.
+    pub gradient_shift: f64,
     pub smooth_gradient: bool,
     pub xforms: Vec<XForm>,
     pub final_xforms: Vec<XForm>,
@@ -367,6 +370,17 @@ impl Layer {
     }
 }
 
+impl Layer {
+    /// The gradient as rendered: with [`Layer::gradient_shift`] applied.
+    pub fn render_gradient(&self) -> std::borrow::Cow<'_, Gradient> {
+        if self.gradient_shift == 0.0 {
+            std::borrow::Cow::Borrowed(&self.gradient)
+        } else {
+            std::borrow::Cow::Owned(self.gradient.shifted(self.gradient_shift))
+        }
+    }
+}
+
 impl Default for Layer {
     fn default() -> Self {
         Self {
@@ -375,6 +389,7 @@ impl Default for Layer {
             density: 1.0,
             visible: true,
             gradient: Gradient::default(),
+            gradient_shift: 0.0,
             smooth_gradient: false,
             xforms: Vec::new(),
             final_xforms: Vec::new(),

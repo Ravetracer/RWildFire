@@ -400,14 +400,17 @@ fn morph_layers(a: &Layer, b: &Layer, t: f64) -> Layer {
             })
             .collect()
     };
-    let n = a.gradient.colors.len().max(b.gradient.colors.len());
+    // the rendered gradients (with their shift) are blended
+    let (ga, gb) = (a.render_gradient(), b.render_gradient());
+    let n = ga.colors.len().max(gb.colors.len());
     let color = |g: &crate::gradient::Gradient, i: usize| g.colors.get(i).or(g.colors.last()).copied().unwrap_or([0, 0, 0]);
     let mut gradient = a.gradient.clone();
-    gradient.colors = (0..n).map(|i| lerp_color(color(&a.gradient, i), color(&b.gradient, i), t)).collect();
+    gradient.colors = (0..n).map(|i| lerp_color(color(&ga, i), color(&gb, i), t)).collect();
     Layer {
         weight: lerp(a.weight, b.weight, t),
         density: lerp(a.density, b.density, t),
         gradient,
+        gradient_shift: 0.0,
         xforms: morph_list(&a.xforms, &b.xforms),
         final_xforms: morph_list(&a.final_xforms, &b.final_xforms),
         bg_xforms: morph_list(&a.bg_xforms, &b.bg_xforms),

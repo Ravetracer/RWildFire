@@ -167,7 +167,7 @@ fn render_bg_xforms(flame: &Flame, full: (u32, u32), region: (u32, u32, u32, u32
         .iter()
         .filter(|l| !l.bg_xforms.is_empty())
         .map(|l| {
-            let colormap = l.gradient.render_colors();
+            let colormap = l.render_gradient().render_colors();
             let xforms = l
                 .bg_xforms
                 .iter()

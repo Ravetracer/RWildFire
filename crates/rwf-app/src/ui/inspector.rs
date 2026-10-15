@@ -461,6 +461,12 @@ fn gradient_editor(ui: &mut Ui, doc: &mut Document, st: &mut InspectorState) {
         }
         ui.checkbox(&mut layer.smooth_gradient, "Smooth");
     });
+    grid(ui, "grad-cycle", |ui| {
+        slider(ui, "Color cycle", &mut layer.gradient_shift, 0.0..=256.0).on_hover_text(
+            "Moves the colors along the gradient when rendering, without changing the gradient (256 = one full turn). \
+             Key it on the timeline to cycle the colors in animations; fractional values blend neighbouring colors.",
+        );
+    });
 
     // Relative adjustments on top of a captured base gradient.
     let ge = &mut st.gradient;

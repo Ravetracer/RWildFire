@@ -94,6 +94,30 @@ impl Gradient {
             .collect()
     }
 
+    /// The gradient with its colors moved `amount` entries up (wrapping, like [`Gradient::shift`]);
+    /// fractional amounts blend neighbouring colors.
+    pub fn shifted(&self, amount: f64) -> Gradient {
+        let n = self.colors.len();
+        if n == 0 {
+            return self.clone();
+        }
+        let a = amount.rem_euclid(n as f64);
+        let (k, t) = (a.floor() as usize, a.fract());
+        let colors = (0..n)
+            .map(|j| {
+                // new[j] = old[j - a]
+                let i0 = (j + n - k % n) % n;
+                let c0 = self.colors[i0];
+                if t == 0.0 {
+                    return c0;
+                }
+                let c1 = self.colors[(i0 + n - 1) % n];
+                std::array::from_fn(|c| to_u8(c0[c] as f64 * (1.0 - t) + c1[c] as f64 * t))
+            })
+            .collect();
+        Gradient { colors }
+    }
+
     pub fn shift(&mut self, amount: i32) {
         let n = self.colors.len() as i32;
         let k = amount.rem_euclid(n) as usize;
@@ -167,4 +191,23 @@ fn lerp_rgb(a: [u8; 3], b: [u8; 3], t: f64) -> [u8; 3] {
         to_u8(a[1] as f64 + (b[1] as f64 - a[1] as f64) * t),
         to_u8(a[2] as f64 + (b[2] as f64 - a[2] as f64) * t),
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shifted_moves_and_blends() {
+        let g = Gradient { colors: (0..256).map(|i| [i as u8, 0, 255 - i as u8]).collect() };
+        let mut whole = g.clone();
+        whole.shift(10);
+        assert_eq!(g.shifted(10.0), whole);
+        assert_eq!(g.shifted(266.0), whole);
+        assert_eq!(g.shifted(-246.0), whole);
+        assert_eq!(g.shifted(0.0), g);
+        // half way between a shift of 10 and 11
+        let half = g.shifted(10.5);
+        assert_eq!(half.colors[100][0], 90); // (90 + 89) / 2 rounded
+    }
 }

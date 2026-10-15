@@ -118,6 +118,7 @@ pub(crate) fn parse_flame(el: &Element) -> Flame {
     }
     let has_bg_type = el.attr("background_type").is_some();
     let mut smooth_gradient = None;
+    let mut gradient_shift = 0.0;
     for (k, v) in &el.attrs {
         let f = f64_of(v);
         let mut known = true;
@@ -240,6 +241,7 @@ pub(crate) fn parse_flame(el: &Element) -> Flame {
             "preserve_z" => flame.preserve_z = v == "1",
             "new_linear" => flame.preserve_z = v.trim() == "1",
             "smooth_gradient" => smooth_gradient = Some(v == "1"),
+            "gradient_shift" => gradient_shift = f.unwrap_or(0.0),
             "frame_count" => flame.animation.frame_count = f.unwrap_or(100.0).max(1.0) as u32,
             "fps" => flame.animation.fps = f.unwrap_or(25.0).max(1.0),
             "motion_blur_length" => flame.animation.motion_blur_length = f.unwrap_or(0.0).max(0.0) as u32,
@@ -263,6 +265,7 @@ pub(crate) fn parse_flame(el: &Element) -> Flame {
         if let Some(s) = smooth_gradient {
             layer.smooth_gradient = s;
         }
+        layer.gradient_shift = gradient_shift;
         flame.layers = vec![layer];
     } else {
         flame.layers = layer_elements
@@ -276,6 +279,7 @@ pub(crate) fn parse_flame(el: &Element) -> Flame {
                         "visible" => layer.visible = v.trim() == "1",
                         "name" => layer.name = v.clone(),
                         "smooth_gradient" => layer.smooth_gradient = v == "1",
+                        "gradient_shift" => layer.gradient_shift = f64_of(v).unwrap_or(0.0),
                         _ => layer.extra_attrs.push((k.clone(), v.clone())),
                     }
                 }
@@ -321,10 +325,10 @@ fn import_jwf_curves(flame: &mut Flame) {
         attrs.retain(|(k, _)| !prefixes.iter().any(|p| k.starts_with(p.as_str())));
     }
     let curve_names = |attrs: &[(String, String)]| -> Vec<String> { attrs.iter().filter_map(|(k, _)| k.strip_suffix("Curve_enabled").map(str::to_string)).collect() };
-    // Flame-level curves
+    // Flame-level curves (a single layer's gradient shift may sit on the flame)
     for n in curve_names(&flame.extra_attrs) {
         let prefix = format!("{n}Curve_");
-        if let Some(path) = jwf_flame_curve_path(&n) {
+        if let Some(path) = jwf_flame_curve_path(&n).or((n == "palette_modShift").then_some("layer0.gradient_shift")) {
             if let Some(t) = jwf_curve_track(&flame.extra_attrs, &prefix, path) {
                 flame.animation.tracks.push(t);
             }
@@ -337,12 +341,16 @@ fn import_jwf_curves(flame: &mut Flame) {
     for (li, layer) in flame.layers.iter_mut().enumerate() {
         for n in curve_names(&layer.extra_attrs) {
             let prefix = format!("{n}Curve_");
-            if matches!(n.as_str(), "weight" | "density") {
-                if let Some(t) = jwf_curve_track(&layer.extra_attrs, &prefix, &format!("layer{li}.{n}")) {
-                    tracks.push(t);
-                }
-                strip(&mut layer.extra_attrs, &prefix);
+            let path = match n.as_str() {
+                "weight" | "density" => format!("layer{li}.{n}"),
+                // RGBPalette.modShift
+                "palette_modShift" => format!("layer{li}.gradient_shift"),
+                _ => continue,
+            };
+            if let Some(t) = jwf_curve_track(&layer.extra_attrs, &prefix, &path) {
+                tracks.push(t);
             }
+            strip(&mut layer.extra_attrs, &prefix);
         }
         for kind in XFormKind::ALL {
             for (xi, xf) in layer.xforms_of_mut(kind).iter_mut().enumerate() {
@@ -671,6 +679,9 @@ pub fn write_flame(flame: &Flame) -> String {
     attr(&mut s, "post_symmetry_rotation", fmt_f(ps.rotation));
     if !multi_layer {
         attr(&mut s, "smooth_gradient", if flame.first_layer().smooth_gradient { "1" } else { "0" });
+        if flame.first_layer().gradient_shift != 0.0 {
+            attr(&mut s, "gradient_shift", fmt_f(flame.first_layer().gradient_shift));
+        }
     }
     let anim = &flame.animation;
     attr(&mut s, "frame", flame.frame.to_string());
@@ -694,6 +705,9 @@ pub fn write_flame(flame: &Flame) -> String {
                 attr(&mut s, "name", &layer.name);
             }
             attr(&mut s, "smooth_gradient", if layer.smooth_gradient { "1" } else { "0" });
+            if layer.gradient_shift != 0.0 {
+                attr(&mut s, "gradient_shift", fmt_f(layer.gradient_shift));
+            }
             for (k, v) in &layer.extra_attrs {
                 attr(&mut s, k, v);
             }

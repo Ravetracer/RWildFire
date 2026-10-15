@@ -36,7 +36,7 @@ fn flame() -> String {
         parent42Curve_x0="1" parent42Curve_y0="10.0" parent42Curve_x1="11" parent42Curve_y1="20.0""#;
     let xf_curves = [curve("xyRotateCurve", 0.0, 90.0), curve("xyPostScaleCurve", 1.0, 2.0), curve("opacityCurve", 1.0, 0.5), curve("materialSpeedCurve", 0.0, 4.0)].concat();
     let amount = curve("julian_amountCurve", 1.0, 0.0);
-    let layer = curve("weightCurve", 1.0, 0.25);
+    let layer = [curve("weightCurve", 1.0, 0.25), curve("palette_modShiftCurve", 0.0, 100.0)].concat();
     format!(
         r#"<jwf-flame name="anim" size="320 240" center="0.0 0.0" scale="80" brightness="4.0" gamma="4.0" frame_count="11" post_symmetry_type="POINT"{flame_curves}{parent}>
   <layer weight="1.0" density="1.0" visible="1"{layer}>
@@ -76,6 +76,11 @@ fn all_curve_kinds_are_imported() {
     assert!((at(11.0).layers[0].xforms[0].variations[0].amount).abs() < 1e-9);
     assert!((at(11.0).layers[0].xforms[0].opacity - 0.5).abs() < 1e-9);
     assert!((at(11.0).layers[0].xforms[0].material_speed - 4.0).abs() < 1e-9);
+    // gradient shift (RGBPalette.modShift)
+    assert!(!flame.layers[0].extra_attrs.iter().any(|(k, _)| k.contains("Curve_")), "{:?}", flame.layers[0].extra_attrs);
+    let shifted = at(11.0);
+    assert_eq!(shifted.layers[0].gradient_shift, 100.0);
+    assert_eq!(shifted.layers[0].render_gradient().colors, shifted.layers[0].gradient.shifted(100.0).colors);
     // relative rotate (90 degrees at frame 11) and post scale
     let c = at(11.0).layers[0].xforms[0].coefs;
     let arr = c.as_array();
