@@ -517,6 +517,40 @@ fn gradient_editor(ui: &mut Ui, doc: &mut Document, st: &mut InspectorState) {
         }
     });
     ge.last = Some(layer.gradient.clone());
+
+    egui::CollapsingHeader::new(RichText::new("Gradient map").color(theme::TEXT_MUTED))
+        .id_salt("grad-map")
+        .show(ui, |ui| {
+            ui.label(RichText::new("Colors from an image instead of the gradient (transforms with diffusion or cyclic coloring), as in JWildfire.").small().color(theme::TEXT_MUTED));
+            let gm = &mut layer.gradient_map;
+            grid(ui, "grad-map-grid", |ui| {
+                widgets::label(ui, "Image");
+                ui.horizontal(|ui| {
+                    let name = std::path::Path::new(&gm.file).file_name().map(|n| n.to_string_lossy().to_string());
+                    if ui.button(name.unwrap_or_else(|| "Choose…".into())).on_hover_text("Image used as a two-dimensional gradient").clicked()
+                        && let Some(p) = rfd::FileDialog::new().add_filter("Image", &["png", "jpg", "jpeg"]).pick_file()
+                    {
+                        gm.file = p.to_string_lossy().to_string();
+                    }
+                    if gm.is_on() && widgets::icon_button(ui, icons::X, "Remove the gradient map (use the gradient again)").clicked() {
+                        gm.file.clear();
+                    }
+                    if gm.is_on() && rwf_core::resources::image(&gm.file).is_none() {
+                        ui.label(RichText::new("not found").small().color(theme::WARN))
+                            .on_hover_text(format!("Cannot load {}; JWildfire's default gradient image is used", gm.file));
+                    }
+                });
+                ui.end_row();
+                if gm.is_on() {
+                    slider(ui, "Horiz. scale", &mut gm.h_scale, -4.0..=4.0).on_hover_text("How far a point's x moves across the image (it is mirrored at the edges)");
+                    slider(ui, "Horiz. offset", &mut gm.h_offset, -2.0..=2.0);
+                    slider(ui, "Vert. scale", &mut gm.v_scale, -4.0..=4.0).on_hover_text("How far a point's y moves across the image (it is mirrored at the edges)");
+                    slider(ui, "Vert. offset", &mut gm.v_offset, -2.0..=2.0);
+                    slider(ui, "Color shift", &mut gm.local_color_add, -2.0..=2.0).on_hover_text("How much the color index moves the position in the image");
+                    slider(ui, "Color scale", &mut gm.local_color_scale, -2.0..=2.0).on_hover_text("How much the color index scales the position in the image");
+                }
+            });
+        });
 }
 
 fn render_tab(ui: &mut Ui, doc: &mut Document, preview: &mut Preview, canvas: &mut CanvasState) {

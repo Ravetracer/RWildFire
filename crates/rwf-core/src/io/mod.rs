@@ -119,6 +119,7 @@ pub(crate) fn parse_flame(el: &Element) -> Flame {
     let has_bg_type = el.attr("background_type").is_some();
     let mut smooth_gradient = None;
     let mut gradient_shift = 0.0;
+    let mut gradient_map = crate::model::GradientMap::default();
     for (k, v) in &el.attrs {
         let f = f64_of(v);
         let mut known = true;
@@ -244,6 +245,9 @@ pub(crate) fn parse_flame(el: &Element) -> Flame {
             "new_linear" => flame.preserve_z = v.trim() == "1",
             "smooth_gradient" => smooth_gradient = Some(v == "1"),
             "gradient_shift" => gradient_shift = f.unwrap_or(0.0),
+            k if k.starts_with("gradient_map") => {
+                gradient_map.read_attr(k, v);
+            }
             "frame_count" => flame.animation.frame_count = f.unwrap_or(100.0).max(1.0) as u32,
             "fps" => flame.animation.fps = f.unwrap_or(25.0).max(1.0),
             "motion_blur_length" => flame.animation.motion_blur_length = f.unwrap_or(0.0).max(0.0) as u32,
@@ -268,6 +272,7 @@ pub(crate) fn parse_flame(el: &Element) -> Flame {
             layer.smooth_gradient = s;
         }
         layer.gradient_shift = gradient_shift;
+        layer.gradient_map = gradient_map;
         flame.layers = vec![layer];
     } else {
         flame.layers = layer_elements
@@ -282,6 +287,7 @@ pub(crate) fn parse_flame(el: &Element) -> Flame {
                         "name" => layer.name = v.clone(),
                         "smooth_gradient" => layer.smooth_gradient = v == "1",
                         "gradient_shift" => layer.gradient_shift = f64_of(v).unwrap_or(0.0),
+                        k if layer.gradient_map.read_attr(k, v) => {}
                         _ => layer.extra_attrs.push((k.clone(), v.clone())),
                     }
                 }
@@ -690,6 +696,9 @@ pub fn write_flame(flame: &Flame) -> String {
         if flame.first_layer().gradient_shift != 0.0 {
             attr(&mut s, "gradient_shift", fmt_f(flame.first_layer().gradient_shift));
         }
+        for (k, v) in flame.first_layer().gradient_map.attrs() {
+            attr(&mut s, k, v);
+        }
     }
     let anim = &flame.animation;
     attr(&mut s, "frame", flame.frame.to_string());
@@ -715,6 +724,9 @@ pub fn write_flame(flame: &Flame) -> String {
             attr(&mut s, "smooth_gradient", if layer.smooth_gradient { "1" } else { "0" });
             if layer.gradient_shift != 0.0 {
                 attr(&mut s, "gradient_shift", fmt_f(layer.gradient_shift));
+            }
+            for (k, v) in layer.gradient_map.attrs() {
+                attr(&mut s, k, v);
             }
             for (k, v) in &layer.extra_attrs {
                 attr(&mut s, k, v);

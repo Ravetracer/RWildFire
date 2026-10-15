@@ -54,6 +54,42 @@ mod xo {
 }
 
 /// Offsets inside a layer header block.
+/// Length of a gradient map block's header (see [`LayerLayout::gmap`]).
+const GMAP_HEADER: usize = 8;
+
+/// `TransformationGradientMapColorStep` reading the block at `g`.
+const GMAP_WGSL: &str = r#"
+fn gmap_px(g: u32, iw: i32, ih: i32, x: i32, y: i32) -> vec3<f32> {
+    if (x < 0 || y < 0 || x >= iw || y >= ih) { return vec3<f32>(0.0); }
+    let c = u32(prm[g + 8u + u32(y * iw + x)]);
+    return vec3<f32>(f32((c >> 16u) & 255u), f32((c >> 8u) & 255u), f32(c & 255u));
+}
+
+fn gmap_color(g: u32, px: f32, py: f32, color: f32) -> vec3<f32> {
+    let lca = prm[g + 4u];
+    let lcm = prm[g + 5u];
+    let x = (px * (1.0 - lcm) + px * lcm * color + lca * color) * prm[g] + prm[g + 1u];
+    let y = (py * (1.0 - lcm) + py * lcm * color + lca * color) * prm[g + 2u] + prm[g + 3u];
+    let iw = i32(prm[g + 6u]);
+    let ih = i32(prm[g + 7u]);
+    let w = f32(max(iw - 2, 1));
+    let h = f32(max(ih - 2, 1));
+    let fx = abs(x);
+    var ix = fx * w - w * trunc(fx * w / w);
+    if (i32(fx) % 2 != 0) { ix = w - ix; }
+    let fy = abs(y);
+    var iy = fy * h - h * trunc(fy * h / h);
+    if (i32(fy) % 2 != 0) { iy = h - iy; }
+    let x0 = i32(ix);
+    let y0 = i32(iy);
+    let tx = ix - trunc(ix);
+    let ty = iy - trunc(iy);
+    let top = mix(gmap_px(g, iw, ih, x0, y0), gmap_px(g, iw, ih, x0 + 1, y0), tx);
+    let bottom = mix(gmap_px(g, iw, ih, x0, y0 + 1), gmap_px(g, iw, ih, x0 + 1, y0 + 1), tx);
+    return mix(top, bottom, ty);
+}
+"#;
+
 mod lo {
     pub const WEIGHT: usize = 0;
     pub const DENSITY: usize = 1;
@@ -67,6 +103,9 @@ pub struct LayerLayout {
     pub finals: Vec<usize>,
     pub next_base: usize,
     pub cmap_base: usize,
+    /// Gradient map block in `prm`: [h_scale, h_offset, v_scale, v_offset, local color add,
+    /// local color scale, width, height, packed pixels...].
+    pub gmap: Option<usize>,
 }
 
 /// Generated shader + layout for packing parameters.
@@ -442,7 +481,8 @@ fn emit_affine(out: &mut String, mode: AffineMode, b: &str, xy: usize, yz: usize
     }
 }
 
-fn emit_xform(out: &mut String, fname: &str, xf: &PreparedXForm, base: usize, layer: usize, layout_cmap: usize, smooth: bool) {
+#[allow(clippy::too_many_arguments)]
+fn emit_xform(out: &mut String, fname: &str, xf: &PreparedXForm, base: usize, layer: usize, layout_cmap: usize, smooth: bool, gmap: Option<usize>) {
     let b = format!("{base}u");
     let _ = writeln!(out, "fn {fname}(src: Pt) -> Pt {{");
     let _ = writeln!(out, "  let B = {b};");
@@ -527,6 +567,9 @@ fn emit_xform(out: &mut String, fname: &str, xf: &PreparedXForm, base: usize, la
     }
     out.push_str("  if (d.rgbc == 0.0) {\n");
     match xf.color_type {
+        ColorType::Diffusion | ColorType::Cyclic if gmap.is_some() => {
+            let _ = writeln!(out, "  {{ let c = gmap_color({}u, d.x, d.y, d.color); d.r = c.x; d.g = c.y; d.b = c.z; }}", gmap.unwrap());
+        }
         ColorType::Diffusion | ColorType::Cyclic => {
             if smooth {
                 let _ = writeln!(
@@ -597,6 +640,11 @@ impl Layout {
         for (li, layer) in prepared.layers.iter().enumerate() {
             let header = param_len;
             param_len += lo::SIZE;
+            let gmap = layer.gradient_map.as_ref().map(|g| {
+                let _ = write!(sig, "gm{}x{}:", g.image.width, g.image.height);
+                param_len += GMAP_HEADER + (g.image.width * g.image.height) as usize;
+                param_len - GMAP_HEADER - (g.image.width * g.image.height) as usize
+            });
             let mut xforms = Vec::new();
             let mut finals = Vec::new();
             let _ = write!(sig, "L{}s{}:", li, layer.smooth_gradient as u8);
@@ -649,7 +697,7 @@ impl Layout {
             }
             let next_base = next_len;
             next_len += layer.xforms.len() * NEXT_XFORM_TABLE_SIZE;
-            layers.push(LayerLayout { header, xforms, finals, next_base, cmap_base: li * 256 });
+            layers.push(LayerLayout { header, xforms, finals, next_base, cmap_base: li * 256, gmap });
             sig.push('|');
         }
         let wf_tables = any_weighting.then(|| {
@@ -679,6 +727,9 @@ fn emit_functions(w: &mut String, prepared: &PreparedFlame, layout: &Layout, sol
     for (name, (def, wp)) in weighted_fns {
         w.push_str(&variation_function_weighted(def, prepared.preserve_z, name, wp));
     }
+    if layers.iter().any(|l| l.gmap.is_some()) {
+        w.push_str(GMAP_WGSL);
+    }
     // Variations without GPU code compile to a no-op.
     w.push_str("fn var_unsupported(a_in: Pt, v_in: Pt, base: u32, AMOUNT: f32) -> PtPair { return PtPair(a_in, v_in); }\n");
 
@@ -687,12 +738,12 @@ fn emit_functions(w: &mut String, prepared: &PreparedFlame, layout: &Layout, sol
         for (k, xf) in layer.xforms.iter().enumerate() {
             let mut xf2 = xf.clone();
             strip_unsupported(&mut xf2);
-            emit_xform(w, &format!("xf_{li}_{k}"), &xf2, lay.xforms[k], li, lay.cmap_base, layer.smooth_gradient);
+            emit_xform(w, &format!("xf_{li}_{k}"), &xf2, lay.xforms[k], li, lay.cmap_base, layer.smooth_gradient, lay.gmap);
         }
         for (k, xf) in layer.finals.iter().enumerate() {
             let mut xf2 = xf.clone();
             strip_unsupported(&mut xf2);
-            emit_xform(w, &format!("fxf_{li}_{k}"), &xf2, lay.finals[k], li, lay.cmap_base, layer.smooth_gradient);
+            emit_xform(w, &format!("fxf_{li}_{k}"), &xf2, lay.finals[k], li, lay.cmap_base, layer.smooth_gradient, lay.gmap);
         }
         // Dispatcher
         let _ = writeln!(w, "fn apply_xf_{li}(idx: u32, p: Pt) -> Pt {{\n  switch idx {{");
@@ -979,6 +1030,17 @@ impl Program {
             let lay = &self.layers[li];
             p[lay.header + lo::WEIGHT] = layer.weight as f32;
             p[lay.header + lo::DENSITY] = layer.density as f32;
+            if let (Some(g), Some(gm)) = (lay.gmap, &layer.gradient_map) {
+                let m = &gm.map;
+                let head = [m.h_scale, m.h_offset, m.v_scale, m.v_offset, m.local_color_add, m.local_color_scale, gm.image.width as f64, gm.image.height as f64];
+                for (i, v) in head.iter().enumerate() {
+                    p[g + i] = *v as f32;
+                }
+                // packed 0xRRGGBB: exact in f32
+                for (i, px) in gm.image.pixels.iter().enumerate() {
+                    p[g + GMAP_HEADER + i] = *px as f32;
+                }
+            }
             for (k, xf) in layer.xforms.iter().enumerate() {
                 pack_xform(&mut p, lay.xforms[k], xf);
             }
@@ -1410,6 +1472,8 @@ const ITER_MAIN_HEAD: &str = r#"
 fn iterate(@builtin(global_invocation_id) gid: vec3<u32>) {
     let tid = gid.x;
     if (tid >= U.thread_count) { return; }
+    // Keep the gradient binding in the layout, even if no xform reads it (gradient maps).
+    _ = cmap[0];
     var s = states[tid];
     rng_state = s.rng;
     var p = Pt(s.x, s.y, s.z, s.color, s.r, s.g, s.b, 0.0, s.hide, 0.0);

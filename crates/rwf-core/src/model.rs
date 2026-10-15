@@ -323,6 +323,8 @@ pub struct Layer {
     /// Moves the colors along the gradient when rendering (entries; fractional values blend);
     /// animatable for color cycling. JWildfire's `palette_modShift`.
     pub gradient_shift: f64,
+    /// An image used as a two-dimensional gradient (JWildfire's gradient map).
+    pub gradient_map: GradientMap,
     pub smooth_gradient: bool,
     pub xforms: Vec<XForm>,
     pub final_xforms: Vec<XForm>,
@@ -370,6 +372,68 @@ impl Layer {
     }
 }
 
+/// JWildfire's gradient map: transforms with diffusion or cyclic coloring take their color
+/// from an image, at a position from the point and its color index
+/// (`TransformationGradientMapColorStep`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct GradientMap {
+    /// Image file; empty = off (the gradient is used).
+    pub file: String,
+    pub h_offset: f64,
+    pub h_scale: f64,
+    pub v_offset: f64,
+    pub v_scale: f64,
+    /// How much the color index moves the position (`gradient_map_lcolor_add`).
+    pub local_color_add: f64,
+    /// How much the color index scales the position (`gradient_map_lcolor_scale`).
+    pub local_color_scale: f64,
+}
+
+impl Default for GradientMap {
+    fn default() -> Self {
+        Self { file: String::new(), h_offset: 0.0, h_scale: 1.0, v_offset: 0.0, v_scale: 1.0, local_color_add: 0.8, local_color_scale: 0.2 }
+    }
+}
+
+impl GradientMap {
+    pub fn is_on(&self) -> bool {
+        !self.file.is_empty()
+    }
+
+    /// Reads a `gradient_map*` attribute; false if `key` is none of them.
+    pub fn read_attr(&mut self, key: &str, v: &str) -> bool {
+        let f = || v.trim().parse::<f64>().ok();
+        match key {
+            "gradient_map" => self.file = v.to_string(),
+            "gradient_map_hoffset" => self.h_offset = f().unwrap_or(0.0),
+            "gradient_map_hscale" => self.h_scale = f().unwrap_or(1.0),
+            "gradient_map_voffset" => self.v_offset = f().unwrap_or(0.0),
+            "gradient_map_vscale" => self.v_scale = f().unwrap_or(1.0),
+            "gradient_map_lcolor_add" => self.local_color_add = f().unwrap_or(0.8),
+            "gradient_map_lcolor_scale" => self.local_color_scale = f().unwrap_or(0.2),
+            _ => return false,
+        }
+        true
+    }
+
+    /// The attributes to write (none when off).
+    pub fn attrs(&self) -> Vec<(&'static str, String)> {
+        if !self.is_on() {
+            return Vec::new();
+        }
+        let f = crate::io::fmt_f;
+        vec![
+            ("gradient_map", self.file.clone()),
+            ("gradient_map_hoffset", f(self.h_offset)),
+            ("gradient_map_hscale", f(self.h_scale)),
+            ("gradient_map_voffset", f(self.v_offset)),
+            ("gradient_map_vscale", f(self.v_scale)),
+            ("gradient_map_lcolor_add", f(self.local_color_add)),
+            ("gradient_map_lcolor_scale", f(self.local_color_scale)),
+        ]
+    }
+}
+
 impl Layer {
     /// The gradient as rendered: with [`Layer::gradient_shift`] applied.
     pub fn render_gradient(&self) -> std::borrow::Cow<'_, Gradient> {
@@ -390,6 +454,7 @@ impl Default for Layer {
             visible: true,
             gradient: Gradient::default(),
             gradient_shift: 0.0,
+            gradient_map: GradientMap::default(),
             smooth_gradient: false,
             xforms: Vec::new(),
             final_xforms: Vec::new(),

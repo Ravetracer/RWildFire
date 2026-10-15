@@ -181,6 +181,7 @@ fn render_bg_xforms(flame: &Flame, image: Option<&ImageMap>, full: (u32, u32), r
         .filter(|l| !l.bg_xforms.is_empty())
         .map(|l| {
             let colormap = l.render_gradient().render_colors();
+            let gradient_map = super::prepared::PreparedGradientMap::new(&l.gradient_map);
             let xforms = l
                 .bg_xforms
                 .iter()
@@ -188,7 +189,9 @@ fn render_bg_xforms(flame: &Flame, image: Option<&ImageMap>, full: (u32, u32), r
                     let mut xf = xf.clone();
                     xf.variations.iter_mut().for_each(prepare_for_background);
                     // Unlike the other xform lists, an unset color type is kept (no color step).
-                    (prepare_xform(&xf, xf.color_type, &colormap, flame.frame, &mut missing), xf.weight)
+                    let mut p = prepare_xform(&xf, xf.color_type, &colormap, flame.frame, &mut missing);
+                    p.gradient_map = gradient_map.clone();
+                    (p, xf.weight)
                 })
                 .collect();
             BgLayer { xforms, colormap, smooth: l.smooth_gradient }
@@ -240,7 +243,8 @@ pub fn same_backdrop(a: &Flame, b: &Flame) -> bool {
                 && a.layers.len() == b.layers.len()
                 && a.layers.iter().zip(&b.layers).all(|(la, lb)| {
                     la.bg_xforms == lb.bg_xforms
-                        && (la.bg_xforms.is_empty() || (la.gradient == lb.gradient && la.smooth_gradient == lb.smooth_gradient))
+                        && (la.bg_xforms.is_empty()
+                            || (la.gradient == lb.gradient && la.gradient_shift == lb.gradient_shift && la.smooth_gradient == lb.smooth_gradient && la.gradient_map == lb.gradient_map))
                 })))
 }
 

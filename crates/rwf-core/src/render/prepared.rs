@@ -123,8 +123,61 @@ pub struct PreparedXForm {
     pub normal: Vec<VarStep>,
     pub post_vars: Vec<VarStep>,
     pub weighting: Option<Arc<PreparedWeighting>>,
+    /// The layer's gradient map (diffusion and cyclic coloring).
+    pub gradient_map: Option<Arc<PreparedGradientMap>>,
     /// Indices of the next xform, `None` if all weights are zero.
     pub next: Option<Box<[u16; NEXT_XFORM_TABLE_SIZE]>>,
+}
+
+#[derive(Clone)]
+/// A layer's gradient map with its image loaded.
+pub struct PreparedGradientMap {
+    pub map: crate::model::GradientMap,
+    pub image: Arc<crate::resources::ImageMap>,
+}
+
+impl PreparedGradientMap {
+    /// Loads the layer's map; JWildfire uses its default gradient image when the file cannot
+    /// be loaded.
+    pub fn new(map: &crate::model::GradientMap) -> Option<Arc<Self>> {
+        map.is_on().then(|| {
+            let image = crate::resources::image(&map.file).unwrap_or_else(crate::resources::ImageMap::default_gradient);
+            Arc::new(Self { map: map.clone(), image })
+        })
+    }
+
+    /// `TransformationGradientMapColorStep`: the color (0..255) for point `(x, y)` with color
+    /// index `color`.
+    pub fn color(&self, x: f64, y: f64, color: f64) -> [f64; 3] {
+        let m = &self.map;
+        let (lca, lcm) = (m.local_color_add, m.local_color_scale);
+        let x = (x * (1.0 - lcm) + x * lcm * color + lca * color) * m.h_scale + m.h_offset;
+        let y = (y * (1.0 - lcm) + y * lcm * color + lca * color) * m.v_scale + m.v_offset;
+        let img = &self.image;
+        // JWildfire uses size - 2 (at least 1 here: tiny images would give NaN colors)
+        let (width, height) = ((img.width as f64 - 2.0).max(1.0), (img.height as f64 - 2.0).max(1.0));
+        let fx = x.abs();
+        let mut ix = crate::math::fmod(fx * width, width);
+        if (fx as i32) % 2 != 0 {
+            ix = width - ix;
+        }
+        let fy = y.abs();
+        let mut iy = crate::math::fmod(fy * height, height);
+        if (fy as i32) % 2 != 0 {
+            iy = height - iy;
+        }
+        let px = |px: i64, py: i64| -> [f64; 3] {
+            if px < 0 || py < 0 || px >= img.width as i64 || py >= img.height as i64 {
+                return [0.0; 3];
+            }
+            let c = img.pixels[(py as u32 * img.width + px as u32) as usize];
+            [((c >> 16) & 255) as f64, ((c >> 8) & 255) as f64, (c & 255) as f64]
+        };
+        let (x0, y0) = (ix as i64, iy as i64);
+        let (lu, ru, lb, rb) = (px(x0, y0), px(x0 + 1, y0), px(x0, y0 + 1), px(x0 + 1, y0 + 1));
+        let (tx, ty) = (ix.fract(), iy.fract());
+        [0, 1, 2].map(|i| crate::math::blerp(lu[i], ru[i], lb[i], rb[i], tx, ty))
+    }
 }
 
 #[derive(Clone)]
@@ -137,6 +190,7 @@ pub struct PreparedLayer {
     /// Raw gradient colors (0..255), for variations that read the palette.
     pub palette: Vec<[u8; 3]>,
     pub smooth_gradient: bool,
+    pub gradient_map: Option<Arc<PreparedGradientMap>>,
 }
 
 #[derive(Clone)]
@@ -253,6 +307,7 @@ pub(crate) fn prepare_xform(xf: &XForm, color_type: ColorType, colormap: &[[f64;
                 jitter: xf.weighting.jitter_intensity * 0.1,
             })
         }),
+        gradient_map: None,
         next: None,
     }
 }
@@ -298,7 +353,7 @@ fn prepare_layer(layer: &Layer, frame: u32, missing: &mut Vec<String>) -> Prepar
             prepare_xform(xf, ct, &colormap, frame, missing)
         })
         .collect();
-    let finals = layer
+    let mut finals: Vec<PreparedXForm> = layer
         .final_xforms
         .iter()
         .map(|xf| {
@@ -306,6 +361,11 @@ fn prepare_layer(layer: &Layer, frame: u32, missing: &mut Vec<String>) -> Prepar
             prepare_xform(xf, ct, &colormap, frame, missing)
         })
         .collect();
+
+    let gradient_map = PreparedGradientMap::new(&layer.gradient_map);
+    for xf in xforms.iter_mut().chain(finals.iter_mut()) {
+        xf.gradient_map = gradient_map.clone();
+    }
 
     // Xaos tables (Layer.refreshModWeightTables).
     let n = layer.xforms.len();
@@ -340,6 +400,7 @@ fn prepare_layer(layer: &Layer, frame: u32, missing: &mut Vec<String>) -> Prepar
         colormap,
         palette: gradient.colors.clone(),
         smooth_gradient: layer.smooth_gradient,
+        gradient_map,
     }
 }
 
@@ -524,6 +585,12 @@ impl PreparedXForm {
         // Color step
         if !dst.rgb_color {
             match self.color_type {
+                ColorType::Diffusion | ColorType::Cyclic if self.gradient_map.is_some() => {
+                    let c = self.gradient_map.as_ref().unwrap().color(dst.x, dst.y, dst.color);
+                    dst.red = c[0];
+                    dst.green = c[1];
+                    dst.blue = c[2];
+                }
                 ColorType::Diffusion | ColorType::Cyclic => {
                     let c = if smooth { smooth_color(colormap, dst.color) } else { colormap[colormap_index(colormap, dst.color)] };
                     dst.red = c[0];
@@ -579,6 +646,22 @@ pub fn is_renderable(flame: &Flame) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn gradient_map_samples_like_jwildfire() {
+        use crate::model::GradientMap;
+        use crate::resources::ImageMap;
+        // 4 x 3 image: a red ramp in the first row
+        let mut pixels = vec![0x000000, 0x640000, 0xC80000, 0xFF0000];
+        pixels.extend([0; 8]);
+        let gm = PreparedGradientMap { map: GradientMap { file: "x".into(), ..GradientMap::default() }, image: Arc::new(ImageMap { width: 4, height: 3, pixels, alpha: vec![255; 12] }) };
+        // x = 0.25 * (1 - 0.2) = 0.2 -> 0.4 of the usable width 2: 60% of pixel 0, 40% of pixel 1
+        let c = gm.color(0.25, 0.0, 0.0);
+        assert!((c[0] - 40.0).abs() < 1e-9, "{c:?}");
+        // x = 1.2 lies in an odd tile: mirrored, 2 - fmod(2.4, 2) = 1.6
+        let c = gm.color(1.5, 0.0, 0.0);
+        assert!((c[0] - (100.0 * 0.4 + 200.0 * 0.6)).abs() < 1e-9, "{c:?}");
+    }
+
     use super::*;
     use crate::model::VariationInstance;
 
