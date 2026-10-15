@@ -422,12 +422,6 @@ fn variations_editor(ui: &mut Ui, doc: &mut Document, st: &mut TransformsState) 
                 if def.is_none() {
                     name = name.color(theme::WARN);
                 }
-                let lbl = ui.label(name);
-                if def.is_none() {
-                    lbl.on_hover_text("Not implemented in this version yet — kept in the file, ignored when rendering");
-                } else if def.is_some_and(|d| !d.supports_gpu()) {
-                    lbl.on_hover_text("CPU only");
-                }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.spacing_mut().item_spacing.x = 2.0;
                     if widgets::icon_button(ui, icons::X, "Remove variation").clicked() {
@@ -458,6 +452,17 @@ fn variations_editor(ui: &mut Ui, doc: &mut Document, st: &mut TransformsState) 
                         }
                         st.favourites_changed = true;
                     }
+                    // The name takes the space left of the controls (shortened when narrow).
+                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                        let lbl = ui.add(egui::Label::new(name).truncate());
+                        if def.is_none() {
+                            lbl.on_hover_text("Not implemented in this version yet — kept in the file, ignored when rendering");
+                        } else if def.is_some_and(|d| !d.supports_gpu()) {
+                            lbl.on_hover_text("CPU only");
+                        } else {
+                            lbl.on_hover_text(var.name.as_str());
+                        }
+                    });
                 });
             });
             if has_params && st.expanded.contains(&vi) {
@@ -537,9 +542,9 @@ fn variations_editor(ui: &mut Ui, doc: &mut Document, st: &mut TransformsState) 
     ui.add_space(4.0);
     let btn = ui.add_sized([ui.available_width(), 28.0], egui::Button::new(format!("{}  Add variation", icons::PLUS)));
     egui::Popup::from_toggle_button_response(&btn).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
-        ui.set_min_width(260.0);
+        ui.set_width(300.0);
         ui.horizontal(|ui| {
-            let r = ui.add(egui::TextEdit::singleline(&mut st.var_search).hint_text("Search variations…"));
+            let r = ui.add(egui::TextEdit::singleline(&mut st.var_search).hint_text("Search variations…").desired_width(250.0));
             r.request_focus();
             ui.toggle_value(&mut st.only_favourites, RichText::new(icons::STAR)).on_hover_text("Only favourites (mark them with the star of a variation)");
         });
@@ -549,7 +554,7 @@ fn variations_editor(ui: &mut Ui, doc: &mut Document, st: &mut TransformsState) 
         // favourites first
         let mut defs: Vec<&variations::VarDef> = variations::all().to_vec();
         defs.sort_by_key(|d| !st.favourites.contains(d.name));
-        egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
+        egui::ScrollArea::vertical().max_height(320.0).auto_shrink([false, true]).show(ui, |ui| {
             for def in defs {
                 let fav = st.favourites.contains(def.name);
                 if (!q.is_empty() && !def.name.to_lowercase().contains(&q)) || (st.only_favourites && !fav) {

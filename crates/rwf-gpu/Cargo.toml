@@ -1,13 +1,13 @@
 [package]
 name = "rwf-gpu"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2024"
 
 [dependencies]
 bytemuck = { version = "1.25.2", features = ["derive"] }
 flate2 = "1"
 png = "0.18"
-rwf-core = { version = "0.1.0", path = "../rwf-core" }
+rwf-core = { version = "1.0.0", path = "../rwf-core" }
 naga = { version = "30.0.1", features = ["wgsl-in"] }
 pollster = "1.0.1"
 wgpu = "30.0.1"

@@ -586,7 +586,7 @@ impl eframe::App for RwfApp {
 
         if !self.workspace_open() {
             // ---- left: transforms ----
-            egui::Panel::left("transforms").resizable(true).default_size(290.0).size_range(240.0..=460.0).frame(egui::Frame::new().fill(theme::PANEL).inner_margin(egui::Margin::symmetric(10, 8))).show(ui, |ui| {
+            egui::Panel::left("transforms").resizable(true).default_size(310.0).size_range(240.0..=460.0).frame(egui::Frame::new().fill(theme::PANEL).inner_margin(egui::Margin::symmetric(10, 8))).show(ui, |ui| {
                 egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                     transforms::show(ui, &mut self.doc, &mut self.transforms);
                 });

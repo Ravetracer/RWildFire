@@ -289,7 +289,8 @@ impl Explorer {
             self.mode = Mode::Random;
         }
         let mut picked = None;
-        ui.horizontal(|ui| {
+        // Wraps into a second row in narrow windows.
+        ui.horizontal_wrapped(|ui| {
             theme::section_label(ui, "Explore");
             ui.add_space(8.0);
             let before = self.mode;

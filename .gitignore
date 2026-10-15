@@ -4,3 +4,7 @@ target/
 
 # Intel Open Image Denoise, fetched by tools/fetch_oidn.py
 /oidn/
+
+# User manual: screenshots and the built PDF
+!docs/manual/images/*.png
+docs/manual/build/

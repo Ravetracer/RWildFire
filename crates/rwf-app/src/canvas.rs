@@ -712,7 +712,7 @@ fn overlay(ui: &mut egui::Ui, avail: Rect, doc: &mut Document, state: &mut Canva
                 ui.checkbox(&mut state.scale_x, "X axis");
                 ui.checkbox(&mut state.scale_y, "Y axis");
                 ui.separator();
-                ui.label(RichText::new("Keys: arrows move, Alt+←/→ turn, Alt+↑/↓ scale;\nCtrl ×0.1, Shift ×10").small().color(theme::TEXT_MUTED));
+                ui.label(RichText::new(crate::icons::arrows("Keys: arrows move, Alt+←/→ turn, Alt+↑/↓ scale;\nCtrl ×0.1, Shift ×10")).small().color(theme::TEXT_MUTED));
             })
             .response
             .on_hover_text("Edit plane, fine movement and scale axes");

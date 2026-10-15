@@ -1,0 +1,89 @@
+/* RWildFire user manual – print styles (A4). */
+
+@page {
+  size: A4;
+  margin: 20mm 18mm 22mm 18mm;
+  @bottom-right { content: counter(page); font: 9pt Inter, "Noto Sans", sans-serif; color: #8a8f99; }
+  @bottom-left { font: 9pt Inter, "Noto Sans", sans-serif; color: #8a8f99; }
+}
+@page :first { margin: 0; @bottom-right { content: none; } @bottom-left { content: none; } }
+
+:root { --accent: #e8662a; --ink: #1d2027; --muted: #5d6370; --rule: #dfe2e8; --soft: #f4f5f8; }
+
+html { font-family: Inter, "Noto Sans", "DejaVu Sans", sans-serif; font-size: 10pt; color: var(--ink); line-height: 1.5; }
+body { margin: 0; }
+p { margin: 0 0 0.65em; orphans: 3; widows: 3; text-align: left; }
+a { color: inherit; text-decoration: none; }
+strong { font-weight: 600; }
+code, kbd, pre { font-family: "DejaVu Sans Mono", "Liberation Mono", monospace; font-size: 0.86em; }
+code { background: var(--soft); border-radius: 3px; padding: 0.05em 0.3em; }
+kbd { border: 1px solid #c4c8d0; border-bottom-width: 2px; border-radius: 3px; padding: 0 0.35em; background: #fff; white-space: nowrap; }
+pre { background: var(--soft); border-left: 3px solid var(--accent); padding: 0.6em 0.9em; border-radius: 3px; white-space: pre-wrap; break-inside: avoid; line-height: 1.4; }
+pre code { background: none; padding: 0; font-size: 1em; }
+
+/* Cover */
+.cover { height: 297mm; width: 210mm; position: relative; background: #0e0f12; color: #fff; overflow: hidden; }
+.cover-image { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; opacity: 0.9; }
+.cover-text { position: absolute; left: 18mm; right: 18mm; bottom: 26mm; }
+.cover .product { font-size: 44pt; font-weight: 800; letter-spacing: -0.5pt; }
+.cover .subtitle { font-size: 20pt; font-weight: 300; margin-top: 2mm; }
+.cover .version { font-size: 13pt; margin-top: 10mm; color: #ffb48a; font-weight: 600; }
+.cover .date { font-size: 10pt; color: #c9ccd3; margin-top: 1mm; }
+
+/* Contents */
+.toc { break-before: page; }
+.toc .tochead { font-size: 22pt; margin: 0 0 6mm; }
+.toc ul { list-style: none; padding: 0; margin: 0; }
+.toc li a { display: flex; align-items: baseline; gap: 0.5em; }
+.toc .toc1 { margin-top: 0.9em; font-weight: 600; font-size: 10.5pt; }
+.toc .toc2 { margin-left: 2.2em; font-size: 9.5pt; color: #2f333b; }
+.toc .tnum { min-width: 2.2em; color: var(--accent); }
+.toc .toc2 .tnum { min-width: 2.6em; color: var(--muted); }
+.toc .tdots { flex: 1; border-bottom: 1px dotted #b8bcc5; transform: translateY(-0.3em); }
+.toc .tpage { min-width: 1.8em; text-align: right; font-variant-numeric: tabular-nums; }
+
+/* Headings */
+.chapter-label { break-before: page; font-size: 10pt; text-transform: uppercase; letter-spacing: 1.5pt; color: var(--accent); font-weight: 600; margin-bottom: 1mm; }
+h1 { font-size: 24pt; line-height: 1.15; margin: 0 0 7mm; padding-bottom: 3mm; border-bottom: 2px solid var(--accent); font-weight: 700; }
+h1 .num { display: none; }
+h2 { font-size: 14.5pt; margin: 1.5em 0 0.5em; font-weight: 700; break-after: avoid; }
+h3 { font-size: 11.5pt; margin: 1.3em 0 0.4em; font-weight: 600; break-after: avoid; }
+h4 { font-size: 10pt; margin: 1.1em 0 0.3em; font-weight: 600; break-after: avoid; }
+h2 .num, h3 .num { color: var(--accent); margin-right: 0.35em; font-weight: 600; }
+
+/* Lists and tables */
+ul, ol { margin: 0 0 0.7em; padding-left: 1.4em; }
+li { margin: 0.15em 0; }
+li > p { margin: 0 0 0.3em; }
+table { border-collapse: collapse; width: 100%; margin: 0.4em 0 1em; font-size: 9pt; break-inside: auto; }
+thead { display: table-header-group; }
+tr { break-inside: avoid; }
+th { text-align: left; background: var(--soft); font-weight: 600; border-bottom: 1.5px solid #c9cdd5; }
+th, td { padding: 0.35em 0.6em; vertical-align: top; border-bottom: 1px solid var(--rule); }
+td:first-child { font-weight: 600; white-space: nowrap; }
+table.plain td:first-child { font-weight: normal; white-space: normal; }
+dl dt { font-weight: 600; margin-top: 0.5em; }
+dl dd { margin: 0 0 0.3em 1.4em; }
+
+/* Figures */
+figure.fig { margin: 0.8em 0 1.2em; break-inside: avoid; text-align: center; }
+figure.fig img { max-width: 100%; max-height: 150mm; border-radius: 4px; border: 1px solid #d6d9e0; box-sizing: border-box; }
+figure.half img { max-width: 62%; max-height: 118mm; }
+figure.third img { max-width: 40%; }
+figure.small img { max-width: 30%; }
+figcaption { font-size: 8.5pt; color: var(--muted); margin-top: 0.45em; }
+figcaption b { color: var(--ink); font-weight: 600; margin-right: 0.3em; }
+img.inline { height: 1.35em; vertical-align: middle; border-radius: 3px; }
+
+/* Side by side figures: <div class="pair"> … </div> with markdown="1" */
+.pair { display: flex; gap: 5mm; align-items: flex-start; break-inside: avoid; }
+.pair > figure { flex: 1; margin-top: 0.4em; }
+
+/* Admonitions */
+.admonition { border-left: 3px solid #5b8def; background: #f1f5fe; padding: 0.55em 0.9em; margin: 0.8em 0; border-radius: 3px; break-inside: avoid; }
+.admonition p { margin: 0.2em 0; }
+.admonition-title { font-weight: 600; font-size: 9pt; text-transform: uppercase; letter-spacing: 0.6pt; color: #3d6fd6; }
+.admonition.tip { border-color: #38a169; background: #effaf3; }
+.admonition.tip .admonition-title { color: #2f855a; }
+.admonition.warning { border-color: #dd8a1f; background: #fff7ea; }
+.admonition.warning .admonition-title { color: #b7701a; }

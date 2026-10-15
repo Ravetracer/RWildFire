@@ -538,7 +538,7 @@ impl DanceView {
                     ui.set_width(ui.available_width());
                     ui.horizontal(|ui| {
                         ui.label(RichText::new(&m.name).color(theme::TEXT));
-                        ui.label(RichText::new(format!("{} links", m.links.len())).small().color(theme::TEXT_MUTED));
+                        ui.label(RichText::new(if m.links.len() == 1 { "1 link".to_string() } else { format!("{} links", m.links.len()) }).small().color(theme::TEXT_MUTED));
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if widgets::icon_button(ui, icons::X, "Remove the motion").clicked() {
                                 remove = Some(i);
@@ -1096,5 +1096,5 @@ fn spline_editor(ui: &mut Ui, curve: &mut rwf_core::animation::Track, drag: &mut
     {
         curve.keys.remove(i);
     }
-    resp.on_hover_text("Time into the music → value. Drag keys, double-click adds one, right-click removes one.");
+    resp.on_hover_text(crate::icons::arrows("Time into the music → value. Drag keys, double-click adds one, right-click removes one."));
 }

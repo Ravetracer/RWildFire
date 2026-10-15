@@ -402,9 +402,9 @@ fn xaos_section(ui: &mut Ui, doc: &mut Document, st: &mut InspectorState, i: usi
         grid(ui, "xaos", |ui| {
             for j in 0..n {
                 if st.xaos_to {
-                    slider(ui, &format!("Transform {} →", j + 1), &mut layer.xforms[j].chaos[i], 0.0..=2.0);
+                    slider(ui, &crate::icons::arrows(&format!("Transform {} →", j + 1)), &mut layer.xforms[j].chaos[i], 0.0..=2.0);
                 } else {
-                    slider(ui, &format!("→ Transform {}", j + 1), &mut layer.xforms[i].chaos[j], 0.0..=2.0);
+                    slider(ui, &crate::icons::arrows(&format!("→ Transform {}", j + 1)), &mut layer.xforms[i].chaos[j], 0.0..=2.0);
                 }
             }
         });

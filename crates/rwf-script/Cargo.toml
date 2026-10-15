@@ -1,8 +1,8 @@
 [package]
 name = "rwf-script"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2024"
 
 [dependencies]
 mlua = { version = "0.12", features = ["lua54", "vendored"] }
-rwf-core = { version = "0.1.0", path = "../rwf-core" }
+rwf-core = { version = "1.0.0", path = "../rwf-core" }

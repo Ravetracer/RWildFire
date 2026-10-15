@@ -260,8 +260,8 @@ impl BatchView {
             }
         }
         self.status = Some(match errors.first() {
-            Some(e) => format!("Added {added} flames; {} files not readable ({e})", errors.len()),
-            None => format!("Added {added} flames"),
+            Some(e) => format!("Added {}; {} not readable ({e})", plural(added, "flame"), plural(errors.len(), "file")),
+            None => format!("Added {}", plural(added, "flame")),
         });
     }
 
@@ -763,4 +763,9 @@ impl BatchView {
 /// True if the path looks like a flame file (for dropped files).
 pub fn is_flame_file(p: &Path) -> bool {
     p.is_dir() || p.extension().is_some_and(|e| e.eq_ignore_ascii_case("flame") || e.eq_ignore_ascii_case("xml"))
+}
+
+/// "1 flame", "3 flames".
+fn plural(n: usize, word: &str) -> String {
+    if n == 1 { format!("1 {word}") } else { format!("{n} {word}s") }
 }

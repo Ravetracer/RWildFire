@@ -65,7 +65,8 @@ Methods:
   `f:random_gradient([generator])`
 - `f:copy()` – an independent copy.
 - `f:get(path)`, `f:set(path, value)`, `f:paths()` – any animatable property by its path.
-- `f:set_key(path, frame, value)`, `f:clear_keys([path])` – animation keys.
+- `f:set_key(path, frame, value)`, `f:clear_keys([path])` – animation keys; frames run from 0
+  to `frame_count - 1`.
 - `f:set_background(r, g, b)` – plain background color (0..255).
 
 ## Layer

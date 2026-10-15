@@ -28,5 +28,15 @@ pub use egui_phosphor::regular::{
 pub fn install(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
     egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Regular);
+    // Icons (and the arrows of `arrows`) in monospace text, too: second, after the text font.
+    let icon_font = fonts.families.get(&egui::FontFamily::Proportional).and_then(|f| f.get(1)).cloned();
+    if let (Some(name), Some(mono)) = (icon_font, fonts.families.get_mut(&egui::FontFamily::Monospace)) {
+        mono.insert(mono.len().min(1), name);
+    }
     ctx.set_fonts(fonts);
+}
+
+/// Replaces the arrows ← → ↑ ↓ (missing in the UI font) by the icon font's arrows.
+pub fn arrows(s: &str) -> String {
+    s.replace('←', ARROW_LEFT).replace('→', ARROW_RIGHT).replace('↑', ARROW_UP).replace('↓', ARROW_DOWN)
 }

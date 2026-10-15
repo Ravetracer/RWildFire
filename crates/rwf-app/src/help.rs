@@ -249,7 +249,7 @@ impl HelpWindow {
                 Tab::Shortcuts => {
                     egui::Grid::new("help-shortcuts").num_columns(2).spacing([16.0, 6.0]).striped(true).show(ui, |ui| {
                         for (k, v) in SHORTCUTS {
-                            ui.label(RichText::new(*k).monospace().color(theme::ACCENT));
+                            ui.label(RichText::new(crate::icons::arrows(k)).monospace().color(theme::ACCENT));
                             ui.label(*v);
                             ui.end_row();
                         }
@@ -258,7 +258,7 @@ impl HelpWindow {
                 Tab::Faq => {
                     for (q, a) in FAQ {
                         egui::CollapsingHeader::new(RichText::new(*q).strong()).id_salt(q).show(ui, |ui| {
-                            ui.label(*a);
+                            ui.label(crate::icons::arrows(a));
                         });
                     }
                 }
