@@ -57,6 +57,8 @@ Each variation is a `VarDef` with a CPU function and a WGSL snippet that read th
 - Post blur (radius, fade, falloff)
 - AI post denoiser: Intel Open Image Denoise (OIDN 2.5) on exported images and video frames, on the CPU or on NVIDIA (CUDA) and AMD (HIP) GPUs. GPU renders give it helper images (albedo = the average sample color per pixel; for solid flames the object color and the surface normals), which keep edges and colors better. "Denoised" in the canvas toolbar and "Show denoised" in the interactive renderer preview the result; saving reports what the denoiser did or why it did not run. Edit › Preferences › "Always denoise" gives every flame without a denoiser a preferred denoiser and blend (new, random, Explore, MutaGen, opened files); the canvas shows it only with "Denoised" (saved in `preferences.txt` of the config folder). The library is loaded at runtime, so RWildFire builds and runs without it. `python3 tools/fetch_oidn.py` downloads the official release (SHA-256 checked) into `oidn/` (about 72 MB: core with the network weights, CPU, CUDA and HIP devices, oneTBB, licenses). Search order: `RWF_OIDN_DIR`, next to the executable (`lib/` on Linux and macOS, the executable's folder on Windows; `tools/fetch_oidn.py --dest <app dir>` fills it for a package), `oidn/` of the source tree, the system library path. Without the library the `oidnDenoise` tool is used if it is in `PATH` (or `JWF_OIDN_DENOISE`). AMD GPUs need the ROCm HIP runtime installed; NVIDIA GPUs only the driver
 - Solid rendering, CPU and GPU: z-buffer with surface normals, distant lights, materials (per-transform material index, blended between neighbours, optional PNG/JPEG reflection maps), ambient occlusion, fast or smooth shadow maps, and post DOF with bokeh. Material, light color and AO changes re-shade without restarting the render. `plane_wf` can act as a shadow-only ground plane; light altitude/azimuth/intensity are animatable (JWildfire light curves are imported)
+- Stereo 3D images as in JWildfire: anaglyph (red/cyan), side by side, or interpolated pairs at growing eye distance; each eye is rendered with its share of the quality and turned around the focal point. In exported images, `rwf-cli render` and the batch renderer (PNG/JPEG; the canvas shows the normal view)
+- Background image behind the flame (stretched to the image size; background xforms add on top), depth fade towards a color, and layer gradient maps (an image as a two-dimensional gradient for diffusion/cyclic coloring, mirror-tiled, with offset, scale and color index influence)
 
 ## Gradients
 
@@ -78,8 +80,6 @@ Done: core editor, file compatibility, CPU and GPU renderer, 1014 variations (in
 
 Missing compared with JWildfire (from a feature comparison, by priority):
 
-- Complete JWildfire import (loading only; RWildFire does not write files for JWildfire):
-  - Stereo 3D (anaglyph, side-by-side, interpolated images), background image, layer gradient map (image as 2D gradient with offset/scale), Z-dimming color
 - Editor:
   - Transforms: YZ/ZX edit planes, arrow-key nudging, fine mode, scale X/Y only, linked transforms, xaos "to" view / set 0 or 1 / reset all, color helpers (random, distribute, apply to whole flame)
   - Variations panel: reorder, convert to pre_/post_, randomize/reset parameters, favourites, variation profiles for the random generators

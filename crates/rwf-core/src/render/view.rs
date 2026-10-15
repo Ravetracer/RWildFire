@@ -41,6 +41,9 @@ pub struct View {
     pub project_3d: bool,
     pub matrix: [[f64; 3]; 3],
     pub cam_pos: [f64; 3],
+    /// Added to camera points (the camera position, plus the eye offset in stereo renders);
+    /// `cam_pos[2]` alone enters the perspective divide.
+    pub cam_add: [f64; 3],
     pub cam_perspective: f64,
     pub dimish_z: f64,
     pub dim_z_distance: f64,
@@ -75,7 +78,7 @@ impl View {
         let cam_w = cam_x1 - cam_x0;
         let cam_h = cam_y1 - cam_y0;
 
-        let project_3d = flame.is_3d_projection_required();
+        let mut project_3d = flame.is_3d_projection_required();
         let (cosa, sina, rc_x, rc_y) = if !project_3d {
             let a = -std::f64::consts::PI * flame.cam_roll / 180.0;
             let (sina, cosa) = a.sin_cos();
@@ -86,7 +89,14 @@ impl View {
             (1.0, 0.0, -cam_x0, -cam_y0)
         };
 
-        let matrix = camera_matrix(flame.cam_yaw, flame.cam_pitch, flame.cam_bank, flame.cam_roll);
+        let mut matrix = camera_matrix(flame.cam_yaw, flame.cam_pitch, flame.cam_bank, flame.cam_roll);
+        let mut cam_add = [flame.cam_pos_x, flame.cam_pos_y, flame.cam_pos_z];
+        // stereo eye: turned and moved camera, always projected in 3D
+        if let Some((m, t)) = crate::stereo::eye_camera(flame, matrix, cam_x0) {
+            matrix = m;
+            cam_add = [cam_add[0] + t[0], cam_add[1] + t[1], cam_add[2] + t[2]];
+            project_3d = true;
+        }
 
         Self {
             image_width,
@@ -106,6 +116,7 @@ impl View {
             project_3d,
             matrix,
             cam_pos: [flame.cam_pos_x, flame.cam_pos_y, flame.cam_pos_z],
+            cam_add,
             cam_perspective: flame.cam_perspective,
             dimish_z: flame.dimish_z,
             dim_z_distance: flame.dim_z_distance,
@@ -141,9 +152,9 @@ impl View {
         let mut cam_z = 0.0;
         if self.project_3d {
             let m = &self.matrix;
-            let cx = m[0][0] * x + m[1][0] * y + m[2][0] * z + self.cam_pos[0];
-            let cy = m[0][1] * x + m[1][1] * y + m[2][1] * z + self.cam_pos[1];
-            let cz = m[0][2] * x + m[1][2] * y + m[2][2] * z + self.cam_pos[2];
+            let cx = m[0][0] * x + m[1][0] * y + m[2][0] * z + self.cam_add[0];
+            let cy = m[0][1] * x + m[1][1] * y + m[2][1] * z + self.cam_add[1];
+            let cz = m[0][2] * x + m[1][2] * y + m[2][2] * z + self.cam_add[2];
             let zr = 1.0 - self.cam_perspective * cz + self.cam_pos[2];
             if zr < EPSILON {
                 return None;
@@ -182,9 +193,9 @@ impl View {
     /// `(px, py, intensity, camera z, dof distance)`.
     pub fn project_solid(&self, x: f64, y: f64, z: f64) -> Option<(f64, f64, f64, f64, f64)> {
         let m = &self.matrix;
-        let cx = m[0][0] * x + m[1][0] * y + m[2][0] * z + self.cam_pos[0];
-        let cy = m[0][1] * x + m[1][1] * y + m[2][1] * z + self.cam_pos[1];
-        let cz = m[0][2] * x + m[1][2] * y + m[2][2] * z + self.cam_pos[2];
+        let cx = m[0][0] * x + m[1][0] * y + m[2][0] * z + self.cam_add[0];
+        let cy = m[0][1] * x + m[1][1] * y + m[2][1] * z + self.cam_add[1];
+        let cz = m[0][2] * x + m[1][2] * y + m[2][2] * z + self.cam_add[2];
         let zr = 1.0 - self.cam_perspective * cz + self.cam_pos[2];
         if zr < EPSILON {
             return None;

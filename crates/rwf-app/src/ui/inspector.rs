@@ -292,6 +292,46 @@ fn camera_tab(ui: &mut Ui, doc: &mut Document) {
         widgets::color_rgb(ui, &mut f.dim_z_color).on_hover_text("Color that distant points fade into with \"Depth fade\" (black: they just get darker)");
         ui.end_row();
     });
+    egui::CollapsingHeader::new(RichText::new("Stereo 3D").color(theme::TEXT_MUTED)).id_salt("stereo3d").show(ui, |ui| {
+        use rwf_core::stereo::{Stereo3dColor, Stereo3dMode};
+        ui.label(RichText::new("Rendered in exported images (Export, rwf-cli render, batch); the canvas shows the normal view.").small().color(theme::TEXT_MUTED));
+        let st = &mut f.stereo3d;
+        grid(ui, "stereo-grid", |ui| {
+            widgets::label(ui, "Mode");
+            egui::ComboBox::from_id_salt("stereo-mode").selected_text(st.mode.label()).show_ui(ui, |ui| {
+                for m in Stereo3dMode::ALL {
+                    ui.selectable_value(&mut st.mode, m, m.label());
+                }
+            })
+            .response
+            .on_hover_text("Anaglyph: one image for red/cyan glasses. Side by side: both eyes next to each other. Interpolated pairs: side-by-side pairs at growing eye distance, one row each.");
+            ui.end_row();
+            if st.is_on() {
+                slider(ui, "Eye angle", &mut st.angle, 0.0..=10.0).on_hover_text("How far each eye turns towards the focal point (degrees)");
+                slider(ui, "Eye distance", &mut st.eye_dist, 0.0..=0.5).on_hover_text("Distance of each eye from the center");
+                slider(ui, "Focal offset", &mut st.focal_offset, -2.0..=2.0).on_hover_text("Depth of the point the eyes turn around");
+                if st.mode == Stereo3dMode::Anaglyph {
+                    for (label, c) in [("Left eye", &mut st.left_color), ("Right eye", &mut st.right_color)] {
+                        widgets::label(ui, label);
+                        ui.horizontal(|ui| {
+                            ui.selectable_value(c, Stereo3dColor::Red, "Red");
+                            ui.selectable_value(c, Stereo3dColor::Cyan, "Cyan");
+                        });
+                        ui.end_row();
+                    }
+                }
+                if st.mode == Stereo3dMode::InterpolatedImages {
+                    widgets::label(ui, "Pairs");
+                    ui.add(egui::DragValue::new(&mut st.interpolated_image_count).range(1..=12));
+                    ui.end_row();
+                }
+                widgets::label(ui, "");
+                ui.checkbox(&mut st.swap_sides, "Swap eyes").on_hover_text("For cross-eyed viewing or glasses with swapped colors");
+                ui.end_row();
+            }
+        });
+    });
+
     theme::section_label(ui, "Depth of field");
     grid(ui, "dof", |ui| {
         slider(ui, "Amount", &mut f.cam_dof, 0.0..=5.0).on_hover_text("0 = off. Needs a 3D camera (pitch/yaw/perspective) to be visible.");

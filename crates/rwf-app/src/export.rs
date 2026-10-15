@@ -35,6 +35,8 @@ use crate::theme;
 enum Job {
     Gpu { renderer: Box<GpuRenderer>, target: u64 },
     Cpu { render: Option<CpuRender>, saving: Option<Receiver<Result<String, String>>> },
+    /// A stereo 3D image: eye images rendered and combined on a thread.
+    Stereo { result: Receiver<Result<String, String>>, done: std::sync::Arc<std::sync::atomic::AtomicU32>, total: u32 },
 }
 
 struct Running {
@@ -194,6 +196,35 @@ impl ExportDialog {
         let alpha = self.transparent && self.image_format == ImageFormat::Png;
         let mut f = flame.clone();
         f.bg_transparency = alpha;
+        if f.stereo3d.is_on() {
+            if self.image_format.is_hdr() {
+                self.status = Some("Stereo 3D images are saved as PNG or JPEG (as in JWildfire)".into());
+                return;
+            }
+            let done = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+            let total = f.stereo3d.image_count();
+            let (tx, rx) = channel();
+            let (w, h, q, fmt, jq) = (self.width, self.height, self.quality, self.image_format, self.jpeg_quality);
+            let ctx = if self.backend == Backend::Gpu { gpu } else { None };
+            let (f2, d2, p2) = (f.clone(), done.clone(), path.clone());
+            std::thread::spawn(move || {
+                let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+                let mut progress = |n: u32, _| d2.store(n, std::sync::atomic::Ordering::Relaxed);
+                let result = rwf_gpu::stereo::render_stereo_image(&f2, w, h, q, ctx, threads, &mut progress).and_then(|img| {
+                    rwf_core::output::write_rgba8(&p2, fmt, img.width, img.height, &img.rgba, jq)?;
+                    Ok(img.denoise_note)
+                });
+                let _ = tx.send(result);
+            });
+            self.running = Some(Running {
+                job: Job::Stereo { result: rx, done, total },
+                save: SaveJob { path, width: self.width, height: self.height, with_alpha: alpha, format: self.image_format, jpeg_quality: self.jpeg_quality, zbuffer: false, flame: f },
+                started: Instant::now(),
+                target_density: self.quality,
+            });
+            self.status = None;
+            return;
+        }
         let job = match (self.backend, gpu) {
             (Backend::Gpu, Some(ctx)) => {
                 let mut r = GpuRenderer::new(ctx);
@@ -249,6 +280,13 @@ impl ExportDialog {
                 let result = save_gpu(renderer, &run.save);
                 self.finish(result);
                 1.0
+            }
+            Job::Stereo { result, done, total } => {
+                if let Ok(r) = result.try_recv() {
+                    self.finish(r);
+                    return 1.0;
+                }
+                (done.load(std::sync::atomic::Ordering::Relaxed) as f32 / *total as f32).min(0.99)
             }
             Job::Cpu { render, saving } => {
                 if let Some(rx) = saving {
@@ -407,6 +445,13 @@ impl ExportDialog {
                         if matches!(self.image_format, ImageFormat::Png) {
                             ui.label(RichText::new("Background").color(theme::TEXT_MUTED));
                             ui.checkbox(&mut self.transparent, "Transparent");
+                            ui.end_row();
+                        }
+                        if flame.stereo3d.is_on() {
+                            let (sw, sh) = flame.stereo3d.output_size(self.width, self.height);
+                            ui.label(RichText::new("Stereo 3D").color(theme::TEXT_MUTED));
+                            ui.label(RichText::new(format!("{}: {} eye images, saved as {sw} × {sh}; no z-buffer or HDR", flame.stereo3d.mode.label(), flame.stereo3d.image_count())).small())
+                                .on_hover_text("Set in the Camera tab. Each eye image gets its share of the quality, as in JWildfire.");
                             ui.end_row();
                         }
                         ui.label(RichText::new("Depth").color(theme::TEXT_MUTED));

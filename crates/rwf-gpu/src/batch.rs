@@ -277,6 +277,32 @@ pub fn render_job(
         (!r.unsupported_variations().is_empty()).then(|| format!("not supported on the GPU, ignored: {}", r.unsupported_variations().join(", ")));
     let cancelled = || Err("cancelled".to_string());
 
+    // Stereo 3D stills: eye images combined (PNG/JPEG only, no z-buffer, as in JWildfire)
+    if !animation && flame.stereo3d.is_on() && !s.format.is_hdr() {
+        let total = flame.stereo3d.image_count() as f32;
+        let mut k = 0.0;
+        let mut eye = |f: &Flame, q: f64| -> Result<Vec<u8>, String> {
+            let mut sub = |p: f32, r: &mut GpuRenderer| progress((k + p) / total, r);
+            if !accumulate(r, std::slice::from_ref(f), w, h, q, &mut sub)? {
+                return Err("cancelled".to_string());
+            }
+            r.tonemap();
+            let mut img = r.read_image().ok_or("readback failed")?;
+            r.apply_post_denoiser(f, &mut img, w, h).map_err(|e| format!("denoiser: {e}"))?;
+            k += 1.0;
+            Ok(img)
+        };
+        let (img, ow, oh) = rwf_core::stereo::render_stereo(&flame, w, h, quality, &mut eye)?;
+        rwf_core::output::write_rgba8(&path, s.format, ow, oh, &img, s.jpeg_quality)?;
+        let warning = warning.or_else(|| s.zbuffer.then(|| "no z-buffer for stereo 3D images".to_string()));
+        return Ok(JobOutcome { path, skipped: false, warning });
+    }
+    let warning = if flame.stereo3d.is_on() && !animation && s.format.is_hdr() {
+        Some(warning.map_or(String::new(), |w| format!("{w}; ")) + "stereo 3D is only rendered into PNG/JPEG; this HDR image shows the normal view")
+    } else {
+        warning
+    };
+
     if animation {
         let frames = flame.animation.frame_count;
         let mut sink = VideoSink::new(&path, s.video_format, w, h, flame.animation.fps).map_err(|e| e.to_string())?;

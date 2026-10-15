@@ -42,6 +42,7 @@ pub mod resources;
 pub mod rng;
 pub mod shapes;
 pub mod solid;
+pub mod stereo;
 pub mod variations;
 pub mod video;
 pub mod weighting;

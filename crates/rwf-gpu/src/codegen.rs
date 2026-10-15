@@ -1271,7 +1271,7 @@ fn plot(px_in: f32, py_in: f32, pz: f32, col_in: vec3<f32>) {\n  let wp = vec3<f
         "  let cx = U.m0.x * px_in + U.m1.x * py_in + U.m2.x * pz + U.cam_pos.x;\n\
   let cy = U.m0.y * px_in + U.m1.y * py_in + U.m2.y * pz + U.cam_pos.y;\n\
   let cz = U.m0.z * px_in + U.m1.z * py_in + U.m2.z * pz + U.cam_pos.z;\n\
-  let zr = 1.0 - U.cam_persp * cz + U.cam_pos.z;\n\
+  let zr = 1.0 - U.cam_persp * cz + U.cam_pos.w;\n\
   if (zr < EPSILON) { return; }\n\
   var intensity = 1.0;\n\
   if (U.dimish_z > EPSILON) { let zdist = U.dim_z_dist - cz; if (zdist > 0.0) { intensity = exp(-zdist * zdist * U.dimish_z); } }\n\
@@ -1362,7 +1362,7 @@ fn plot(px_in: f32, py_in: f32, pz: f32, col_in: vec3<f32>) {
         let cx = U.m0.x * x + U.m1.x * y + U.m2.x * pz + U.cam_pos.x;
         let cy = U.m0.y * x + U.m1.y * y + U.m2.y * pz + U.cam_pos.y;
         let cz = U.m0.z * x + U.m1.z * y + U.m2.z * pz + U.cam_pos.z;
-        let zr = 1.0 - U.cam_persp * cz + U.cam_pos.z;
+        let zr = 1.0 - U.cam_persp * cz + U.cam_pos.w;
         if (zr < EPSILON) { return; }
         if (U.dimish_z > EPSILON) {
             let zdist = U.dim_z_dist - cz;

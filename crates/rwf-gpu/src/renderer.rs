@@ -660,7 +660,8 @@ impl GpuRenderer {
             m0: [m[0][0] as f32, m[0][1] as f32, m[0][2] as f32, 0.0],
             m1: [m[1][0] as f32, m[1][1] as f32, m[1][2] as f32, 0.0],
             m2: [m[2][0] as f32, m[2][1] as f32, m[2][2] as f32, 0.0],
-            cam_pos: [view.cam_pos[0] as f32, view.cam_pos[1] as f32, view.cam_pos[2] as f32, 0.0],
+            // xyz: added to camera points; w: the camera z of the perspective divide
+            cam_pos: [view.cam_add[0] as f32, view.cam_add[1] as f32, view.cam_add[2] as f32, view.cam_pos[2] as f32],
             cam_persp: view.cam_perspective as f32,
             dimish_z: view.dimish_z as f32,
             dim_z_dist: view.dim_z_distance as f32,

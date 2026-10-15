@@ -569,6 +569,43 @@ fn main() {
     };
     let gpu = args.gpu;
     let t0 = Instant::now();
+    if flame.stereo3d.is_on() {
+        // JWildfire renders stereo images without HDR and z-buffer
+        if format.is_hdr() {
+            eprintln!("stereo 3D images are written as PNG or JPEG, not {}", args.output.display());
+            std::process::exit(1);
+        }
+        if args.zbuffer {
+            eprintln!("warning: no z-buffer for stereo 3D images");
+        }
+        let ctx = if gpu {
+            match rwf_gpu::GpuContext::new_headless() {
+                Ok(c) => Some(c),
+                Err(e) => {
+                    eprintln!("GPU render failed: {e}");
+                    std::process::exit(1);
+                }
+            }
+        } else {
+            None
+        };
+        let mut progress = |done: u32, total: u32| eprintln!("eye image {done}/{total}");
+        match rwf_gpu::stereo::render_stereo_image(flame, w, h, quality, ctx, args.threads, &mut progress) {
+            Ok(img) => {
+                if let Err(e) = rwf_core::output::write_rgba8(&args.output, format, img.width, img.height, &img.rgba, args.jpeg_quality) {
+                    eprintln!("failed to write {}: {e}", args.output.display());
+                    std::process::exit(1);
+                }
+                eprintln!("{}", img.denoise_note);
+                eprintln!("rendered {}x{} @ quality {} in {:.2}s -> {}", img.width, img.height, quality, t0.elapsed().as_secs_f64(), args.output.display());
+            }
+            Err(e) => {
+                eprintln!("stereo render failed: {e}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
     let mut zbuffer = None;
     let mut hdr = None;
     let mut gpu_denoise_note = None;

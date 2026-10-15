@@ -683,6 +683,10 @@ pub struct Flame {
     /// image size (`background_image`; empty = none).
     pub bg_image: String,
     pub bg_transparency: bool,
+    /// Stereo 3D images (anaglyph, side by side, interpolated pairs).
+    pub stereo3d: crate::stereo::Stereo3d,
+    /// The eye being rendered (set while rendering stereo images; not saved).
+    pub stereo_eye: crate::stereo::StereoEye,
     pub post_symmetry: PostSymmetry,
 
     pub layers: Vec<Layer>,
@@ -772,6 +776,8 @@ impl Default for Flame {
             background: Background::default(),
             bg_image: String::new(),
             bg_transparency: true,
+            stereo3d: crate::stereo::Stereo3d::default(),
+            stereo_eye: crate::stereo::StereoEye::Unspecified,
             post_symmetry: PostSymmetry::default(),
             layers: vec![Layer::default()],
             animation: crate::animation::Animation::default(),
