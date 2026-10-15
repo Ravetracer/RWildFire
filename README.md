@@ -80,6 +80,7 @@ Optional / later:
 
 - Scripting (e.g. Lua or Rhai in place of JWildfire's Java scripts)
 - Ready-to-run downloads for Windows and Linux: a build script that compiles `rwf-app` and `rwf-cli` in release mode, fetches OIDN for the target platform (`tools/fetch_oidn.py --platform … --dest …`; into `lib/` on Linux, next to the executable on Windows) and packs everything with the license files into one zip per platform, so users only unzip and run
+- User manual: complete documentation of all app functions (editor, random generators and Explore, MutaGen, animation and curve editor, render workspace with interactive, batch, quilt, movie, dance and mesh, export, denoiser, preferences, CLI) with screenshots, written in a source format kept in the repository and built to a PDF that ships with the release zips
 
 Not planned: variations that run user-written Java/GLSL code or formula engines (`custom_wf`, `c_var`, `dc_code`, `glsl_code`, `f_complex`, `colordomain`, `cut_c`, `ducks`, `fract_formula_*`), JWildfire's classic image-processing module, LeapMotion, applet and launcher.
 
