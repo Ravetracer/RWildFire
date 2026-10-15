@@ -454,22 +454,20 @@ impl DanceProject {
         if total == 0 {
             return Err("nothing recorded".into());
         }
-        let dir = path.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."));
-        let stem = path.file_name().map(|n| n.to_string_lossy().trim_end_matches(".flame").to_string()).unwrap_or_else(|| "dance".into());
-        for i in 0..total {
-            if cancel.load(std::sync::atomic::Ordering::Relaxed) {
-                return Err("cancelled".into());
-            }
-            let Some(mut f) = self.performance_flame(spectrum, i) else { continue };
-            // the project size, the same part of the flame in view
-            // as the renderer scales a flame drawn at another size (`View::new`)
-            f.pixels_per_unit *= (self.width as f64 / f.width.max(1) as f64 + self.height as f64 / f.height.max(1) as f64) * 0.5;
-            (f.width, f.height) = (self.width, self.height);
-            let file = dir.join(format!("{stem}{:05}.flame", i + 1));
-            crate::io::write_flame_to_file(&f, &file).map_err(|e| format!("{}: {e}", file.display()))?;
-            on_frame(i, total);
-        }
-        Ok(total)
+        crate::movie::write_flame_sequence(
+            path,
+            total,
+            cancel,
+            |i| {
+                let mut f = self.performance_flame(spectrum, i)?;
+                // the project size, the same part of the flame in view (as `View::new` scales a
+                // flame drawn at another size)
+                f.pixels_per_unit *= (self.width as f64 / f.width.max(1) as f64 + self.height as f64 / f.height.max(1) as f64) * 0.5;
+                (f.width, f.height) = (self.width, self.height);
+                Some(f)
+            },
+            &mut on_frame,
+        )
     }
 
     /// Number of frames of the recorded performance.

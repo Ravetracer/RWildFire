@@ -197,7 +197,7 @@ impl ExportDialog {
         if self.ffmpeg.is_none() {
             self.ffmpeg = Some(rwf_core::video::ffmpeg_available());
         }
-        if self.ffmpeg == Some(false) {
+        if self.ffmpeg == Some(false) && self.format.needs_ffmpeg() {
             self.format = rwf_core::video::VideoFormat::PngSequence;
         }
         if !gpu {
@@ -519,7 +519,7 @@ impl ExportDialog {
                         ui.label(RichText::new("Format").color(theme::TEXT_MUTED));
                         egui::ComboBox::from_id_salt("vfmt").selected_text(self.format.label()).show_ui(ui, |ui| {
                             for f in rwf_core::video::VideoFormat::ALL {
-                                let ok = *f == rwf_core::video::VideoFormat::PngSequence || self.ffmpeg == Some(true);
+                                let ok = !f.needs_ffmpeg() || self.ffmpeg == Some(true);
                                 ui.add_enabled_ui(ok, |ui| {
                                     ui.selectable_value(&mut self.format, *f, f.label());
                                 });

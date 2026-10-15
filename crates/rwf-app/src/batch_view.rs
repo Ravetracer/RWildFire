@@ -610,13 +610,13 @@ impl BatchView {
                 ui.end_row();
                 if self.settings.animations {
                     let ffmpeg = *self.ffmpeg.get_or_insert_with(rwf_core::video::ffmpeg_available);
-                    if !ffmpeg {
+                    if !ffmpeg && self.settings.video_format.needs_ffmpeg() {
                         self.settings.video_format = VideoFormat::PngSequence;
                     }
                     widgets::label(ui, "Video format");
                     egui::ComboBox::from_id_salt("batch-vfmt").selected_text(self.settings.video_format.label()).show_ui(ui, |ui| {
                         for f in VideoFormat::ALL {
-                            ui.add_enabled_ui(*f == VideoFormat::PngSequence || ffmpeg, |ui| {
+                            ui.add_enabled_ui(!f.needs_ffmpeg() || ffmpeg, |ui| {
                                 ui.selectable_value(&mut self.settings.video_format, *f, f.label());
                             });
                         }

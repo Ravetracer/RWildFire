@@ -30,6 +30,105 @@ use crate::math::ftoi;
 use crate::model::{Affine, Flame, Layer, VariationInstance, XForm};
 use crate::variations;
 
+/// Writes a sequence of flames as `<name>00001.flame`, `<name>00002.flame`, … next to `path`
+/// (JWildfire's flame sequence output). `flame_at(i)` gives frame `i` of `total`; stops early
+/// (with an error) when `cancel` is set; `on_frame(index, total)` after each file. Returns the
+/// number of files.
+pub fn write_flame_sequence(
+    path: &Path,
+    total: u32,
+    cancel: &std::sync::atomic::AtomicBool,
+    mut flame_at: impl FnMut(u32) -> Option<Flame>,
+    mut on_frame: impl FnMut(u32, u32),
+) -> Result<u32, String> {
+    if total == 0 {
+        return Err("no frames".into());
+    }
+    let dir = path.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    let stem = name.strip_suffix(".flame").unwrap_or(&name);
+    let stem = if stem.is_empty() { "frame" } else { stem };
+    let mut written = 0;
+    for i in 0..total {
+        if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err("cancelled".into());
+        }
+        let Some(f) = flame_at(i) else { continue };
+        let file = dir.join(format!("{stem}{:05}.flame", i + 1));
+        crate::io::write_flame_to_file(&f, &file).map_err(|e| format!("{}: {e}", file.display()))?;
+        written += 1;
+        on_frame(i, total);
+    }
+    Ok(written)
+}
+
+/// JWildfire's random movie generators (`RandomMovieGeneratorList`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum RandomMovie {
+    #[default]
+    All,
+    RotatingMandelbrots,
+    TransformingBubbles,
+    TransformingDuckies,
+}
+
+impl RandomMovie {
+    pub const ALL: [RandomMovie; 4] = [RandomMovie::All, RandomMovie::RotatingMandelbrots, RandomMovie::TransformingBubbles, RandomMovie::TransformingDuckies];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            RandomMovie::All => "All",
+            RandomMovie::RotatingMandelbrots => "Rotating Mandelbrots",
+            RandomMovie::TransformingBubbles => "Transforming Bubbles",
+            RandomMovie::TransformingDuckies => "Transforming Duckies",
+        }
+    }
+
+    /// A random movie: one part of 320 frames with camera and transform scripts
+    /// (`RandomMovieGenerator.createMovie`).
+    pub fn generate(self, rng: &mut crate::rng::Rng) -> Movie {
+        use crate::random::{Extras, Generator, Quality, generate_quality};
+        let kind = match self {
+            RandomMovie::All => [RandomMovie::RotatingMandelbrots, RandomMovie::TransformingDuckies, RandomMovie::TransformingBubbles][rng.random_int(3)],
+            k => k,
+        };
+        let script = |kind, amplitude| Script { kind, amplitude };
+        let mut movie = Movie::default();
+        let (generator, xform_script) = match kind {
+            RandomMovie::TransformingDuckies => (Generator::Duckies, XFormScript::Rotate2nd),
+            RandomMovie::TransformingBubbles => (Generator::Bubbles, XFormScript::RotateFirst),
+            _ => (Generator::Mandelbrot, XFormScript::None),
+        };
+        let mut flame = generate_quality(generator, Extras::NONE, Quality::NORMAL, rng);
+        if kind == RandomMovie::RotatingMandelbrots {
+            flame.cam_perspective = 0.1 + 0.2 * rng.random();
+            if rng.random() < 0.5 {
+                flame.cam_dof = 0.05 + 0.1 * rng.random();
+            }
+            // JWildfire fills three slots and overwrites some of them; the last write wins.
+            let mut slots = [Script::default(); 3];
+            slots[0] = script(GlobalScript::RotateYaw, -0.75 * rng.random() * 1.5);
+            slots[1] = script(GlobalScript::RotateRoll, -0.25 * rng.random() * 0.5);
+            slots[2] = script(GlobalScript::RotatePitch, -0.125 * rng.random() * 0.25);
+            slots[0] = script(GlobalScript::RotateBank, -0.75 * rng.random() * 1.5);
+            slots[2] = script(GlobalScript::MoveCamZ, 0.2 + rng.random() * 0.6);
+            slots[2] = script(GlobalScript::MoveCamY, 0.2 + rng.random() * 1.4);
+            movie.global_scripts = slots.to_vec();
+        } else {
+            movie.global_scripts.push(script(GlobalScript::RotateRoll, -1.25 * rng.random() * 2.5));
+            movie.global_scripts.push(script(GlobalScript::MoveCamX, rng.random() * 2.0 + 0.2));
+            if rng.random() < 0.5 {
+                movie.global_scripts.push(script(GlobalScript::MoveCamZ, rng.random() * 0.25));
+            }
+            movie.xform_scripts.push(Script { kind: xform_script, amplitude: -0.5 * rng.random() });
+        }
+        movie.parts.push(MoviePart { flame, frames: 320, morph_frames: 0, morph: MorphType::Fade });
+        movie.name = format!("{} - {}", kind.label(), rng.random_int(1_000_000));
+        movie
+    }
+}
+
 /// How a part changes into the next one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum MorphType {
@@ -690,5 +789,19 @@ mod tests {
         let p = m.packets(4.0);
         assert_eq!(p.len(), 4);
         assert!(p[3].layers[0].weight < p[1].layers[0].weight);
+    }
+
+    #[test]
+    fn random_movies_have_a_part_and_scripts() {
+        let mut rng = crate::rng::Rng::new(21);
+        for kind in RandomMovie::ALL {
+            let m = kind.generate(&mut rng);
+            assert_eq!((m.parts.len(), m.frame_count()), (1, 320), "{}", kind.label());
+            assert!(!m.global_scripts.is_empty() && !m.parts[0].flame.layers[0].xforms.is_empty(), "{}", kind.label());
+            assert!(m.frame_flame(100.0).is_some());
+        }
+        let m = RandomMovie::RotatingMandelbrots.generate(&mut rng);
+        let kinds: Vec<GlobalScript> = m.global_scripts.iter().map(|s| s.kind).collect();
+        assert_eq!(kinds, [GlobalScript::RotateBank, GlobalScript::RotateRoll, GlobalScript::MoveCamY]);
     }
 }

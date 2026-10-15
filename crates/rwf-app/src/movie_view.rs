@@ -75,6 +75,9 @@ pub struct MovieView {
     preview_key: Option<(u64, u32)>,
     preview_job: Option<((u64, u32), Receiver<PreviewImage>)>,
     random: Option<Receiver<Flame>>,
+    /// A random movie being generated, and the generator chosen.
+    random_movie: Option<Receiver<Movie>>,
+    random_kind: rwf_core::movie::RandomMovie,
     output: Option<PathBuf>,
     format: VideoFormat,
     on_gpu: bool,
@@ -102,6 +105,8 @@ impl Default for MovieView {
             preview_key: None,
             preview_job: None,
             random: None,
+            random_movie: None,
+            random_kind: Default::default(),
             output: None,
             format: VideoFormat::Mp4,
             on_gpu: true,
@@ -181,6 +186,17 @@ impl MovieView {
             self.random = None;
             self.add_part(f);
         }
+        if let Some(rx) = &self.random_movie {
+            match rx.try_recv() {
+                Ok(m) => {
+                    self.random_movie = None;
+                    self.status = Some(format!("Random movie \"{}\"", m.name));
+                    self.set_movie(m);
+                    self.file = None;
+                }
+                Err(_) => ctx.request_repaint_after(std::time::Duration::from_millis(100)),
+            }
+        }
         if let Some((key, rx)) = &self.preview_job
             && let Ok((w, h, img)) = rx.try_recv()
         {
@@ -205,6 +221,9 @@ impl MovieView {
                 match m {
                     Msg::Frame { index, total, rgba } => {
                         self.progress = Some((index + 1, total));
+                        if rgba.is_empty() {
+                            continue;
+                        }
                         let (pw, ph) = (self.movie.width, self.movie.height);
                         let color = egui::ColorImage::from_rgba_unmultiplied([pw as usize, ph as usize], &rgba);
                         match &mut self.preview {
@@ -225,7 +244,7 @@ impl MovieView {
             let elapsed = self.worker.take().map(|w| w.started.elapsed()).unwrap_or_default();
             self.status = Some(match r {
                 Ok(p) => format!("Saved {} ({})", p.display(), format_duration(elapsed)),
-                Err(e) => format!("Movie not finished: {e}"),
+                Err(e) => format!("Export not finished: {e}"),
             });
         }
         // Preview of the current frame (CPU, small) while not rendering the movie.
@@ -324,6 +343,27 @@ impl MovieView {
             if let Some(f) = &self.file {
                 ui.label(RichText::new(f.display().to_string()).small().color(theme::TEXT_MUTED));
             }
+            ui.horizontal(|ui| {
+                egui::ComboBox::from_id_salt("movie-random-kind").selected_text(self.random_kind.label()).show_ui(ui, |ui| {
+                    for k in rwf_core::movie::RandomMovie::ALL {
+                        ui.selectable_value(&mut self.random_kind, k, k.label());
+                    }
+                });
+                if self.random_movie.is_some() {
+                    ui.spinner();
+                } else if ui
+                    .button(format!("{}  Random movie", icons::DICE))
+                    .on_hover_text("Replaces the movie by a random one: a random flame with camera and transform scripts (JWildfire's random movie generators)")
+                    .clicked()
+                {
+                    let (tx, rx) = channel();
+                    let kind = self.random_kind;
+                    std::thread::spawn(move || {
+                        let _ = tx.send(kind.generate(&mut rwf_core::rng::Rng::from_entropy()));
+                    });
+                    self.random_movie = Some(rx);
+                }
+            });
         });
 
         theme::section_label(ui, "Frames");
@@ -410,7 +450,7 @@ impl MovieView {
             ui.add_enabled(gpu.is_some(), egui::Checkbox::new(&mut self.on_gpu, "Render on the GPU"));
         });
         let ffmpeg = *self.ffmpeg.get_or_insert_with(rwf_core::video::ffmpeg_available);
-        let needs_ffmpeg = self.format != VideoFormat::PngSequence;
+        let needs_ffmpeg = self.format.needs_ffmpeg();
         if needs_ffmpeg && !ffmpeg {
             ui.label(RichText::new("Video files need ffmpeg in the PATH; PNG sequences work without it.").small().color(theme::WARN));
         }
@@ -452,10 +492,42 @@ impl MovieView {
         {
             self.start(if self.on_gpu { gpu } else { None });
         }
+        if self.worker.is_none()
+            && ui
+                .add_enabled(!self.movie.parts.is_empty(), egui::Button::new("Save as flames…").min_size(vec2(ui.available_width(), 24.0)))
+                .on_hover_text("One flame file per frame (name00001.flame, …) instead of images, e.g. to render them elsewhere")
+                .clicked()
+        {
+            self.start_flames();
+        }
         if let Some(s) = &self.status {
             ui.add_space(6.0);
             ui.label(RichText::new(s).small().color(theme::TEXT_MUTED));
         }
+    }
+
+    /// Writes every frame as a flame file (JWildfire's "flames" sequence output).
+    fn start_flames(&mut self) {
+        let name = if self.movie.name.is_empty() { "movie".to_string() } else { self.movie.name.replace(['/', '\\'], "_") };
+        let Some(path) = crate::settings::dialog(crate::settings::Folder::Flames).add_filter("Flame", &["flame"]).set_file_name(format!("{name}.flame")).save_file() else {
+            return;
+        };
+        let movie = self.movie.clone();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let (tx, rx) = channel();
+        let c2 = cancel.clone();
+        self.playing = false;
+        self.progress = Some((0, movie.frame_count()));
+        self.status = None;
+        std::thread::spawn(move || {
+            let tx2 = tx.clone();
+            let r = rwf_core::movie::write_flame_sequence(&path, movie.frame_count(), &c2, |i| movie.frame_flame(i as f64), |index, total| {
+                let _ = tx2.send(Msg::Frame { index, total, rgba: Vec::new() });
+            });
+            let stem = path.with_extension("").display().to_string();
+            let _ = tx.send(Msg::Done(r.map(|n| PathBuf::from(format!("{stem}00001.flame … {stem}{n:05}.flame")))));
+        });
+        self.worker = Some(Worker { cancel, msgs: rx, started: Instant::now() });
     }
 
     fn start(&mut self, gpu: Option<GpuContext>) {

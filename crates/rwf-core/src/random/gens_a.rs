@@ -260,6 +260,82 @@ fn empty_flame() -> Flame {
     flame
 }
 
+/// `DuckiesRandomFlameGenerator`.
+pub fn duckies(st: &mut State) -> Flame {
+    let r = &mut *st.rng;
+    let mut flame = empty_flame();
+    let layer = flame.first_layer_mut();
+    {
+        let mut xf = java::xform();
+        xf.weight = 0.5 + r.random();
+        let name = if r.random() < 0.12 { java::random_variation(r) } else { "spherical" };
+        java::add(&mut xf, 1.5 + r.random(), name);
+        xf.color_symmetry = -0.5;
+        java::local_translate(&mut xf, 0.75 - 5.50 * r.random(), 0.75 - 1.50 * r.random(), false);
+        java::rotate(&mut xf, -60.0 + r.random() * 30.0, false);
+        java::scale(&mut xf, 0.1 + r.random() * 0.4, true, true, false);
+        layer.xforms.push(xf);
+    }
+    {
+        let mut xf = java::xform();
+        xf.weight = 1.0 + r.random() * 100.0;
+        let name = if r.random() < 0.8 { "juliascope" } else { "julian" };
+        if r.random() > 0.75 {
+            let extra = java::random_variation(r);
+            java::add(&mut xf, 0.125 + 0.25 * r.random(), extra);
+        }
+        let power = if r.random() < 0.8 { 2.0 } else { 2.0 + r.random() * 10.0 };
+        let dist = if r.random() < 0.8 { 1.0 } else { -2.0 + 4.0 * r.random() };
+        let amount = 0.5 + r.random();
+        java::set(java::add(&mut xf, amount, name), &[("power", power), ("dist", dist)]);
+        xf.color_symmetry = 0.5 + r.random();
+        java::rotate(&mut xf, r.random() * 360.0, false);
+        java::local_translate(&mut xf, 1.75 - 3.50 * r.random(), 0.75 - 5.50 * r.random(), false);
+        java::scale(&mut xf, 1.1 + r.random() * 2.0, true, true, false);
+        layer.xforms.push(xf);
+    }
+    java::set_xaos(&mut layer.xforms[0], 0, 0.0);
+    java::set_xaos(&mut layer.xforms[0], 1, 1.0);
+    if r.random() > 0.667 {
+        let mut xf = java::xform();
+        xf.weight = 1.0 + r.random() * 100.0;
+        let name = java::random_variation(r);
+        java::add(&mut xf, 0.25 + 1.25 * r.random(), name);
+        if r.random() > 0.5 {
+            let extra = java::random_variation(r);
+            java::add(&mut xf, 0.2 + 0.75 * r.random(), extra);
+        }
+        java::rotate(&mut xf, -12.0 + r.random() * 24.0, true);
+        java::local_translate(&mut xf, -0.125 + r.random() * 0.25, -0.125 + r.random() * 0.25, true);
+        java::scale(&mut xf, 0.9 + r.random() * 0.2, true, true, true);
+        layer.xforms.push(xf);
+        java::set_xaos(&mut layer.xforms[0], 1, 0.0);
+        java::set_xaos(&mut layer.xforms[1], 2, 0.0);
+        java::set_xaos(&mut layer.xforms[2], 2, 0.0);
+        if r.random() > 0.667 {
+            let mut xf = java::xform();
+            xf.weight = 0.50 + r.random() * 50.0;
+            let name = java::random_variation(r);
+            java::add(&mut xf, 0.125 + 0.75 * r.random(), name);
+            if r.random() > 0.5 {
+                let extra = java::random_variation(r);
+                java::add(&mut xf, 0.125 + 0.35 * r.random(), extra);
+            }
+            java::rotate(&mut xf, -24.0 + r.random() * 48.0, true);
+            java::local_translate(&mut xf, -0.25 + r.random() * 0.5, -0.25 + r.random() * 0.5, true);
+            java::scale(&mut xf, 0.5 + r.random() * 0.25, true, true, true);
+            layer.xforms.push(xf);
+            java::set_xaos(&mut layer.xforms[0], 2, 0.0);
+            java::set_xaos(&mut layer.xforms[2], 2, 0.0);
+            java::set_xaos(&mut layer.xforms[1], 3, 0.0);
+            java::set_xaos(&mut layer.xforms[2], 3, 0.0);
+            java::set_xaos(&mut layer.xforms[3], 3, 0.0);
+        }
+    }
+    java::randomize_colors(layer, r);
+    flame
+}
+
 /// `SimpleRandomFlameGenerator` ("Simple (stunning)").
 pub fn simple(st: &mut State) -> Flame {
     static LIST: OnceLock<Vec<&'static str>> = OnceLock::new();

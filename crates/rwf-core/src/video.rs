@@ -17,7 +17,8 @@
 //
 // SPDX-License-Identifier: LGPL-3.0-or-later
 
-//! Output of rendered animation frames: PNG sequences or video files via ffmpeg.
+//! Output of rendered animation frames: PNG sequences, JWildfire's ANB files or video files
+//! via ffmpeg.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -44,10 +45,17 @@ pub enum VideoFormat {
     ProRes,
     /// VP9 WebM.
     WebM,
+    /// JWildfire's uncompressed ANB animation (all frames in one file, no ffmpeg needed).
+    Anb,
 }
 
 impl VideoFormat {
-    pub const ALL: &'static [VideoFormat] = &[VideoFormat::Mp4, VideoFormat::ProRes, VideoFormat::WebM, VideoFormat::PngSequence];
+    pub const ALL: &'static [VideoFormat] = &[VideoFormat::Mp4, VideoFormat::ProRes, VideoFormat::WebM, VideoFormat::PngSequence, VideoFormat::Anb];
+
+    /// The format is written by ffmpeg.
+    pub fn needs_ffmpeg(&self) -> bool {
+        !matches!(self, VideoFormat::PngSequence | VideoFormat::Anb)
+    }
 
     pub fn label(&self) -> &'static str {
         match self {
@@ -55,6 +63,7 @@ impl VideoFormat {
             VideoFormat::Mp4 => "MP4 (H.264)",
             VideoFormat::ProRes => "MOV (ProRes)",
             VideoFormat::WebM => "WebM (VP9)",
+            VideoFormat::Anb => "ANB (JWildfire)",
         }
     }
 
@@ -64,6 +73,7 @@ impl VideoFormat {
             VideoFormat::Mp4 => Some("mp4"),
             VideoFormat::ProRes => Some("mov"),
             VideoFormat::WebM => Some("webm"),
+            VideoFormat::Anb => Some("anb"),
         }
     }
 
@@ -72,6 +82,7 @@ impl VideoFormat {
             Some("mp4") | Some("m4v") => VideoFormat::Mp4,
             Some("mov") => VideoFormat::ProRes,
             Some("webm") => VideoFormat::WebM,
+            Some("anb") => VideoFormat::Anb,
             _ => VideoFormat::PngSequence,
         }
     }
@@ -84,6 +95,9 @@ pub fn ffmpeg_available() -> bool {
 
 pub enum VideoSink {
     Png { dir: PathBuf, w: u32, h: u32 },
+    /// The four color planes go to temporary files and are joined at the end (the format
+    /// stores all red planes, then all green, blue and alpha planes).
+    Anb { path: PathBuf, w: u32, h: u32, frames: u32, planes: Vec<(PathBuf, std::io::BufWriter<std::fs::File>)> },
     Ffmpeg { child: Child, stdin: Option<ChildStdin>, w: u32, h: u32 },
 }
 
@@ -99,11 +113,20 @@ impl VideoSink {
             std::fs::create_dir_all(path)?;
             return Ok(VideoSink::Png { dir: path.to_path_buf(), w, h });
         }
+        if format == VideoFormat::Anb {
+            let planes = (0..4)
+                .map(|c| {
+                    let tmp = path.with_extension(format!("anb.{c}.tmp"));
+                    std::fs::File::create(&tmp).map(|f| (tmp, std::io::BufWriter::new(f)))
+                })
+                .collect::<std::io::Result<Vec<_>>>()?;
+            return Ok(VideoSink::Anb { path: path.to_path_buf(), w, h, frames: 0, planes });
+        }
         let codec: &[&str] = match format {
             VideoFormat::Mp4 => &["-c:v", "libx264", "-preset", "slow", "-crf", "15", "-pix_fmt", "yuv420p"],
             VideoFormat::ProRes => &["-c:v", "prores_ks", "-profile:v", "3", "-pix_fmt", "yuv422p10le"],
             VideoFormat::WebM => &["-c:v", "libvpx-vp9", "-b:v", "0", "-crf", "20", "-pix_fmt", "yuv420p"],
-            VideoFormat::PngSequence => unreachable!(),
+            VideoFormat::PngSequence | VideoFormat::Anb => unreachable!(),
         };
         // H.264/VP9 with yuv420p need even dimensions.
         let size = format!("{w}x{h}");
@@ -130,6 +153,21 @@ impl VideoSink {
     pub fn write_frame(&mut self, index: u32, rgba: &[u8]) -> std::io::Result<()> {
         match self {
             VideoSink::Png { dir, w, h } => write_png(&dir.join(format!("frame_{index:05}.png")), *w, *h, rgba),
+            VideoSink::Anb { w, h, frames, planes, .. } => {
+                // each plane: rows of width + 1 bytes and one more row, as JWildfire writes them
+                let (w, h) = (*w as usize, *h as usize);
+                for (c, (_, out)) in planes.iter_mut().enumerate() {
+                    let mut plane = vec![0u8; (w + 1) * (h + 1)];
+                    for y in 0..h {
+                        for x in 0..w {
+                            plane[y * (w + 1) + x] = rgba[(y * w + x) * 4 + c];
+                        }
+                    }
+                    out.write_all(&plane)?;
+                }
+                *frames += 1;
+                Ok(())
+            }
             VideoSink::Ffmpeg { stdin, w, h, .. } => {
                 debug_assert_eq!(rgba.len(), (*w * *h * 4) as usize);
                 stdin.as_mut().ok_or_else(|| std::io::Error::other("ffmpeg closed"))?.write_all(rgba)
@@ -140,6 +178,23 @@ impl VideoSink {
     pub fn finish(self) -> std::io::Result<()> {
         match self {
             VideoSink::Png { .. } => Ok(()),
+            VideoSink::Anb { path, w, h, frames, planes } => {
+                if frames == 0 {
+                    return Err(std::io::Error::other("no frames"));
+                }
+                let mut out = std::io::BufWriter::new(std::fs::File::create(&path)?);
+                out.write_all(b"ANBR")?;
+                // width, height, last frame, direction, end behaviour, step, 2 × reserved
+                for v in [w as i32, h as i32, frames as i32 - 1, 1, 0, 16, 0, 0] {
+                    out.write_all(&v.to_le_bytes())?;
+                }
+                for (tmp, plane) in planes {
+                    drop(plane.into_inner().map_err(|e| e.into_error())?);
+                    std::io::copy(&mut std::fs::File::open(&tmp)?, &mut out)?;
+                    let _ = std::fs::remove_file(&tmp);
+                }
+                out.flush()
+            }
             VideoSink::Ffmpeg { child, stdin, .. } => {
                 drop(stdin);
                 let out = child.wait_with_output()?;
@@ -150,5 +205,31 @@ impl VideoSink {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn anb_holds_planes_of_all_frames() {
+        let path = std::env::temp_dir().join(format!("rwf-anb-{}.anb", std::process::id()));
+        let mut sink = VideoSink::new(&path, VideoFormat::Anb, 3, 2, 25.0).unwrap();
+        for f in 0..2u8 {
+            let rgba: Vec<u8> = (0..6).flat_map(|_| [10 + f, 20, 30, 255]).collect();
+            sink.write_frame(f as u32, &rgba).unwrap();
+        }
+        sink.finish().unwrap();
+        let data = std::fs::read(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        let plane = 4 * 3; // (w + 1) * (h + 1)
+        assert_eq!(data.len(), 36 + 4 * 2 * plane);
+        assert_eq!(&data[..4], b"ANBR");
+        assert_eq!(i32::from_le_bytes(data[12..16].try_into().unwrap()), 1, "last frame index");
+        // red of frame 0, then red of frame 1, then green of frame 0
+        assert_eq!((data[36], data[36 + plane], data[36 + 2 * plane]), (10, 11, 20));
+        assert_eq!(data[36 + 3], 0, "row padding");
+        assert!(!path.with_extension("anb.0.tmp").exists());
     }
 }

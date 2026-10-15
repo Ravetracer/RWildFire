@@ -131,6 +131,7 @@ generators! {
     ExperimentalBubbles3D => "Bubbles3D (experimental)",
     Cross => "Cross",
     Duality => "Duality",
+    Duckies => "Duckies",
     EDisc => "EDisc",
     FlameWithBackground => "Flame with Background",
     FilledFlowers3D => "Flowers3D (filled)",
@@ -213,6 +214,7 @@ impl Generator {
             }
             Generator::Classic | Generator::Symmetric => own_generator(self, st.rng),
             Generator::Affine3D => gens_a::affine3d(st),
+            Generator::Duckies => gens_a::duckies(st),
             Generator::Bubbles => gens_a::bubbles(st),
             Generator::Bubbles3D => gens_a::bubbles3d(st),
             Generator::ExperimentalBubbles3D => gens_a::experimental_bubbles3d(st),
@@ -282,6 +284,7 @@ impl Generator {
             | Generator::EDisc
             | Generator::Synth
             | Generator::Duality
+            | Generator::Duckies
             | Generator::FilledFlowers3D
             | Generator::Flowers3D
             | Generator::Machine

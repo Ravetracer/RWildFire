@@ -732,7 +732,7 @@ impl DanceView {
             ui.add(egui::Label::new(RichText::new(&path).small().color(theme::TEXT_MUTED)).truncate()).on_hover_text(path);
         });
         let ffmpeg = *self.ffmpeg.get_or_insert_with(rwf_core::video::ffmpeg_available);
-        let needs_ffmpeg = self.format != VideoFormat::PngSequence;
+        let needs_ffmpeg = self.format.needs_ffmpeg();
         if needs_ffmpeg && !ffmpeg {
             ui.label(RichText::new("Video files need ffmpeg in the PATH; PNG sequences work without it.").small().color(theme::WARN));
         }

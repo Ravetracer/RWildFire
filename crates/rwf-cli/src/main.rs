@@ -40,7 +40,7 @@ struct Args {
 
 fn usage() -> ! {
     eprintln!(
-        "usage: rwf-cli render <file.flame> [-o out.png|.jpg|.hdr|.exr] [-w width] [-h height] [-q quality] [-i flame-index] [--gpu] [-t threads] [--zbuffer] [--jpeg-quality 1-100]\n       rwf-cli batch [options] <files or folders...>   (rwf-cli batch for the options)\n       rwf-cli quilt <file.flame> -o out.png -w width [-h height] [-q quality] [--tiles COLSxROWS]\n       rwf-cli mesh <file.flame | --from-slices DIR> [-o out.obj|.ply|.sc] [--points out.ply|.obj] [--slices DIR] [--resolution N] [--quality Q] [--threshold T] [--dilate 3|5] [--blur B] [--smooth N]\n       rwf-cli movie <file.jwfmovie> -o out.mp4|.mov|.webm|out-dir [--cpu]\n       rwf-cli dance <file.rwfdance> -o out.mp4|.mov|.webm|out-dir|name.flame [--cpu]\n       rwf-cli random <out-dir> [count] [generator filter] [--symmetry NAME] [--weighting NAME]"
+        "usage: rwf-cli render <file.flame> [-o out.png|.jpg|.hdr|.exr] [-w width] [-h height] [-q quality] [-i flame-index] [--gpu] [-t threads] [--zbuffer] [--jpeg-quality 1-100]\n       rwf-cli batch [options] <files or folders...>   (rwf-cli batch for the options)\n       rwf-cli quilt <file.flame> -o out.png -w width [-h height] [-q quality] [--tiles COLSxROWS]\n       rwf-cli mesh <file.flame | --from-slices DIR> [-o out.obj|.ply|.sc] [--points out.ply|.obj] [--slices DIR] [--resolution N] [--quality Q] [--threshold T] [--dilate 3|5] [--blur B] [--smooth N]\n       rwf-cli movie <file.jwfmovie | --random [all|mandelbrots|bubbles|duckies]> -o out.mp4|.mov|.webm|.anb|out-dir|name.flame|name.jwfmovie [--cpu]\n       rwf-cli dance <file.rwfdance> -o out.mp4|.mov|.webm|out-dir|name.flame [--cpu]\n       rwf-cli random <out-dir> [count] [generator filter] [--symmetry NAME] [--weighting NAME]"
     );
     std::process::exit(2);
 }
@@ -364,11 +364,13 @@ fn quilt_cmd() {
     }
 }
 
-/// `rwf-cli movie <file.jwfmovie> -o out.mp4|.mov|.webm|out-dir [--cpu]`: renders a movie of
-/// the movie maker (a folder gets a PNG sequence).
+/// `rwf-cli movie <file.jwfmovie | --random [all|mandelbrots|bubbles|duckies]> -o out.mp4|.mov|
+/// .webm|.anb|out-dir|name.flame|name.jwfmovie [--cpu]`: renders a movie (or JWildfire's random
+/// movie), writes its frames as flame files, or saves the (random) movie.
 fn movie_cmd() {
+    const USAGE: &str = "usage: rwf-cli movie <file.jwfmovie | --random [all|mandelbrots|bubbles|duckies]> -o out.mp4|.mov|.webm|.anb|out-dir|name.flame|name.jwfmovie [--cpu]";
     let args: Vec<String> = std::env::args().skip(2).collect();
-    let (mut input, mut output, mut cpu) = (None, None, false);
+    let (mut input, mut output, mut cpu, mut random) = (None, None, false, None);
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -377,31 +379,68 @@ fn movie_cmd() {
                 output = args.get(i).map(PathBuf::from);
             }
             "--cpu" => cpu = true,
+            "--random" => {
+                let kind = match args.get(i + 1).map(|s| s.to_lowercase()) {
+                    Some(k) if !k.starts_with('-') => {
+                        i += 1;
+                        k
+                    }
+                    _ => "all".into(),
+                };
+                random = Some(match kind.as_str() {
+                    "all" => rwf_core::movie::RandomMovie::All,
+                    k if k.starts_with("mandel") => rwf_core::movie::RandomMovie::RotatingMandelbrots,
+                    k if k.starts_with("bubble") => rwf_core::movie::RandomMovie::TransformingBubbles,
+                    k if k.starts_with("duck") => rwf_core::movie::RandomMovie::TransformingDuckies,
+                    k => {
+                        eprintln!("unknown random movie generator `{k}` (all, mandelbrots, bubbles, duckies)");
+                        std::process::exit(2);
+                    }
+                });
+            }
             a => input = Some(PathBuf::from(a)),
         }
         i += 1;
     }
-    let (Some(input), Some(output)) = (input, output) else {
-        eprintln!("usage: rwf-cli movie <file.jwfmovie> -o out.mp4|.mov|.webm|out-dir [--cpu]");
+    let Some(output) = output.filter(|_| input.is_some() || random.is_some()) else {
+        eprintln!("{USAGE}");
         std::process::exit(2);
     };
-    let movie = rwf_core::movie::read_movie_file(&input).unwrap_or_else(|e| {
-        eprintln!("failed to read {}: {e}", input.display());
-        std::process::exit(1);
-    });
-    let format = rwf_core::video::VideoFormat::from_path(&output);
-    let gpu = if cpu { None } else { rwf_gpu::GpuContext::new_headless().map_err(|e| eprintln!("no GPU ({e}), rendering on the CPU")).ok() };
+    let movie = match (random, &input) {
+        (Some(kind), _) => kind.generate(&mut rwf_core::rng::Rng::from_entropy()),
+        (None, Some(input)) => rwf_core::movie::read_movie_file(input).unwrap_or_else(|e| {
+            eprintln!("failed to read {}: {e}", input.display());
+            std::process::exit(1);
+        }),
+        (None, None) => unreachable!("checked above"),
+    };
+    let ext = output.extension().and_then(|e| e.to_str()).map(str::to_lowercase).unwrap_or_default();
+    if ext == "jwfmovie" {
+        if let Err(e) = rwf_core::movie::write_movie_file(&movie, &output) {
+            eprintln!("cannot write {}: {e}", output.display());
+            std::process::exit(1);
+        }
+        eprintln!("{} ({})", output.display(), movie.name);
+        return;
+    }
     let started = std::time::Instant::now();
     let cancel = std::sync::atomic::AtomicBool::new(false);
-    let r = rwf_gpu::movie::render_movie(&movie, &output, format, gpu, &cancel, |i, total, _| {
-        eprint!("\rframe {}/{total}  {:.0} s", i + 1, started.elapsed().as_secs_f64());
-    });
-    eprintln!();
+    let r = if ext == "flame" {
+        rwf_core::movie::write_flame_sequence(&output, movie.frame_count(), &cancel, |i| movie.frame_flame(i as f64), |i, total| eprint!("\rflame {}/{total}", i + 1))
+            .map(|n| eprintln!("\n{n} flame files next to {}", output.display()))
+    } else {
+        let format = rwf_core::video::VideoFormat::from_path(&output);
+        let gpu = if cpu { None } else { rwf_gpu::GpuContext::new_headless().map_err(|e| eprintln!("no GPU ({e}), rendering on the CPU")).ok() };
+        let r = rwf_gpu::movie::render_movie(&movie, &output, format, gpu, &cancel, |i, total, _| {
+            eprint!("\rframe {}/{total}  {:.0} s", i + 1, started.elapsed().as_secs_f64());
+        });
+        eprintln!();
+        r.map(|_| eprintln!("{}", output.display()))
+    };
     if let Err(e) = r {
         eprintln!("movie failed: {e}");
         std::process::exit(1);
     }
-    eprintln!("{}", output.display());
 }
 
 /// `rwf-cli dance <file.rwfdance> -o out.mp4|.mov|.webm|out-dir [--cpu]`: renders the recorded
