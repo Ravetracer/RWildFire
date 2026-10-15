@@ -176,16 +176,9 @@ const BUNDLED: &[(&str, &str, &str)] = &[
     ("Carr", "carr.ugr", include_str!("../../../assets/gradients/carr.ugr")),
 ];
 
-/// Folder for user gradients (`~/.config/rwildfire/gradients`).
+/// Folder for user gradients (`<config folder>/gradients`).
 pub fn user_dir() -> Option<PathBuf> {
-    let base = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from).or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
-    let dir = base.join("rwildfire");
-    // Settings of the earlier "jwildfire-rs" builds move over once.
-    let legacy = base.join("jwildfire-rs");
-    if !dir.exists() && legacy.is_dir() {
-        let _ = std::fs::rename(&legacy, &dir);
-    }
-    Some(dir.join("gradients"))
+    Some(crate::prefs::config_dir()?.join("gradients"))
 }
 
 const USER_FILE: &str = "my-gradients.ugr";

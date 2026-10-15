@@ -74,6 +74,8 @@ pub struct RwfApp {
     randomizing: Option<std::sync::mpsc::Receiver<Flame>>,
     toast: Option<(String, Instant)>,
     last_title: String,
+    prefs: crate::prefs::Prefs,
+    prefs_window: crate::prefs::PrefsWindow,
 }
 
 impl RwfApp {
@@ -81,7 +83,8 @@ impl RwfApp {
         crate::icons::install(&cc.egui_ctx);
         theme::apply(&cc.egui_ctx);
         let mut rng = Rng::from_entropy();
-        let flame = generate(Generator::Classic, &mut rng);
+        let prefs = crate::prefs::Prefs::load();
+        let flame = prefs.adopt(generate(Generator::Classic, &mut rng));
         let mut app = Self {
             doc: Document::new(flame),
             preview: Preview::new(cc.wgpu_render_state.as_ref()),
@@ -107,6 +110,8 @@ impl RwfApp {
             randomizing: None,
             toast: None,
             last_title: String::new(),
+            prefs,
+            prefs_window: Default::default(),
         };
         if let Some(p) = initial {
             app.open_path(&p);
@@ -132,7 +137,7 @@ impl RwfApp {
         match rwf_core::io::read_flames_from_file(path) {
             Ok(flames) if !flames.is_empty() => {
                 let n = flames.len();
-                self.doc.load(flames[0].clone(), Some(path.to_path_buf()));
+                self.doc.load(self.prefs.adopt(flames[0].clone()), Some(path.to_path_buf()));
                 self.doc.library = flames;
                 if n > 1 {
                     self.notify(format!("{n} flames in file — browse them in Explore › File"));
@@ -165,7 +170,7 @@ impl RwfApp {
                 xf.coefs.scale(0.5);
                 f.first_layer_mut().xforms.push(xf);
                 f.pixels_per_unit = 200.0;
-                self.doc.load(f, None);
+                self.doc.load(self.prefs.adopt(f), None);
             }
             Action::Open => {
                 if let Some(p) = rfd::FileDialog::new().add_filter("Flame", &["flame", "xml"]).pick_file() {
@@ -184,6 +189,7 @@ impl RwfApp {
             Action::Export => {
                 self.export.open_for(&self.doc.flame, self.preview.gpu_available());
             }
+            Action::Preferences => self.prefs_window.open = true,
             Action::Undo => self.doc.undo(),
             Action::Redo => self.doc.redo(),
             Action::Randomize => {
@@ -286,7 +292,7 @@ impl eframe::App for RwfApp {
             match rx.try_recv() {
                 Ok(f) => {
                     self.randomizing = None;
-                    self.doc.replace(f);
+                    self.doc.replace(self.prefs.adopt(f));
                     self.doc.path = None;
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => ctx.request_repaint_after(std::time::Duration::from_millis(50)),
@@ -335,7 +341,7 @@ impl eframe::App for RwfApp {
             match self.render_tab {
                 RenderTab::Interactive => {
                     if let Some(f) = self.render.show(ui, frame, &self.doc.flame, self.preview.gpu_context()) {
-                        self.doc.replace(f);
+                        self.doc.replace(self.prefs.adopt(f));
                         self.render.open = false;
                         self.notify("Flame loaded into the editor");
                     }
@@ -348,14 +354,14 @@ impl eframe::App for RwfApp {
                 RenderTab::Mesh => self.mesh.show(ui, &self.doc),
                 RenderTab::Dance => {
                     if let Some(f) = self.dance.show(ui, frame, &self.doc.flame, self.preview.gpu_context(), (self.generator, self.explorer.extras)) {
-                        self.doc.replace(f);
+                        self.doc.replace(self.prefs.adopt(f));
                         self.render.open = false;
                         self.notify("Flame loaded into the editor");
                     }
                 }
                 RenderTab::Movie => {
                     if let Some(f) = self.movie.show(ui, &self.doc, self.preview.gpu_context(), (self.generator, self.explorer.extras)) {
-                        self.doc.replace(f);
+                        self.doc.replace(self.prefs.adopt(f));
                         self.render.open = false;
                         self.notify("Flame loaded into the editor");
                     }
@@ -367,7 +373,7 @@ impl eframe::App for RwfApp {
         if self.explorer_open && !self.render.open {
             egui::Panel::bottom("explorer").resizable(false).frame(egui::Frame::new().fill(theme::PANEL).inner_margin(egui::Margin::symmetric(12, 8))).show(ui, |ui| {
                 if let Some(f) = self.explorer.show(ui, &self.doc.flame, &self.doc.library) {
-                    self.doc.replace(f);
+                    self.doc.replace(self.prefs.adopt(f));
                 }
                 if std::mem::take(&mut self.explorer.open_mutagen) {
                     self.mutagen.open_with(&self.doc.flame);
@@ -412,12 +418,16 @@ impl eframe::App for RwfApp {
             self.timeline.playing = false;
         }
         if let Some(f) = self.mutagen.show(&ctx, &self.doc.flame) {
-            self.doc.replace(f);
+            self.doc.replace(self.prefs.adopt(f));
             self.notify("Flame loaded into the editor");
         }
         let current = self.doc.layer().gradient.clone();
         if let Some(g) = self.inspector.library.show_window(&ctx, &current) {
             self.doc.layer_mut().gradient = g;
+        }
+
+        if self.prefs_window.show(&ctx, &mut self.prefs) {
+            self.prefs.apply(&mut self.doc.flame);
         }
 
         if let Some(a) = action {

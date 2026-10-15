@@ -34,6 +34,7 @@ mod icons;
 mod mesh_view;
 mod movie_view;
 mod mutagen;
+mod prefs;
 mod preview;
 mod quilt_view;
 mod render_view;

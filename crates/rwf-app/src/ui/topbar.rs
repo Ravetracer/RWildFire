@@ -34,6 +34,7 @@ pub enum Action {
     Export,
     Undo,
     Redo,
+    Preferences,
     Randomize,
     ToggleExplorer,
     ToggleTimeline,
@@ -89,6 +90,10 @@ pub fn show(ui: &mut Ui, info: &TopBarInfo, generator: &mut Generator, extras: &
             }
             if ui.add_enabled(info.can_redo, egui::Button::new("Redo").shortcut_text("Ctrl+Shift+Z")).clicked() {
                 action = Some(Action::Redo);
+            }
+            ui.separator();
+            if ui.button("Preferences…").on_hover_text("Settings that stay between sessions, e.g. always denoise").clicked() {
+                action = Some(Action::Preferences);
             }
         });
 
