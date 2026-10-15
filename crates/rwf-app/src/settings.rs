@@ -42,10 +42,11 @@ pub enum Folder {
     Sound,
     Movies,
     Meshes,
+    Scripts,
 }
 
 impl Folder {
-    pub const ALL: [Folder; 6] = [Folder::Flames, Folder::Images, Folder::Gradients, Folder::Sound, Folder::Movies, Folder::Meshes];
+    pub const ALL: [Folder; 7] = [Folder::Flames, Folder::Images, Folder::Gradients, Folder::Sound, Folder::Movies, Folder::Meshes, Folder::Scripts];
 
     pub fn key(self) -> &'static str {
         match self {
@@ -55,6 +56,7 @@ impl Folder {
             Folder::Sound => "folder_sound",
             Folder::Movies => "folder_movies",
             Folder::Meshes => "folder_meshes",
+            Folder::Scripts => "folder_scripts",
         }
     }
 
@@ -66,6 +68,7 @@ impl Folder {
             Folder::Sound => "Music",
             Folder::Movies => "Movies, dances",
             Folder::Meshes => "Meshes",
+            Folder::Scripts => "Scripts",
         }
     }
 
@@ -77,13 +80,14 @@ impl Folder {
             Folder::Sound => "Music and audio files (dances, audio envelopes)",
             Folder::Movies => "Movie maker (.jwfmovie) and dance (.rwfdance) projects",
             Folder::Meshes => "Exported meshes (OBJ, PLY)",
+            Folder::Scripts => "Your Lua scripts, listed in the Scripts window (empty: the scripts folder next to the preferences file)",
         }
     }
 }
 
 /// Default folders (empty: the system's choice).
 #[derive(Clone, Debug, PartialEq, Default)]
-pub struct Folders(pub [String; 6]);
+pub struct Folders(pub [String; 7]);
 
 impl Folders {
     pub fn get(&self, f: Folder) -> &str {
@@ -223,7 +227,7 @@ struct Globals {
     free_cores: usize,
 }
 
-static GLOBALS: RwLock<Globals> = RwLock::new(Globals { folders: Folders([const { String::new() }; 6]), free_cores: 0 });
+static GLOBALS: RwLock<Globals> = RwLock::new(Globals { folders: Folders([const { String::new() }; 7]), free_cores: 0 });
 
 /// Makes the folders and the thread setting visible to all dialogs and renderers.
 pub fn set_globals(folders: &Folders, free_cores: usize) {
@@ -235,6 +239,11 @@ pub fn set_globals(folders: &Folders, free_cores: usize) {
 }
 
 /// A file dialog that starts in the default folder of `kind` (if set and present).
+/// The folder chosen for `kind` (empty: none).
+pub fn folder(kind: Folder) -> String {
+    GLOBALS.read().ok().map(|g| g.folders.get(kind).trim().to_string()).unwrap_or_default()
+}
+
 pub fn dialog(kind: Folder) -> rfd::FileDialog {
     let dir = GLOBALS.read().ok().map(|g| g.folders.get(kind).trim().to_string()).unwrap_or_default();
     let d = rfd::FileDialog::new();

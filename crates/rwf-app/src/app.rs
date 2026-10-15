@@ -79,6 +79,7 @@ pub struct RwfApp {
     prefs_window: crate::prefs::PrefsWindow,
     help: crate::help::HelpWindow,
     image_denoiser: crate::image_denoise::ImageDenoiser,
+    scripts: crate::script_view::ScriptWindow,
     /// "Paste flame" was chosen: the next paste event is read as a flame.
     paste_requested: Option<Instant>,
 }
@@ -120,6 +121,7 @@ impl RwfApp {
             prefs_window: Default::default(),
             help: Default::default(),
             image_denoiser: Default::default(),
+            scripts: Default::default(),
             paste_requested: None,
         };
         app.transforms.favourites = app.prefs.favourites.clone();
@@ -263,6 +265,7 @@ impl RwfApp {
             Action::VariationList => self.help.open_at(crate::help::Tab::Variations),
             Action::About => self.help.open_at(crate::help::Tab::About),
             Action::DenoiseImage => self.image_denoiser.open = true,
+            Action::Scripts => self.scripts.open(),
             Action::Undo => self.doc.undo(),
             Action::Redo => self.doc.redo(),
             Action::Randomize => {
@@ -602,6 +605,22 @@ impl eframe::App for RwfApp {
 
         self.help.show(&ctx);
         self.image_denoiser.show(&ctx);
+        if let Some(out) = self.scripts.show(&ctx, &self.doc.flame) {
+            if let Some(f) = out.flame {
+                self.doc.replace(f);
+            }
+            if !out.flames.is_empty() {
+                let n = out.flames.len();
+                self.doc.library = out.flames;
+                self.explorer.mode = crate::explorer::Mode::File;
+                self.explorer_open = true;
+                self.explorer.refresh(&self.doc.flame, &self.doc.library);
+                self.notify(format!("The script created {n} flame(s) — browse them in Explore › File"));
+            }
+        }
+        if std::mem::take(&mut self.scripts.show_reference) {
+            self.help.open_at(crate::help::Tab::Scripting);
+        }
         self.export.show(&ctx, &self.doc.flame, self.preview.gpu_context(), &self.prefs.render_profiles);
         if let Some((res, qual)) = self.export.chosen_profiles.take()
             && (self.doc.flame.resolution_profile != res || self.doc.flame.quality_profile != qual)

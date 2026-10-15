@@ -36,6 +36,15 @@ Third-party data
 ----------------
 The gradient files in assets/gradients/ and the example flames in
 testdata/ are taken from the JWildfire distribution.
+The example script crates/rwf-script/scripts/Bubble wraps.lua is a Lua
+port of the JWildfire example script "Bwraps and bubbles" (Geoffrey
+Barnes, MickHogan, Bart Doetsch, Don Town; LGPL 2.1 or later).
+
+Lua
+---
+Scripting embeds Lua 5.4 (built from source by the mlua crate):
+Copyright (C) 1994-2025 Lua.org, PUC-Rio. Licensed under the MIT
+license, https://www.lua.org/license.html
 
 Taprats (optional, GPL)
 -----------------------

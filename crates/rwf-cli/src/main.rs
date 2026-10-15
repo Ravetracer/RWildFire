@@ -43,7 +43,7 @@ struct Args {
 
 fn usage() -> ! {
     eprintln!(
-        "usage: rwf-cli render <file.flame> [-o out.png|.jpg|.hdr|.exr] [-w width] [-h height] [-q quality] [-i flame-index] [--gpu] [-t threads] [--zbuffer] [--jpeg-quality 1-100] [--denoiser off|oidn|optix] [--blend 0..1]\n       rwf-cli batch [options] <files or folders...>   (rwf-cli batch for the options)\n       rwf-cli quilt <file.flame> -o out.png -w width [-h height] [-q quality] [--tiles COLSxROWS]\n       rwf-cli mesh <file.flame | --from-slices DIR> [-o out.obj|.ply|.sc] [--points out.ply|.obj] [--slices DIR] [--resolution N] [--quality Q] [--threshold T] [--dilate 3|5] [--blur B] [--smooth N]\n       rwf-cli movie <file.jwfmovie | --random [all|mandelbrots|bubbles|duckies]> -o out.mp4|.mov|.webm|.anb|out-dir|name.flame|name.jwfmovie [--cpu]\n       rwf-cli dance <file.rwfdance> -o out.mp4|.mov|.webm|out-dir|name.flame [--cpu]\n       rwf-cli denoise <image> [-o out.png|.jpg] [--denoiser oidn|optix] [--blend 0..1]\n       rwf-cli random <out-dir> [count] [generator filter] [--symmetry NAME] [--weighting NAME] [--gradient NAME] [-w width] [-h height] [-q quality] [--gpu]"
+        "usage: rwf-cli render <file.flame> [-o out.png|.jpg|.hdr|.exr] [-w width] [-h height] [-q quality] [-i flame-index] [--gpu] [-t threads] [--zbuffer] [--jpeg-quality 1-100] [--denoiser off|oidn|optix] [--blend 0..1]\n       rwf-cli batch [options] <files or folders...>   (rwf-cli batch for the options)\n       rwf-cli quilt <file.flame> -o out.png -w width [-h height] [-q quality] [--tiles COLSxROWS]\n       rwf-cli mesh <file.flame | --from-slices DIR> [-o out.obj|.ply|.sc] [--points out.ply|.obj] [--slices DIR] [--resolution N] [--quality Q] [--threshold T] [--dilate 3|5] [--blur B] [--smooth N]\n       rwf-cli movie <file.jwfmovie | --random [all|mandelbrots|bubbles|duckies]> -o out.mp4|.mov|.webm|.anb|out-dir|name.flame|name.jwfmovie [--cpu]\n       rwf-cli dance <file.rwfdance> -o out.mp4|.mov|.webm|out-dir|name.flame [--cpu]\n       rwf-cli denoise <image> [-o out.png|.jpg] [--denoiser oidn|optix] [--blend 0..1]\n       rwf-cli random <out-dir> [count] [generator filter] [--symmetry NAME] [--weighting NAME] [--gradient NAME] [-w width] [-h height] [-q quality] [--gpu]\n       rwf-cli script <file.lua> [-i in.flame] [-o out.flame] [--flames out.flame] [--param name=value]... | --info <file.lua> | --api | --examples DIR"
     );
     std::process::exit(2);
 }
@@ -692,7 +692,114 @@ fn denoise_cmd() {
     }
 }
 
+/// `rwf-cli script <file.lua> [-i in.flame] [-o out.flame] [--flames out.flame] [--param name=value]…`:
+/// runs a Lua script on a flame. `--info` lists a script's parameters, `--api` prints the
+/// scripting reference, `--examples DIR` writes the bundled example scripts.
+fn script_cmd() {
+    let args: Vec<String> = std::env::args().skip(2).collect();
+    let fail = |msg: String| -> ! {
+        eprintln!("{msg}");
+        std::process::exit(1);
+    };
+    let (mut script, mut input, mut output, mut flames_out, mut given, mut info) = (None, None, None, None, Vec::new(), false);
+    let mut i = 0;
+    while i < args.len() {
+        let next = |i: &mut usize| {
+            *i += 1;
+            args.get(*i).cloned().unwrap_or_else(|| usage())
+        };
+        match args[i].as_str() {
+            "--api" => {
+                print!("{}", rwf_script::API_REFERENCE);
+                return;
+            }
+            "--examples" => {
+                let dir = PathBuf::from(next(&mut i));
+                if let Err(e) = std::fs::create_dir_all(&dir) {
+                    fail(format!("cannot create {}: {e}", dir.display()));
+                }
+                for (name, src) in rwf_script::EXAMPLES {
+                    let p = dir.join(name);
+                    if p.exists() {
+                        eprintln!("{} exists, skipped", p.display());
+                    } else if let Err(e) = std::fs::write(&p, src) {
+                        fail(format!("cannot write {}: {e}", p.display()));
+                    } else {
+                        eprintln!("{}", p.display());
+                    }
+                }
+                return;
+            }
+            "--info" => info = true,
+            "-i" => input = Some(PathBuf::from(next(&mut i))),
+            "-o" => output = Some(PathBuf::from(next(&mut i))),
+            "--flames" => flames_out = Some(PathBuf::from(next(&mut i))),
+            "--param" => {
+                let v = next(&mut i);
+                let Some((k, val)) = v.split_once('=') else { fail(format!("--param expects name=value, got {v:?}")) };
+                given.push((k.trim().to_string(), val.trim().to_string()));
+            }
+            a => script = Some(PathBuf::from(a)),
+        }
+        i += 1;
+    }
+    let Some(script) = script else { usage() };
+    let source = std::fs::read_to_string(&script).unwrap_or_else(|e| fail(format!("cannot read {}: {e}", script.display())));
+    let header = rwf_script::Header::parse(&source);
+    for w in &header.warnings {
+        eprintln!("warning: {}: {w}", script.display());
+    }
+    if info {
+        println!("{}", if header.title.is_empty() { "(no title)" } else { &header.title });
+        if !header.description.is_empty() {
+            println!("{}", header.description);
+        }
+        for p in &header.params {
+            let range = match &p.kind {
+                rwf_script::ParamKind::Number { min, max } => format!("number {min}..{max}"),
+                rwf_script::ParamKind::Integer { min, max } => format!("integer {min}..{max}"),
+                rwf_script::ParamKind::Bool => "bool".to_string(),
+                rwf_script::ParamKind::Choice(o) => format!("choice {}", o.join("|")),
+            };
+            println!("  {} = {}  ({range})  {}", p.name, p.default, p.help);
+        }
+        return;
+    }
+    let params = header.values(&given).unwrap_or_else(|e| fail(e));
+    let flame = match &input {
+        Some(p) => read_flames_from_file(p).ok().and_then(|f| f.into_iter().next()).unwrap_or_else(|| fail(format!("no flame in {}", p.display()))),
+        None => rwf_core::model::Flame::default(),
+    };
+    let name = script.file_name().map_or("script".into(), |n| n.to_string_lossy().to_string());
+    let mut run = rwf_script::RunInput::new(flame);
+    run.params = params;
+    run.base_dir = script.parent().map(|p| p.to_path_buf());
+    run.on_print = Some(Box::new(|line: &str| println!("{line}")));
+    let t = Instant::now();
+    let out = rwf_script::run(&source, &name, run).unwrap_or_else(|e| fail(format!("error: {e}")));
+    eprintln!("finished in {:.2}s", t.elapsed().as_secs_f64());
+    match output {
+        Some(p) => match rwf_core::io::write_flame_to_file(&out.flame, &p) {
+            Ok(()) => eprintln!("flame: {}{}", p.display(), if out.changed { "" } else { " (unchanged)" }),
+            Err(e) => fail(format!("cannot write {}: {e}", p.display())),
+        },
+        None if out.changed => eprintln!("the script changed the flame; pass -o out.flame to save it"),
+        None => {}
+    }
+    if !out.flames.is_empty() {
+        let p = flames_out.unwrap_or_else(|| PathBuf::from(format!("{}-flames.flame", script.file_stem().map_or("script".into(), |s| s.to_string_lossy()))));
+        if let Err(e) = std::fs::write(&p, rwf_core::io::write_flames(&out.flames)) {
+            fail(format!("cannot write {}: {e}", p.display()));
+        }
+        eprintln!("{} created flame(s): {}", out.flames.len(), p.display());
+    }
+}
+
 fn main() {
+    if std::env::args().nth(1).as_deref() == Some("script") {
+        script_cmd();
+        return;
+    }
     if std::env::args().nth(1).as_deref() == Some("denoise") {
         denoise_cmd();
         return;

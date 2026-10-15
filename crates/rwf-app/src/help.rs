@@ -32,16 +32,18 @@ pub enum Tab {
     Faq,
     Coloring,
     Variations,
+    Scripting,
     About,
 }
 
 impl Tab {
-    const ALL: [(Tab, &str); 6] = [
+    const ALL: [(Tab, &str); 7] = [
         (Tab::Start, "Getting started"),
         (Tab::Shortcuts, "Shortcuts"),
         (Tab::Faq, "FAQ"),
         (Tab::Coloring, "Coloring types"),
         (Tab::Variations, "Variations"),
+        (Tab::Scripting, "Scripting"),
         (Tab::About, "About"),
     ];
 }
@@ -76,6 +78,62 @@ fn page(ui: &mut Ui, text: &str) {
     }
 }
 
+/// Text with `code` spans: monospace, accent colored.
+fn rich_line(ui: &mut Ui, text: &str) {
+    let mut job = egui::text::LayoutJob::default();
+    let body = egui::TextFormat { font_id: egui::TextStyle::Body.resolve(ui.style()), color: theme::TEXT, ..Default::default() };
+    let code = egui::TextFormat { font_id: egui::TextStyle::Monospace.resolve(ui.style()), color: theme::ACCENT, ..Default::default() };
+    for (i, part) in text.split('`').enumerate() {
+        job.append(part, 0.0, if i % 2 == 1 { code.clone() } else { body.clone() });
+    }
+    ui.add(egui::Label::new(job).wrap());
+}
+
+/// The Markdown subset of the scripting reference: `#`/`##` headings, `- ` bullets (indented
+/// continuation lines), indented code blocks, paragraphs with `code` spans.
+fn markdown(ui: &mut Ui, text: &str) {
+    for block in text.trim().split("\n\n") {
+        let lines: Vec<&str> = block.lines().filter(|l| !l.trim().is_empty()).collect();
+        let Some(first) = lines.first() else { continue };
+        if let Some(h) = first.strip_prefix("# ") {
+            ui.label(RichText::new(h).strong().size(18.0).color(theme::TEXT));
+        } else if let Some(h) = first.strip_prefix("## ") {
+            ui.add_space(6.0);
+            ui.label(RichText::new(h).strong().size(15.0).color(theme::TEXT));
+            if lines.len() > 1 {
+                rich_line(ui, &lines[1..].join(" "));
+            }
+        } else if lines.iter().all(|l| l.starts_with("    ")) {
+            let code: Vec<&str> = lines.iter().map(|l| &l[4..]).collect();
+            egui::Frame::new().fill(theme::SURFACE).corner_radius(4).inner_margin(8).show(ui, |ui| {
+                ui.add(egui::Label::new(RichText::new(code.join("\n")).monospace().color(theme::TEXT)).wrap());
+            });
+        } else if first.starts_with("- ") {
+            let mut items: Vec<String> = Vec::new();
+            for l in &lines {
+                match l.strip_prefix("- ") {
+                    Some(item) => items.push(item.to_string()),
+                    None => {
+                        if let Some(last) = items.last_mut() {
+                            last.push(' ');
+                            last.push_str(l.trim());
+                        }
+                    }
+                }
+            }
+            for item in items {
+                ui.horizontal_top(|ui| {
+                    ui.label(RichText::new("•").color(theme::ACCENT));
+                    rich_line(ui, &item);
+                });
+            }
+        } else {
+            rich_line(ui, &lines.join(" "));
+        }
+        ui.add_space(4.0);
+    }
+}
+
 const START: &str = "
 ## The editor
 
@@ -86,6 +144,7 @@ The window shows one flame: the transforms on the left, the preview in the middl
 - Random flame (Space) makes a flame with the generator chosen next to it; the sliders button holds the symmetry, weighting field, gradient and variation profile of random flames.
 - Explore shows strips of random flames, quick mutations of the editor flame or the flames of an opened file; click one to take it. MutaGen opens a grid of mutations to steer a flame step by step.
 - Browse shows the flames of a folder as thumbnails, by date.
+- File › Scripts runs Lua scripts that build or change flames; Help › Scripting lists what scripts can do.
 
 ## Animating and rendering
 
@@ -131,6 +190,7 @@ const FAQ: &[(&str, &str)] = &[
     ("What does the denoiser do?", "It removes the remaining grain of a render with Intel's Open Image Denoise (on the CPU or an NVIDIA GPU). Set it per flame (Render tab of the inspector) or for all flames in the Preferences; Blend mixes some of the original grain back in."),
     ("My text variation shows no text or the wrong font.", "Fonts installed after RWildFire started are found after a restart. The font name must match the name the system knows; unknown names fall back to a sans-serif font."),
     ("Where are my settings?", "In the preferences file (Linux: ~/.config/rwildfire/preferences.txt, Windows: %APPDATA%\\rwildfire). The Preferences window saves every change at once."),
+    ("Can RWildFire run JWildfire scripts?", "No: JWildfire scripts are Java code. RWildFire scripts are Lua (File › Scripts); the examples include ports of JWildfire scripts, and most JWildfire scripts translate line by line (getXForms().add → flame:add_xform, setCoeff20 → c20, getModifiedWeights → set_chaos)."),
     ("How do I make a 3D mesh?", "Use a 3D flame (e.g. from a 3D random generator), open Render › Mesh, fit the box, sample the volume and adjust threshold, pre-filter, blur and smoothing; then save it as OBJ, PLY or a Sunflow scene, or export a point cloud or slice images."),
 ];
 
@@ -204,6 +264,7 @@ impl HelpWindow {
                 }
                 Tab::Coloring => page(ui, COLORING),
                 Tab::Variations => self.variations(ui),
+                Tab::Scripting => markdown(ui, rwf_script::API_REFERENCE),
                 Tab::About => about(ui),
             });
         });

@@ -42,6 +42,7 @@ mod profiles;
 mod preview;
 mod quilt_view;
 mod render_view;
+mod script_view;
 mod settings;
 mod theme;
 mod timeline;

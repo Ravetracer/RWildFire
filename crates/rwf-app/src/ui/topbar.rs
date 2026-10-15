@@ -47,6 +47,7 @@ pub enum Action {
     VariationList,
     About,
     DenoiseImage,
+    Scripts,
 }
 
 pub struct TopBarInfo<'a> {
@@ -96,6 +97,9 @@ pub fn show(ui: &mut Ui, info: &TopBarInfo, generator: &mut Generator, extras: &
             }
             if ui.button("Denoise image…").on_hover_text("Runs the AI denoiser on any image file").clicked() {
                 action = Some(Action::DenoiseImage);
+            }
+            if ui.button("Scripts…").on_hover_text("Lua scripts that build or change flames: examples, your own scripts and an editor").clicked() {
+                action = Some(Action::Scripts);
             }
         });
         ui.menu_button("Edit", |ui| {
