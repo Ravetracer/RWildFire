@@ -83,6 +83,8 @@ python3 tools/build_manual.py                 # only the manual PDF
   OIDN DLLs next to the exe.
 - Both zips contain the manual PDF, `README.txt` (written by `package.py`), LICENSE, COPYING,
   NOTICE and the OIDN license.
+- Pushing changes to `.github/workflows/` over HTTPS is rejected (the gh token lacks the
+  `workflow` scope): push those via `git@github.com:Ravetracer/RWildFire.git`.
 - Test the Windows build with Wine in a **separate prefix** (`WINEPREFIX=<scratch dir>`): the
   owner's default `WINEPREFIX` belongs to another application.
 - Keep the manual in step with features: update the chapter and screenshots, rebuild the PDF.
@@ -148,5 +150,5 @@ java -cp "<out>:lib/*:resources" org.jwildfire.cli.FlameRenderer -f x.flame -w W
 
 - App preferences: `~/.config/rwildfire/preferences.txt`; user gradients and scripts below
   `~/.config/rwildfire/`.
-- The repository folder is still named `jwildfire-rs`; the product name is **RWildFire** (keep
-  "JWildfire" only for references to the Java original).
+- The product name is **RWildFire** (keep "JWildfire" only for references to the Java
+  original). The repository folder was called `jwildfire-rs` until version 1.1.0.
