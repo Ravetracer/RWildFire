@@ -63,6 +63,9 @@ pub struct Prefs {
     pub grid_size: f64,
     /// Folder of the flame browser (empty: none chosen yet).
     pub browser_dir: String,
+    /// Flames per random batch (Explore strip) and where a new batch goes.
+    pub batch_size: usize,
+    pub batch_refresh: crate::explorer::RefreshMode,
 }
 
 /// A set of variations the random generators may use (JWildfire's variation profiles, by
@@ -105,6 +108,8 @@ impl Default for Prefs {
             double_click: crate::canvas::DoubleClick::Nothing,
             grid_size: 0.5,
             browser_dir: String::new(),
+            batch_size: 24,
+            batch_refresh: crate::explorer::RefreshMode::Clear,
         }
     }
 }
@@ -126,6 +131,8 @@ impl Prefs {
                 "variation_profile" => p.profiles.extend(VariationProfile::from_line(v)),
                 "active_profile" => p.active_profile = v.to_string(),
                 "double_click" => p.double_click = crate::canvas::DoubleClick::parse(v),
+                "batch_size" => p.batch_size = v.parse::<usize>().map(|n| n.clamp(1, 64)).unwrap_or(p.batch_size),
+                "batch_refresh" => p.batch_refresh = crate::explorer::RefreshMode::parse(v),
                 "browser_dir" => p.browser_dir = v.to_string(),
                 "grid_size" => p.grid_size = v.parse::<f64>().ok().filter(|g| *g > 0.0).unwrap_or(p.grid_size),
                 _ => {}
@@ -152,6 +159,7 @@ impl Prefs {
         }
         text += &format!("active_profile = {}\n", self.active_profile);
         text += &format!("double_click = {}\ngrid_size = {}\nbrowser_dir = {}\n", self.double_click.as_str(), self.grid_size, self.browser_dir);
+        text += &format!("batch_size = {}\nbatch_refresh = {}\n", self.batch_size, self.batch_refresh.as_str());
         std::fs::write(&path, text).map_err(|e| format!("{}: {e}", path.display()))?;
         Ok(path)
     }
@@ -358,6 +366,20 @@ impl PrefsWindow {
                 ui.end_row();
             });
             theme::section_label(ui, "Random flames");
+            widgets::grid(ui, "prefs-batch", |ui| {
+                widgets::label(ui, "Batch size");
+                ui.add(egui::DragValue::new(&mut prefs.batch_size).range(1..=64)).on_hover_text("Flames per \"New batch\" in Explore › Random");
+                ui.end_row();
+                widgets::label(ui, "New batches");
+                egui::ComboBox::from_id_salt("prefs-batch-refresh").selected_text(prefs.batch_refresh.label()).show_ui(ui, |ui| {
+                    for r in crate::explorer::RefreshMode::ALL {
+                        ui.selectable_value(&mut prefs.batch_refresh, r, r.label());
+                    }
+                })
+                .response
+                .on_hover_text("Where a new random batch goes in the Explore strip (JWildfire's random batch refresh type)");
+                ui.end_row();
+            });
             profiles_ui(ui, prefs, &mut self.profile_search);
             theme::section_label(ui, "Quick save");
             ui.horizontal(|ui| {

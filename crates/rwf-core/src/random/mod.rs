@@ -69,7 +69,7 @@ impl State<'_> {
 }
 
 /// Coverage a sample must reach and the number of attempts (`RandomBatchQuality`).
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Quality {
     pub min_coverage: f64,
     pub max_samples: usize,
@@ -77,7 +77,15 @@ pub struct Quality {
 
 impl Quality {
     pub const LOW: Quality = Quality { min_coverage: 0.32, max_samples: 8 };
+    pub const QUICK_MUTATIONS: Quality = Quality { min_coverage: 0.32, max_samples: 12 };
     pub const NORMAL: Quality = Quality { min_coverage: 0.42, max_samples: 16 };
+    pub const HIGH: Quality = Quality { min_coverage: 0.56, max_samples: 24 };
+    /// The levels offered for random batches, with their names.
+    pub const LEVELS: [(Quality, &'static str); 3] = [(Quality::LOW, "Low"), (Quality::NORMAL, "Normal"), (Quality::HIGH, "High")];
+
+    pub fn label(self) -> &'static str {
+        Self::LEVELS.iter().find(|(q, _)| *q == self).map_or("Custom", |(_, l)| l)
+    }
 }
 
 /// The solid rendering generators (base generators of several wrappers).
@@ -487,10 +495,44 @@ pub fn generate(generator: Generator, rng: &mut Rng) -> Flame {
 /// [`generate`] with the given random symmetry and weighting field generators (RWildFire's
 /// own generators ignore them).
 pub fn generate_with(generator: Generator, extras: Extras, rng: &mut Rng) -> Flame {
+    generate_quality(generator, extras, Quality::NORMAL, rng)
+}
+
+/// [`generate_with`] with the coverage a sample must reach and the number of attempts
+/// (random batches; RWildFire's own generators ignore it).
+pub fn generate_quality(generator: Generator, extras: Extras, quality: Quality, rng: &mut Rng) -> Flame {
     if generator.is_own() {
         return generate_own(generator, rng);
     }
-    sample(generator, rng, Quality::NORMAL, false, true, extras)
+    sample(generator, rng, quality, false, true, extras)
+}
+
+/// One quick mutation of `base` (`MutationSampler` and `CreateQuickMutationBatchThread`):
+/// attempts until a mutation covers enough of a quick preview, otherwise the one that came
+/// closest; keeps the size, quality and zoom of `base`.
+pub fn quick_mutation(base: &Flame, kind: mutations::MutationType, strength: f64, rng: &mut Rng) -> Flame {
+    let quality = Quality::QUICK_MUTATIONS;
+    let stem = base.name.rsplit_once(" - ").map_or(base.name.as_str(), |(a, _)| a);
+    let stem = if stem.is_empty() { "Mutation" } else { stem };
+    let mut best: Option<(f64, Flame)> = None;
+    for _ in 0..quality.max_samples {
+        let mut flame = base.clone();
+        mutations::mutate_flame(&mut flame, kind, strength, rng);
+        flame.name = format!("{stem} - {} - {}", kind.label(), rng.next_u64() % 1_000_000);
+        flame.width = base.width;
+        flame.height = base.height;
+        flame.sample_density = base.sample_density;
+        flame.spatial_oversampling = base.spatial_oversampling;
+        flame.pixels_per_unit = base.pixels_per_unit;
+        let c = coverage::coverage(&flame, false);
+        if c >= quality.min_coverage && c < 1.0 {
+            return flame;
+        }
+        if best.as_ref().is_none_or(|(b, _)| c > *b) {
+            best = Some((c, flame));
+        }
+    }
+    best.map(|(_, f)| f).expect("at least one attempt")
 }
 
 /// One sample of a generator (`RandomFlameGeneratorSampler.createSample`). `simple`: "(All)"
@@ -562,6 +604,19 @@ fn generate_own(generator: Generator, rng: &mut Rng) -> Flame {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn quick_mutation_keeps_size_and_zoom() {
+        let mut rng = Rng::new(5);
+        let mut base = generate(Generator::Classic, &mut rng);
+        base.name = "Base - 12".to_string();
+        base.width = 640;
+        base.height = 480;
+        base.pixels_per_unit = 123.0;
+        let m = quick_mutation(&base, mutations::MutationType::Affine, 0.5, &mut rng);
+        assert_eq!((m.width, m.height, m.pixels_per_unit), (640, 480, 123.0));
+        assert!(m.name.starts_with("Base - Affine - "), "{}", m.name);
+    }
 
     #[test]
     fn every_generator_builds_flames() {

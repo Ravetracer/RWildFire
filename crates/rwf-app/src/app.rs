@@ -275,7 +275,7 @@ impl RwfApp {
                 self.explorer_open = !self.explorer_open;
                 if self.explorer_open {
                     self.explorer.generator = self.generator;
-                    self.explorer.refresh(&self.doc.flame, &self.doc.library);
+                    self.explorer.ensure_filled(&self.doc.flame, &self.doc.library);
                 }
             }
         }
@@ -533,6 +533,8 @@ impl eframe::App for RwfApp {
         // ---- explorer strip ----
         if self.explorer_open && !self.workspace_open() {
             egui::Panel::bottom("explorer").resizable(false).frame(egui::Frame::new().fill(theme::PANEL).inner_margin(egui::Margin::symmetric(12, 8))).show(ui, |ui| {
+                self.explorer.batch_size = self.prefs.batch_size;
+                self.explorer.refresh_mode = self.prefs.batch_refresh;
                 if let Some(f) = self.explorer.show(ui, &self.doc.flame, &self.doc.library) {
                     self.doc.replace(self.prefs.adopt(f));
                 }
