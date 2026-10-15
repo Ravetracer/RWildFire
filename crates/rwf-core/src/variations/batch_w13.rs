@@ -4961,7 +4961,7 @@ fn sunvoroni_area(c: &[(f64, f64)]) -> f64 {
 }
 
 /// `csk.taprats.geometry.Triangulate.Process` (ear clipping): the triangle corners.
-fn sunvoroni_triangulate(c: &[(f64, f64)]) -> Vec<(f64, f64)> {
+pub(super) fn sunvoroni_triangulate(c: &[(f64, f64)]) -> Vec<(f64, f64)> {
     let mut result = Vec::new();
     let n = c.len();
     if n < 3 {

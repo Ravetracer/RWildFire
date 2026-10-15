@@ -14,3 +14,7 @@ png = "0.18.1"
 rfd = "0.17.2"
 wgpu = "30"
 cpal = "0.15"
+
+[features]
+# The GPL-licensed `taprats` variation (see rwf-core).
+taprats = ["rwf-core/taprats"]

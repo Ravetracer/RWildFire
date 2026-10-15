@@ -38,6 +38,9 @@ w16 = []
 w17 = []
 w18 = []
 w19 = []
+# The `taprats` variation, a port of Taprats (GPL-3.0-or-later): off by default, since a build
+# with it is covered by the GPL as a whole.
+taprats = ["w13"]
 w20 = []
 w21 = []
 w22 = []

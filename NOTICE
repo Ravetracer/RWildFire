@@ -37,6 +37,17 @@ Third-party data
 The gradient files in assets/gradients/ and the example flames in
 testdata/ are taken from the JWildfire distribution.
 
+Taprats (optional, GPL)
+-----------------------
+The `taprats` variation (crates/rwf-core/src/variations/taprats.rs and
+the tilings in assets/taprats/) is ported from Taprats, as included in
+JWildfire (package csk.taprats):
+Copyright (C) 2000 Craig S. Kaplan, 2010 Pierre Baillargeon
+Taprats is licensed under the GNU General Public License, version 3 or
+(at your option) any later version. The variation is only compiled with
+the cargo feature `taprats`, which is off by default; a build with it is
+covered by the GPL version 3 (COPYING) as a whole.
+
 Intel Open Image Denoise (optional)
 -----------------------------------
 RWildFire can use Intel Open Image Denoise (OIDN), which it loads at

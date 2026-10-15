@@ -47,6 +47,8 @@ mod basic;
 pub mod resource_vars;
 mod draw;
 mod tess;
+#[cfg(feature = "taprats")]
+mod taprats;
 mod dla3d;
 pub mod subflame;
 mod iflames;
@@ -486,6 +488,8 @@ fn registry() -> &'static Registry {
         let mut defs: Vec<&'static VarDef> = Vec::new();
         #[allow(unused_mut)]
         let mut lists: Vec<&'static [VarDef]> = vec![basic::DEFS, resource_vars::DEFS, wangtiles::DEFS, lsystem::DEFS, lsystem3d::DEFS, iflames::DEFS, plots::DEFS, subflame::DEFS, draw::DEFS, tess::DEFS, dla3d::DEFS, batch_a::DEFS, batch_b::DEFS, batch_c::DEFS, batch_d::DEFS];
+        #[cfg(feature = "taprats")]
+        lists.push(taprats::DEFS);
         #[cfg(feature = "w01")]
         lists.push(batch_w01::DEFS);
         #[cfg(feature = "w02")]
