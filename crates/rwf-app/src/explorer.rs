@@ -131,6 +131,8 @@ pub struct Explorer {
     pub open_mutagen: bool,
     /// The strips of the modes (random, mutations, file).
     strips: [Vec<Slot>; 3],
+    /// Slot to scroll a strip to on the next frame (the first flame of a new batch).
+    scroll_to: [Option<usize>; 3],
     /// The running batch of each strip; a batch stops when it no longer matches.
     batches: [Arc<AtomicU64>; 3],
     next_key: u64,
@@ -154,6 +156,7 @@ impl Default for Explorer {
             strength: 0.5,
             open_mutagen: false,
             strips: Default::default(),
+            scroll_to: Default::default(),
             batches: Default::default(),
             next_key: 1,
             tx,
@@ -186,18 +189,24 @@ impl Explorer {
         self.next_key += count as u64;
         let slots = keys.iter().map(|&key| Slot { key, thumb: None });
         let list = &mut self.strips[strip];
-        match refresh {
-            RefreshMode::Clear => *list = slots.collect(),
+        // Show the new flames: they start at the left, or at the old end when appended.
+        self.scroll_to[strip] = Some(match refresh {
+            RefreshMode::Clear => {
+                *list = slots.collect();
+                0
+            }
             RefreshMode::Insert => {
                 list.splice(0..0, slots);
                 list.truncate(MAX_SLOTS);
+                0
             }
             RefreshMode::Append => {
                 list.extend(slots);
                 let extra = list.len().saturating_sub(MAX_SLOTS);
                 list.drain(..extra);
+                list.len().saturating_sub(count)
             }
-        }
+        });
         let batch = self.batches[strip].load(Ordering::Relaxed);
         let (keys, next) = (Arc::new(keys), Arc::new(AtomicUsize::new(0)));
         let threads = (crate::settings::cpu_threads() / 2).max(1).clamp(1, count.max(1));
@@ -262,6 +271,7 @@ impl Explorer {
         self.next_key += 1;
         self.strips[0].insert(0, Slot { key, thumb: None });
         self.strips[0].truncate(MAX_SLOTS);
+        self.scroll_to[0] = Some(0);
         let (tx, source) = (self.tx.clone(), Source::Snapshot(Arc::new(flame.clone())));
         std::thread::spawn(move || {
             let flame = source.flame(0, &mut Rng::new(1));
@@ -363,6 +373,7 @@ impl Explorer {
             }
         });
         ui.add_space(4.0);
+        let jump = self.scroll_to[strip_index(self.mode)].take();
         let strip = &self.strips[strip_index(self.mode)];
         let size = vec2(THUMB_W as f32, THUMB_H as f32) * 0.85;
         if strip.is_empty() {
@@ -371,7 +382,13 @@ impl Explorer {
             ui.painter().text(rect.left_center() + vec2(8.0, 0.0), egui::Align2::LEFT_CENTER, text, egui::FontId::proportional(13.0), theme::TEXT_MUTED);
             return None;
         }
-        egui::ScrollArea::horizontal().show(ui, |ui| {
+        let mut area = egui::ScrollArea::horizontal().id_salt(("explore-strip", strip_index(self.mode)));
+        if let Some(i) = jump {
+            area = area.horizontal_scroll_offset(i as f32 * (size.x + ui.spacing().item_spacing.x));
+        }
+        // The mouse wheel scrolls the strip sideways (without Shift).
+        ui.style_mut().always_scroll_the_only_direction = true;
+        area.show(ui, |ui| {
             ui.horizontal(|ui| {
                 for (slot_index, slot) in strip.iter().enumerate() {
                     let (rect, resp) = ui.allocate_exact_size(size, Sense::click());

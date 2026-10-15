@@ -59,6 +59,7 @@ From left to right:
 | Export image… | <kbd>Ctrl</kbd>+<kbd>E</kbd> | Renders and saves an image or animation (chapter "Exporting"). |
 | Denoise image… | | Runs the AI denoiser on any PNG or JPEG file. |
 | Scripts… | | Opens the scripts window (chapter "Scripting"). |
+| Quit | <kbd>Ctrl</kbd>+<kbd>Q</kbd> | Closes RWildFire, like the window's close button. Unsaved changes are not asked for: save first. |
 
 ![File › Denoise image…](images/denoise-image.png){: .third}
 

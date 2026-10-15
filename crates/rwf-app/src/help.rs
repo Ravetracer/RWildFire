@@ -163,6 +163,7 @@ const SHORTCUTS: &[(&str, &str)] = &[
     ("Ctrl+S / Ctrl+Shift+S", "Save / save as"),
     ("Ctrl+Alt+S", "Quick save (no dialog)"),
     ("Ctrl+E", "Export an image or animation"),
+    ("Ctrl+Q", "Quit"),
     ("Ctrl+Z / Ctrl+Shift+Z, Ctrl+Y", "Undo / redo"),
     ("Ctrl+C / Ctrl+V", "Copy / paste the flame as text"),
     ("Space", "Random flame; play/pause while the timeline is open"),

@@ -284,6 +284,7 @@ impl RwfApp {
             Action::About => self.help.open_at(crate::help::Tab::About),
             Action::DenoiseImage => self.image_denoiser.open = true,
             Action::Scripts => self.scripts.open(),
+            Action::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
             Action::UserManual => match crate::help::open_user_manual() {
                 Ok(p) => self.notify(format!("Opening {}", p.display())),
                 Err(e) => self.notify(e),
@@ -382,6 +383,8 @@ impl RwfApp {
                 act = Some(Action::New);
             } else if i.consume_shortcut(&KeyboardShortcut::new(c, Key::E)) {
                 act = Some(Action::Export);
+            } else if i.consume_shortcut(&KeyboardShortcut::new(c, Key::Q)) {
+                act = Some(Action::Quit);
             } else if i.consume_key(Modifiers::NONE, Key::F1) {
                 act = Some(Action::Help);
             } else if !typing && i.consume_key(Modifiers::NONE, Key::Space) {

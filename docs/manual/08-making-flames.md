@@ -56,7 +56,8 @@ The sliders button next to the generator menu adds extras to every random flame:
 ## The Explore strip
 
 **Explore** in the top bar shows a strip below the canvas with batches of flames to choose
-from. Click a thumbnail to load the flame into the editor (one undo step). The strip has three
+from. Click a thumbnail to load the flame into the editor (one undo step). The mouse wheel
+scrolls the strip sideways; after a new batch, the strip shows its first new flame. The strip has three
 modes:
 
 ### Random

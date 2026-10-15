@@ -647,6 +647,8 @@ impl MovieView {
         let current = self.movie.part_at(self.frame as f64).map(|(i, _)| i);
         let mut action: Option<(usize, i32)> = None;
         let mut changed = false;
+        // The mouse wheel scrolls the parts sideways (without Shift).
+        ui.style_mut().always_scroll_the_only_direction = true;
         egui::ScrollArea::horizontal().id_salt("movie-parts-scroll").show(ui, |ui| {
             ui.horizontal(|ui| {
                 let n = self.movie.parts.len();

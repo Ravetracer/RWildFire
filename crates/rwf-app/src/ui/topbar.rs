@@ -49,6 +49,7 @@ pub enum Action {
     DenoiseImage,
     Scripts,
     UserManual,
+    Quit,
 }
 
 pub struct TopBarInfo<'a> {
@@ -101,6 +102,10 @@ pub fn show(ui: &mut Ui, info: &TopBarInfo, generator: &mut Generator, extras: &
             }
             if ui.button("Scripts…").on_hover_text("Lua scripts that build or change flames: examples, your own scripts and an editor").clicked() {
                 action = Some(Action::Scripts);
+            }
+            ui.separator();
+            if item(ui, "Quit", "Ctrl+Q").on_hover_text("Closes RWildFire, like the window's close button").clicked() {
+                action = Some(Action::Quit);
             }
         });
         ui.menu_button("Edit", |ui| {

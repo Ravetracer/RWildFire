@@ -140,7 +140,7 @@ camera and transform **scripts** keep everything in motion.
 
 ### Parts
 
-The strip at the bottom shows the parts in order:
+The strip at the bottom shows the parts in order (the mouse wheel scrolls it sideways):
 
 - **Editor flame**, **Files…** and **Random flame** (from the top bar's generator) add parts.
 - Each part shows its length in frames (**fr**), the transition into the next part (**Fade**
