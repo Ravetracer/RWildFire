@@ -1,6 +1,7 @@
 target/
 *.png
 !crates/rwf-core/assets/**/*.png
+!crates/rwf-app/assets/*.png
 
 # Intel Open Image Denoise, fetched by tools/fetch_oidn.py
 /oidn/
