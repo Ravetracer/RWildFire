@@ -325,6 +325,8 @@ pub struct Layer {
     pub gradient_shift: f64,
     /// An image used as a two-dimensional gradient (JWildfire's gradient map).
     pub gradient_map: GradientMap,
+    /// The hue/saturation/luminosity curves the gradient was made with (gradient curve editor).
+    pub gradient_curves: Option<crate::gradient_ops::GradientCurves>,
     pub smooth_gradient: bool,
     pub xforms: Vec<XForm>,
     pub final_xforms: Vec<XForm>,
@@ -524,6 +526,7 @@ impl Default for Layer {
             gradient: Gradient::default(),
             gradient_shift: 0.0,
             gradient_map: GradientMap::default(),
+            gradient_curves: None,
             smooth_gradient: false,
             xforms: Vec::new(),
             final_xforms: Vec::new(),

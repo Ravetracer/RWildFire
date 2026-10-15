@@ -59,6 +59,13 @@ pub struct InspectorState {
     pub tab: Tab,
     pub gradient: GradientEdit,
     pub keys: crate::gradients::KeyEditor,
+    pub curves: crate::gradients::CurvesEdit,
+    /// Random gradient settings: generator (`None`: RWildFire's own), key points, fade, uniform.
+    random_gen: Option<rwf_core::random::gradients::GradientGenerator>,
+    random_points: usize,
+    random_fade: bool,
+    random_uniform: bool,
+    grad_status: Option<String>,
     pub library: crate::gradients::GradientLibrary,
     pub wfield_preview: super::weighting::FieldPreview,
     pub mixer: super::mixer::MixerState,
@@ -694,17 +701,89 @@ fn gradient_editor(ui: &mut Ui, doc: &mut Document, st: &mut InspectorState) {
         if ui.button(format!("{} Library", icons::PALETTE)).on_hover_text("Browse ~1600 gradients, save your own").clicked() {
             st.library.open = true;
         }
-        if ui.button(format!("{} Random", icons::DICE)).clicked() {
+        if ui.button(format!("{} Random", icons::DICE)).on_hover_text("A random gradient with the settings of the menu next to it").clicked() {
             let mut rng = rwf_core::rng::Rng::from_entropy();
-            layer.gradient = Gradient::random(&mut rng);
+            layer.gradient = match st.random_gen {
+                None => Gradient::random(&mut rng),
+                Some(g) => g.generate(if st.random_points < 3 { 7 } else { st.random_points }, st.random_fade, st.random_uniform, &mut rng),
+            };
             recapture = true;
         }
+        ui.menu_button(icons::SLIDERS, |ui| {
+            use rwf_core::random::gradients::GradientGenerator;
+            if st.random_points < 3 {
+                (st.random_points, st.random_fade) = (7, true);
+            }
+            widgets::label(ui, "Random gradients");
+            egui::ComboBox::from_id_salt("rnd-grad").selected_text(st.random_gen.map_or("RWildFire", |g| g.label())).show_ui(ui, |ui| {
+                ui.selectable_value(&mut st.random_gen, None, "RWildFire").on_hover_text("A few harmonic hues");
+                for g in GradientGenerator::ALL {
+                    ui.selectable_value(&mut st.random_gen, Some(*g), g.label()).on_hover_text("JWildfire's generator");
+                }
+            });
+            if st.random_gen.is_some() {
+                ui.add(egui::Slider::new(&mut st.random_points, 3..=58).text("key colors"));
+                ui.checkbox(&mut st.random_fade, "Fade between the colors");
+                ui.checkbox(&mut st.random_uniform, "Uniform spacing");
+            }
+            ui.separator();
+            if ui.button("Similar to this gradient").on_hover_text("Clusters the colors of the gradient and builds a new one from them").clicked() {
+                let mut rng = rwf_core::rng::Rng::from_entropy();
+                layer.gradient = rwf_core::random::gradients::similar_gradient(&layer.gradient, &mut rng);
+                recapture = true;
+            }
+        })
+        .response
+        .on_hover_text("Random gradient settings");
         if ui.button(format!("{} Reverse", icons::SWAP)).clicked() {
             layer.gradient.reverse();
             recapture = true;
         }
         ui.checkbox(&mut layer.smooth_gradient, "Smooth");
     });
+    ui.horizontal(|ui| {
+        if ui.button("From image…").on_hover_text("The 256 colors that represent an image best, sorted by hue (JWildfire's median cut)").clicked()
+            && let Some(p) = rfd::FileDialog::new().add_filter("Image", &["png", "jpg", "jpeg"]).pick_file()
+        {
+            match rwf_core::resources::image(&p.to_string_lossy()) {
+                Some(img) => {
+                    layer.gradient = rwf_core::gradient_ops::gradient_from_image(&img);
+                    recapture = true;
+                    st.grad_status = None;
+                }
+                None => st.grad_status = Some(format!("Cannot read {}", p.display())),
+            }
+        }
+        if ui.button("From flame…").on_hover_text("The gradient of a flame file (its first flame and layer)").clicked()
+            && let Some(p) = rfd::FileDialog::new().add_filter("Flame", &["flame", "xml"]).pick_file()
+        {
+            match rwf_core::io::read_flames_from_file(&p) {
+                Ok(f) if !f.is_empty() => {
+                    layer.gradient = f[0].first_layer().gradient.clone();
+                    recapture = true;
+                    st.grad_status = None;
+                }
+                _ => st.grad_status = Some(format!("No flame in {}", p.display())),
+            }
+        }
+        if ui.button("Export…").on_hover_text("Saves the gradient as .map (Fractint/JWildfire) or .ugr (Ultra Fractal)").clicked()
+            && let Some(p) = rfd::FileDialog::new().add_filter("Map gradient", &["map"]).add_filter("Ultra Fractal gradient", &["ugr"]).set_file_name("gradient.map").save_file()
+        {
+            let name = p.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+            let text = if p.extension().is_some_and(|e| e.eq_ignore_ascii_case("ugr")) {
+                rwf_core::gradient_io::write_ugr(&[rwf_core::gradient_io::NamedGradient { name, gradient: layer.gradient.clone() }])
+            } else {
+                rwf_core::gradient_io::write_map(&layer.gradient, &name)
+            };
+            st.grad_status = Some(match std::fs::write(&p, text) {
+                Ok(()) => format!("Saved {}", p.display()),
+                Err(e) => format!("Could not save: {e}"),
+            });
+        }
+    });
+    if let Some(s) = &st.grad_status {
+        ui.label(RichText::new(s).small().color(theme::TEXT_MUTED));
+    }
     grid(ui, "grad-cycle", |ui| {
         slider(ui, "Color cycle", &mut layer.gradient_shift, 0.0..=256.0).on_hover_text(
             "Moves the colors along the gradient when rendering, without changing the gradient (256 = one full turn). \
@@ -811,6 +890,10 @@ fn gradient_editor(ui: &mut Ui, doc: &mut Document, st: &mut InspectorState) {
             g.fade_all();
         }
     });
+    egui::CollapsingHeader::new(RichText::new("Curves").color(theme::TEXT_MUTED)).id_salt("grad-curves").show(ui, |ui| {
+        st.curves.show(ui, layer);
+    });
+    let ge = &mut st.gradient;
     ge.last = Some(layer.gradient.clone());
 
     egui::CollapsingHeader::new(RichText::new("Gradient map").color(theme::TEXT_MUTED))

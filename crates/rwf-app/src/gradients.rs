@@ -183,6 +183,16 @@ pub fn user_dir() -> Option<PathBuf> {
 
 const USER_FILE: &str = "my-gradients.ugr";
 
+fn is_image(p: &std::path::Path) -> bool {
+    p.extension().map(|e| e.to_string_lossy().to_lowercase()).is_some_and(|e| matches!(e.as_str(), "png" | "jpg" | "jpeg"))
+}
+
+/// A gradient image file: its first row stretched over the gradient (`ImgPaletteReader`).
+fn image_gradient(p: &std::path::Path, name: &str) -> Option<NamedGradient> {
+    let img = rwf_core::resources::image(&p.to_string_lossy())?;
+    Some(NamedGradient { name: name.to_string(), gradient: rwf_core::gradient_ops::gradient_from_image_row(&img) })
+}
+
 fn load_all() -> Vec<Collection> {
     let mut out = Vec::new();
     // User gradients first.
@@ -194,7 +204,9 @@ fn load_all() -> Vec<Collection> {
         paths.sort();
         for p in paths {
             let name = p.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
-            if let Ok(src) = std::fs::read_to_string(&p) {
+            if is_image(&p) {
+                mine.extend(image_gradient(&p, &name));
+            } else if let Ok(src) = std::fs::read_to_string(&p) {
                 mine.extend(parse_any(&src, &name));
             }
         }
@@ -314,9 +326,13 @@ impl GradientLibrary {
     }
 
     fn import(&mut self, path: &std::path::Path) -> String {
-        let Ok(src) = std::fs::read_to_string(path) else { return "Could not read file".into() };
         let name = path.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
-        let found = parse_any(&src, &name);
+        let found = if is_image(path) {
+            image_gradient(path, &name).into_iter().collect()
+        } else {
+            let Ok(src) = std::fs::read_to_string(path) else { return "Could not read file".into() };
+            parse_any(&src, &name)
+        };
         if found.is_empty() {
             return "No gradients found in file".into();
         }
@@ -324,7 +340,7 @@ impl GradientLibrary {
         // Copy into the user folder so it shows up next time.
         if let Some(dir) = user_dir() {
             let _ = std::fs::create_dir_all(&dir);
-            let _ = std::fs::write(dir.join(&name), &src);
+            let _ = std::fs::copy(path, dir.join(&name));
         }
         self.collections.push(Collection { name: name.clone(), gradients: found });
         self.selected = self.collections.len() - 1;
@@ -343,4 +359,115 @@ fn paint_coarse(ui: &Ui, rect: Rect, g: &Gradient) {
         mesh.add_colored_rect(r, Color32::from_rgb(c[0], c[1], c[2]));
     }
     ui.painter().add(egui::Shape::mesh(mesh));
+}
+
+/// The point being dragged in the gradient curve editor: (curve, point).
+#[derive(Default)]
+pub struct CurvesEdit {
+    drag: Option<(usize, usize)>,
+}
+
+impl CurvesEdit {
+    /// JWildfire's gradient curve editor: the hue, saturation and luminosity curves of the
+    /// layer's gradient; changing them rebuilds the gradient. Returns true when it changed.
+    pub fn show(&mut self, ui: &mut Ui, layer: &mut rwf_core::Layer) -> bool {
+        use rwf_core::gradient_ops::GradientCurves;
+        let mut changed = false;
+        let Some(curves) = layer.gradient_curves.as_mut() else {
+            ui.label(RichText::new("Shape the gradient with hue, saturation and luminosity curves.").small().color(theme::TEXT_MUTED));
+            if ui.button("Start from the gradient").on_hover_text("Curves through the current gradient's colors").clicked() {
+                layer.gradient_curves = Some(GradientCurves::from_gradient(&layer.gradient));
+            }
+            return false;
+        };
+        for (k, (name, color)) in [("Hue", Color32::from_rgb(230, 160, 60)), ("Saturation", Color32::from_rgb(90, 200, 120)), ("Luminosity", Color32::from_rgb(200, 200, 200))].into_iter().enumerate() {
+            ui.label(RichText::new(name).small().color(theme::TEXT_MUTED));
+            changed |= self.plot(ui, k, &mut curves.curves[k], color);
+        }
+        ui.label(RichText::new("Drag points; double-click adds one, right-click removes one.").small().color(theme::TEXT_MUTED));
+        let mut remove = false;
+        ui.horizontal(|ui| {
+            if ui.small_button("From gradient").on_hover_text("Curves through the current gradient's colors").clicked() {
+                *curves = GradientCurves::from_gradient(&layer.gradient);
+                changed = true;
+            }
+            if ui.small_button("Remove curves").on_hover_text("Keeps the gradient, forgets the curves").clicked() {
+                remove = true;
+            }
+        });
+        if changed && let Some(c) = &layer.gradient_curves {
+            layer.gradient = c.to_gradient();
+        }
+        if remove {
+            layer.gradient_curves = None;
+        }
+        changed
+    }
+
+    fn plot(&mut self, ui: &mut Ui, k: usize, pts: &mut Vec<(f64, f64)>, color: Color32) -> bool {
+        let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 56.0), egui::Sense::click_and_drag());
+        let p = ui.painter_at(rect.expand(4.0));
+        p.rect_filled(rect, 4, theme::CANVAS);
+        let to_screen = |x: f64, y: f64| egui::pos2(rect.left() + rect.width() * (x / 255.0) as f32, rect.bottom() - rect.height() * (y / 255.0) as f32);
+        let to_value = |pos: egui::Pos2| (((pos.x - rect.left()) / rect.width()) as f64 * 255.0, ((rect.bottom() - pos.y) / rect.height()) as f64 * 255.0);
+        // the curve as JWildfire evaluates it
+        let track = rwf_core::animation::Track {
+            path: String::new(),
+            interp: rwf_core::animation::Interp::Spline,
+            keys: pts.iter().map(|&(frame, value)| rwf_core::animation::Key { frame, value }).collect(),
+        };
+        let line: Vec<egui::Pos2> = (0..=255).step_by(3).map(|x| to_screen(x as f64, track.eval(x as f64).unwrap_or(0.0).clamp(0.0, 255.0))).collect();
+        p.add(egui::Shape::line(line, egui::Stroke::new(1.5, color)));
+        for (x, y) in pts.iter() {
+            p.circle_filled(to_screen(*x, *y), 3.5, color);
+        }
+        let mut changed = false;
+        let nearest = |pos: egui::Pos2, pts: &[(f64, f64)]| pts.iter().position(|(x, y)| to_screen(*x, *y).distance(pos) < 9.0);
+        if resp.drag_started()
+            && let Some(pos) = resp.interact_pointer_pos()
+        {
+            self.drag = nearest(pos, pts).map(|i| (k, i));
+        }
+        if resp.dragged()
+            && let (Some((ck, i)), Some(pos)) = (self.drag, resp.interact_pointer_pos())
+            && ck == k
+            && i < pts.len()
+        {
+            let (mut x, y) = to_value(pos);
+            // ends stay at the gradient's ends, inner points between their neighbours
+            x = if i == 0 {
+                0.0
+            } else if i == pts.len() - 1 {
+                255.0
+            } else {
+                x.clamp(pts[i - 1].0 + 1.0, pts[i + 1].0 - 1.0)
+            };
+            pts[i] = (x.round(), y.clamp(0.0, 255.0));
+            changed = true;
+        }
+        if resp.drag_stopped() {
+            self.drag = None;
+        }
+        if resp.double_clicked()
+            && let Some(pos) = resp.interact_pointer_pos()
+        {
+            let (x, y) = to_value(pos);
+            let x = x.round().clamp(1.0, 254.0);
+            if !pts.iter().any(|(px, _)| (*px - x).abs() < 1.0) {
+                let at = pts.iter().position(|(px, _)| *px > x).unwrap_or(pts.len());
+                pts.insert(at, (x, y.clamp(0.0, 255.0)));
+                changed = true;
+            }
+        }
+        if resp.secondary_clicked()
+            && let Some(pos) = resp.interact_pointer_pos()
+            && let Some(i) = nearest(pos, pts)
+            && i > 0
+            && i < pts.len() - 1
+        {
+            pts.remove(i);
+            changed = true;
+        }
+        changed
+    }
 }

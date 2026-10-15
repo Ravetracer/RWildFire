@@ -424,3 +424,348 @@ mod tests {
         e.monochrome_range(0, 255);
     }
 }
+
+/// JWildfire's gradient curve editor (`Layer.refreshGradientFromCurves`): hue, saturation and
+/// luminosity (0..255) as spline curves over the 256 gradient entries.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GradientCurves {
+    /// Keys `(entry, value)` of the hue, saturation and luminosity curves.
+    pub curves: [Vec<(f64, f64)>; 3],
+}
+
+/// Points per curve of a new curve set (`DFLT_CURVE_POINTS`).
+pub const CURVE_POINTS: usize = 12;
+
+impl GradientCurves {
+    /// Curves through the hue, saturation and luminosity of `g` at 12 evenly spaced entries.
+    pub fn from_gradient(g: &Gradient) -> Self {
+        let n = g.colors.len().max(1);
+        let dx = 255.0 / (CURVE_POINTS - 1) as f64;
+        let mut curves: [Vec<(f64, f64)>; 3] = Default::default();
+        for i in 0..CURVE_POINTS {
+            let x = if i == CURVE_POINTS - 1 { 255.0 } else { crate::math::ftoi(i as f64 * dx) as f64 };
+            let c = g.colors.get(((x as usize) * n / 256).min(n - 1)).copied().unwrap_or([0; 3]);
+            let (h, s, l) = jwf_rgb2hsl(c.map(|v| v as i32));
+            // a gray's hue 1.0 means "none": 0 keeps the curve calm
+            let h = if s.abs() <= EPS { 0.0 } else { h };
+            for (k, v) in [h, s, l].into_iter().enumerate() {
+                curves[k].push((x, (v * 255.0).clamp(0.0, 255.0)));
+            }
+        }
+        Self { curves }
+    }
+
+    /// The gradient of the curves (spline curves as JWildfire's, `HSLRGBConverter.fromHsl`).
+    pub fn to_gradient(&self) -> Gradient {
+        use crate::animation::{Interp, Key, Track};
+        let tracks: Vec<Track> = self
+            .curves
+            .iter()
+            .map(|c| {
+                let mut keys: Vec<Key> = c.iter().map(|&(frame, value)| Key { frame, value }).collect();
+                keys.sort_by(|a, b| a.frame.total_cmp(&b.frame));
+                Track { path: String::new(), interp: Interp::Spline, keys }
+            })
+            .collect();
+        let colors = (0..256)
+            .map(|i| {
+                let v = |k: usize| tracks[k].eval(i as f64).unwrap_or(0.0) / 255.0;
+                let rgb = curves_hsl_to_rgb(v(0), v(1), v(2));
+                rgb.map(|c| (crate::math::ftoi(c * 255.0)).clamp(0, 255) as u8)
+            })
+            .collect();
+        Gradient { colors }
+    }
+
+    /// Reads `h x,y x,y ...|s ...|l ...` (RWildFire's `gradient_curves` attribute).
+    pub fn parse(s: &str) -> Option<Self> {
+        let mut curves: [Vec<(f64, f64)>; 3] = Default::default();
+        for (k, part) in s.split('|').enumerate().take(3) {
+            for p in part.split_whitespace().skip(1) {
+                let (x, y) = p.split_once(',')?;
+                curves[k].push((x.parse().ok()?, y.parse().ok()?));
+            }
+        }
+        curves.iter().all(|c| c.len() >= 2).then_some(Self { curves })
+    }
+
+    pub fn to_attr(&self) -> String {
+        let f = crate::io::fmt_f;
+        ["h", "s", "l"]
+            .iter()
+            .zip(&self.curves)
+            .map(|(n, c)| format!("{n} {}", c.iter().map(|(x, y)| format!("{},{}", f(*x), f(*y))).collect::<Vec<_>>().join(" ")))
+            .collect::<Vec<_>>()
+            .join("|")
+    }
+}
+
+/// `HSLRGBConverter.fromHsl` (its fallback case differs from `HSLTransformer`'s).
+fn curves_hsl_to_rgb(hue: f64, sat: f64, lum: f64) -> [f64; 3] {
+    let (hue, sat, lum) = (hue.clamp(0.0, 1.0), sat.clamp(0.0, 1.0), lum.clamp(0.0, 1.0));
+    let v = if lum <= 0.5 { lum * (1.0 + sat) } else { lum + sat - lum * sat };
+    if v <= 0.0 {
+        return [0.0; 3];
+    }
+    let hue = (hue * 6.0).clamp(0.0, 6.0);
+    let y = lum + lum - v;
+    let f = hue - (hue as i32) as f64;
+    let x = y + (v - y) * f;
+    let z = v - (v - y) * f;
+    match hue as i32 {
+        1 => [z, v, y],
+        2 => [y, v, x],
+        3 => [y, z, v],
+        4 => [x, y, v],
+        5 => [v, y, z],
+        _ => [v, x, y],
+    }
+}
+
+#[cfg(test)]
+mod curve_tests {
+    use super::*;
+
+    #[test]
+    fn curves_rebuild_the_gradient() {
+        let g = Gradient { colors: (0..256).map(|i| [(i as u8).saturating_add(20), 60, (255 - i) as u8]).collect() };
+        let c = GradientCurves::from_gradient(&g);
+        assert_eq!(c.curves[0].len(), CURVE_POINTS);
+        let back = c.to_gradient();
+        // at the keys the colors come back (12 points cannot follow every detail in between)
+        for x in [0usize, 255] {
+            assert!(back.colors[x].iter().zip(&g.colors[x]).all(|(a, b)| (*a as i32 - *b as i32).abs() <= 3), "{x}: {:?} vs {:?}", back.colors[x], g.colors[x]);
+        }
+        assert_eq!(GradientCurves::parse(&c.to_attr()).map(|p| p.curves[2].len()), Some(CURVE_POINTS));
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Gradients from images
+
+/// `ImgPaletteReader`: the first row of an image stretched over 256 entries
+/// (`RGBPalette.setColorsNonInterpolate`).
+pub fn gradient_from_image_row(img: &crate::resources::ImageMap) -> Gradient {
+    let src: Vec<[f64; 3]> = (0..img.width as usize).map(|x| rgb_of(img.pixels[x])).collect();
+    let n = src.len();
+    let colors = (0..256)
+        .map(|i| {
+            let coord = (i * (n.max(1) - 1)) as f64 / 255.0;
+            let ci = coord as usize;
+            let get = |k: usize| src.get(k).copied().unwrap_or([0.0; 3]);
+            let (l, r, x) = (get(ci), get(ci + 1), coord - ci as f64);
+            [0, 1, 2].map(|k| round_color(l[k] + (r[k] - l[k]) * x) as u8)
+        })
+        .collect();
+    Gradient { colors }
+}
+
+fn rgb_of(c: u32) -> [f64; 3] {
+    [((c >> 16) & 255) as f64, ((c >> 8) & 255) as f64, (c & 255) as f64]
+}
+
+/// `MedianCutQuantizer.createPalette` (median cut after jquant2.c by Thomas G. Lane): the 256
+/// colors that represent the image best, sorted by hue.
+pub fn gradient_from_image(img: &crate::resources::ImageMap) -> Gradient {
+    let mut q = MedianCut::new();
+    for &c in &img.pixels {
+        let (r, g, b) = (((c >> 16) & 255) as usize, ((c >> 8) & 255) as usize, (c & 255) as usize);
+        let h = &mut q.hist[r >> C0_SHIFT][g >> C1_SHIFT][b >> C2_SHIFT];
+        *h = h.saturating_add(1);
+    }
+    let mut colors = q.select_colors(256);
+    colors.resize(256, [0, 0, 0]);
+    let mut g = Gradient { colors };
+    g.sort_range(0, 255);
+    g
+}
+
+const C0_SHIFT: usize = 3;
+const C1_SHIFT: usize = 2;
+const C2_SHIFT: usize = 3;
+const C0_SCALE: i64 = 2;
+const C1_SCALE: i64 = 3;
+const C2_SCALE: i64 = 1;
+
+#[derive(Clone, Copy, Default)]
+struct CutBox {
+    c0: (usize, usize),
+    c1: (usize, usize),
+    c2: (usize, usize),
+    volume: i64,
+    colorcount: i64,
+}
+
+struct MedianCut {
+    hist: Vec<Vec<Vec<i32>>>,
+}
+
+impl MedianCut {
+    fn new() -> Self {
+        Self { hist: vec![vec![vec![0; 32]; 64]; 32] }
+    }
+
+    fn h(&self, c0: usize, c1: usize, c2: usize) -> i32 {
+        self.hist[c0][c1][c2]
+    }
+
+    /// Shrinks the box to its nonzero cells and computes volume and population (`update_box`).
+    fn update_box(&self, b: &mut CutBox) {
+        let any = |c0: (usize, usize), c1: (usize, usize), c2: (usize, usize)| {
+            (c0.0..=c0.1).any(|x| (c1.0..=c1.1).any(|y| (c2.0..=c2.1).any(|z| self.h(x, y, z) != 0)))
+        };
+        if b.c0.1 > b.c0.0 {
+            if let Some(v) = (b.c0.0..=b.c0.1).find(|&v| any((v, v), b.c1, b.c2)) {
+                b.c0.0 = v;
+            }
+            if let Some(v) = (b.c0.0..=b.c0.1).rev().find(|&v| any((v, v), b.c1, b.c2)) {
+                b.c0.1 = v;
+            }
+        }
+        if b.c1.1 > b.c1.0 {
+            if let Some(v) = (b.c1.0..=b.c1.1).find(|&v| any(b.c0, (v, v), b.c2)) {
+                b.c1.0 = v;
+            }
+            if let Some(v) = (b.c1.0..=b.c1.1).rev().find(|&v| any(b.c0, (v, v), b.c2)) {
+                b.c1.1 = v;
+            }
+        }
+        if b.c2.1 > b.c2.0 {
+            if let Some(v) = (b.c2.0..=b.c2.1).find(|&v| any(b.c0, b.c1, (v, v))) {
+                b.c2.0 = v;
+            }
+            if let Some(v) = (b.c2.0..=b.c2.1).rev().find(|&v| any(b.c0, b.c1, (v, v))) {
+                b.c2.1 = v;
+            }
+        }
+        let d0 = (((b.c0.1 - b.c0.0) << C0_SHIFT) as i64) * C0_SCALE;
+        let d1 = (((b.c1.1 - b.c1.0) << C1_SHIFT) as i64) * C1_SCALE;
+        let d2 = (((b.c2.1 - b.c2.0) << C2_SHIFT) as i64) * C2_SCALE;
+        b.volume = d0 * d0 + d1 * d1 + d2 * d2;
+        let mut count = 0;
+        for x in b.c0.0..=b.c0.1 {
+            for y in b.c1.0..=b.c1.1 {
+                for z in b.c2.0..=b.c2.1 {
+                    if self.h(x, y, z) != 0 {
+                        count += 1;
+                    }
+                }
+            }
+        }
+        b.colorcount = count;
+    }
+
+    fn select_colors(&self, desired: usize) -> Vec<[u8; 3]> {
+        let mut boxes = vec![CutBox::default(); desired];
+        boxes[0] = CutBox { c0: (0, 255 >> C0_SHIFT), c1: (0, 255 >> C1_SHIFT), c2: (0, 255 >> C2_SHIFT), volume: 0, colorcount: 0 };
+        self.update_box(&mut boxes[0]);
+        let mut num = 1;
+        // median_cut: split by population for the first half, then by volume
+        while num < desired {
+            let pick = if num * 2 <= desired {
+                let mut best: Option<usize> = None;
+                let mut maxc = 0;
+                for (i, b) in boxes.iter().enumerate() {
+                    if b.colorcount > maxc && b.volume > 0 {
+                        best = Some(i);
+                        maxc = b.colorcount;
+                    }
+                }
+                best
+            } else {
+                let mut best: Option<usize> = None;
+                let mut maxv = 0;
+                for (i, b) in boxes.iter().enumerate() {
+                    if b.volume > maxv {
+                        best = Some(i);
+                        maxv = b.volume;
+                    }
+                }
+                best
+            };
+            let Some(i1) = pick else { break };
+            let mut b1 = boxes[i1];
+            let mut b2 = CutBox { c0: b1.c0, c1: b1.c1, c2: b1.c2, ..Default::default() };
+            let c0 = (((b1.c0.1 - b1.c0.0) << C0_SHIFT) as i64) * C0_SCALE;
+            let c1 = (((b1.c1.1 - b1.c1.0) << C1_SHIFT) as i64) * C1_SCALE;
+            let c2 = (((b1.c2.1 - b1.c2.0) << C2_SHIFT) as i64) * C2_SCALE;
+            // ties: green, then red, blue last
+            let (mut cmax, mut n) = (c1, 1);
+            if c0 > cmax {
+                cmax = c0;
+                n = 0;
+            }
+            if c2 > cmax {
+                n = 2;
+            }
+            match n {
+                0 => {
+                    let lb = (b1.c0.1 + b1.c0.0) / 2;
+                    b1.c0.1 = lb;
+                    b2.c0.0 = lb + 1;
+                }
+                1 => {
+                    let lb = (b1.c1.1 + b1.c1.0) / 2;
+                    b1.c1.1 = lb;
+                    b2.c1.0 = lb + 1;
+                }
+                _ => {
+                    let lb = (b1.c2.1 + b1.c2.0) / 2;
+                    b1.c2.1 = lb;
+                    b2.c2.0 = lb + 1;
+                }
+            }
+            self.update_box(&mut b1);
+            self.update_box(&mut b2);
+            boxes[i1] = b1;
+            boxes[num] = b2;
+            num += 1;
+        }
+        // compute_color: mean weighted by pixels
+        boxes[..num]
+            .iter()
+            .map(|b| {
+                let (mut total, mut t0, mut t1, mut t2) = (0i64, 0i64, 0i64, 0i64);
+                for x in b.c0.0..=b.c0.1 {
+                    for y in b.c1.0..=b.c1.1 {
+                        for z in b.c2.0..=b.c2.1 {
+                            let count = self.h(x, y, z) as i64;
+                            if count != 0 {
+                                total += count;
+                                t0 += (((x << C0_SHIFT) + ((1 << C0_SHIFT) >> 1)) as i64) * count;
+                                t1 += (((y << C1_SHIFT) + ((1 << C1_SHIFT) >> 1)) as i64) * count;
+                                t2 += (((z << C2_SHIFT) + ((1 << C2_SHIFT) >> 1)) as i64) * count;
+                            }
+                        }
+                    }
+                }
+                if total == 0 {
+                    return [0, 0, 0];
+                }
+                [t0, t1, t2].map(|t| ((t + (total >> 1)) / total).clamp(0, 255) as u8)
+            })
+            .collect()
+    }
+}
+
+#[cfg(test)]
+mod image_tests {
+    use super::*;
+    use crate::resources::ImageMap;
+
+    #[test]
+    fn gradients_from_images() {
+        // left half red, right half blue
+        let pixels: Vec<u32> = (0..64 * 8).map(|i| if i % 64 < 32 { 0xC81E1E } else { 0x1E1EC8 }).collect();
+        let img = ImageMap { width: 64, height: 8, pixels, alpha: vec![255; 64 * 8] };
+        let row = gradient_from_image_row(&img);
+        assert_eq!((row.colors[0], row.colors[255]), ([200, 30, 30], [30, 30, 200]));
+        let q = gradient_from_image(&img);
+        // two colors found (the rest stays black)
+        let mut distinct: Vec<[u8; 3]> = q.colors.clone();
+        distinct.sort();
+        distinct.dedup();
+        assert_eq!(distinct.len(), 3, "{distinct:?}");
+        assert!(distinct.iter().any(|c| c[0] > 190 && c[2] < 40));
+    }
+}

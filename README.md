@@ -62,6 +62,7 @@ Each variation is a `VarDef` with a CPU function and a WGSL snippet that read th
 
 ## Gradients
 
+- JWildfire's gradient tools: modifications (shift, frequency, blur, hue, saturation, brightness, contrast, gamma, red/green/blue, RGB swap), range operations (copy/paste, erase, fade, monochrome, reverse, sort, negative, fade all), hue/saturation/luminosity curve editor (JWildfire's curves are imported), gradients from images (median cut, or an image's first row in the library), from flame files, `.map`/`.ugr` export, and JWildfire's random gradient generators
 - Key-point editor: gradients are fitted to a few color stops that can be dragged, added (click the bar) and recolored
 - Library with ~1600 bundled gradients (flam3 classics, UltraFractal collections), user gradients in `~/.config/rwildfire/gradients`, import of `.ugr` / `.map` / flam3 palette files
 - Relative adjustments (shift, hue, saturation, lightness), random gradients
@@ -81,7 +82,6 @@ Done: core editor, file compatibility, CPU and GPU renderer, 1014 variations (in
 Missing compared with JWildfire (from a feature comparison, by priority):
 
 - Editor:
-  - Gradients: RGB, contrast, gamma, brightness, frequency, blur, sort, negative; range operations (copy/paste, fade, monochrome); gradient curve editor; gradient from an image, `.map` export, from/extract from flame; choice of random gradient generator
   - Files and batches: folder browser with thumbnails (copy, move, rename, delete, to batch/mesh), configurable random batch (size, quality, snapshot), quick mutation strip
   - Resolution and quality profiles (editable, stored in flames, used by the batch renderer)
   - Preferences: default folders, defaults for new flames (filter, oversampling, DE), preview quality and progressive limits, render threads, editor control style

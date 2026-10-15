@@ -120,6 +120,7 @@ pub(crate) fn parse_flame(el: &Element) -> Flame {
     let mut smooth_gradient = None;
     let mut gradient_shift = 0.0;
     let mut gradient_map = crate::model::GradientMap::default();
+    let mut gradient_curves = None;
     for (k, v) in &el.attrs {
         let f = f64_of(v);
         let mut known = true;
@@ -248,6 +249,7 @@ pub(crate) fn parse_flame(el: &Element) -> Flame {
             k if k.starts_with("gradient_map") => {
                 gradient_map.read_attr(k, v);
             }
+            "gradient_curves" => gradient_curves = crate::gradient_ops::GradientCurves::parse(v),
             "frame_count" => flame.animation.frame_count = f.unwrap_or(100.0).max(1.0) as u32,
             "fps" => flame.animation.fps = f.unwrap_or(25.0).max(1.0),
             "motion_blur_length" => flame.animation.motion_blur_length = f.unwrap_or(0.0).max(0.0) as u32,
@@ -274,6 +276,7 @@ pub(crate) fn parse_flame(el: &Element) -> Flame {
         }
         layer.gradient_shift = gradient_shift;
         layer.gradient_map = gradient_map;
+        layer.gradient_curves = gradient_curves;
         flame.layers = vec![layer];
     } else {
         flame.layers = layer_elements
@@ -289,6 +292,7 @@ pub(crate) fn parse_flame(el: &Element) -> Flame {
                         "smooth_gradient" => layer.smooth_gradient = v == "1",
                         "gradient_shift" => layer.gradient_shift = f64_of(v).unwrap_or(0.0),
                         k if layer.gradient_map.read_attr(k, v) => {}
+                        "gradient_curves" => layer.gradient_curves = crate::gradient_ops::GradientCurves::parse(v),
                         _ => layer.extra_attrs.push((k.clone(), v.clone())),
                     }
                 }
@@ -296,11 +300,30 @@ pub(crate) fn parse_flame(el: &Element) -> Flame {
             })
             .collect();
     }
+    import_jwf_gradient_curves(&mut flame);
     match el.children_named("animation").next() {
         Some(a) => parse_animation(a, &mut flame),
         None => import_jwf_curves(&mut flame),
     }
     flame
+}
+
+/// JWildfire's gradient curve editor curves (`grad_edit_hue_curve_*` etc. on the flame) for the
+/// first layer.
+fn import_jwf_gradient_curves(flame: &mut Flame) {
+    let names = ["grad_edit_hue_curve_", "grad_edit_saturation_curve_", "grad_edit_luminosity_curve_"];
+    let read = |attrs: &[(String, String)], prefix: &str| -> Option<Vec<(f64, f64)>> {
+        let get = |k: &str| attrs.iter().find(|(n, _)| n == &format!("{prefix}{k}")).and_then(|(_, v)| v.trim().parse::<f64>().ok());
+        let n = get("point_count")? as usize;
+        let pts: Option<Vec<(f64, f64)>> = (0..n).map(|i| Some((get(&format!("x{i}"))?, get(&format!("y{i}"))?))).collect();
+        pts.filter(|p| p.len() >= 2)
+    };
+    let curves: Option<Vec<Vec<(f64, f64)>>> = names.iter().map(|p| read(&flame.extra_attrs, p)).collect();
+    if let Some(c) = curves {
+        let [h, s, l]: [Vec<(f64, f64)>; 3] = c.try_into().expect("three curves");
+        flame.layers[0].gradient_curves = Some(crate::gradient_ops::GradientCurves { curves: [h, s, l] });
+    }
+    flame.extra_attrs.retain(|(k, _)| !names.iter().any(|p| k.starts_with(p)));
 }
 
 fn parse_animation(el: &Element, flame: &mut Flame) {
@@ -701,6 +724,9 @@ pub fn write_flame(flame: &Flame) -> String {
         for (k, v) in flame.first_layer().gradient_map.attrs() {
             attr(&mut s, k, v);
         }
+        if let Some(c) = &flame.first_layer().gradient_curves {
+            attr(&mut s, "gradient_curves", c.to_attr());
+        }
     }
     let anim = &flame.animation;
     attr(&mut s, "frame", flame.frame.to_string());
@@ -729,6 +755,9 @@ pub fn write_flame(flame: &Flame) -> String {
             }
             for (k, v) in layer.gradient_map.attrs() {
                 attr(&mut s, k, v);
+            }
+            if let Some(c) = &layer.gradient_curves {
+                attr(&mut s, "gradient_curves", c.to_attr());
             }
             for (k, v) in &layer.extra_attrs {
                 attr(&mut s, k, v);

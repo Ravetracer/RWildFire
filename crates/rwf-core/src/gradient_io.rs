@@ -108,6 +108,20 @@ pub fn write_ugr(gradients: &[NamedGradient]) -> String {
     s
 }
 
+/// A Fractint `.map` file as JWildfire writes it (`MapGradientWriter`): "r g b" per line, the
+/// name in a comment on the first line.
+pub fn write_map(g: &Gradient, name: &str) -> String {
+    let mut s = String::new();
+    for (i, c) in g.colors.iter().enumerate() {
+        let _ = write!(s, "{:>3} {:>3} {:>3}", c[0], c[1], c[2]);
+        if i == 0 {
+            let _ = write!(s, " \"{}\", created with RWildFire", name.replace('"', "'"));
+        }
+        s.push('\n');
+    }
+    s
+}
+
 /// Parses a Fractint `.map` file (one "r g b" triple per line).
 pub fn parse_map(src: &str, name: &str) -> Option<NamedGradient> {
     let mut colors = Vec::new();
@@ -212,6 +226,14 @@ pub fn stops_to_gradient(stops: &[Stop]) -> Gradient {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn map_export_reads_back() {
+        let g = Gradient { colors: (0..256).map(|i| [i as u8, 7, (255 - i) as u8]).collect() };
+        let text = write_map(&g, "test");
+        assert!(text.starts_with("  0   7 255 \"test\""), "{}", &text[..40]);
+        assert_eq!(parse_map(&text, "test.map").unwrap().gradient, g);
+    }
 
     #[test]
     fn ugr_roundtrip() {
