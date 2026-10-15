@@ -942,7 +942,7 @@ impl GpuRenderer {
         let (Some(flame), Some(bufs)) = (&self.flame, &self.buffers) else {
             return false;
         };
-        if !flame.has_bg_xforms() {
+        if !rwf_core::render::background::needs_backdrop(flame) {
             self.backdrop = None;
             return false;
         }
@@ -959,7 +959,11 @@ impl GpuRenderer {
             Some(t) => rwf_core::render::background::Backdrop::new_region(flame, (t.full_width, t.full_height), (t.x, t.y, w, h)),
             None => rwf_core::render::background::Backdrop::new(flame, w, h),
         };
-        let colors = backdrop.colors().map(<[_]>::to_vec).unwrap_or_default();
+        // an image that cannot be loaded leaves the plain background
+        let Some(colors) = backdrop.colors().map(<[_]>::to_vec) else {
+            self.backdrop = None;
+            return false;
+        };
         let bytes: &[u8] = bytemuck::cast_slice(&colors);
         if self.backdrop_buf.size() < bytes.len() as u64 {
             self.backdrop_buf = storage_buffer(&self.ctx.device, "backdrop", bytes.len() as u64);

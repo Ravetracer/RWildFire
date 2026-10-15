@@ -24,7 +24,9 @@
 use rayon::prelude::*;
 
 use super::prepared::{PreparedXForm, colormap_index, prepare_xform};
-use super::tonemap::background_color;
+use super::tonemap::{background_color, background_image_color};
+use crate::resources::ImageMap;
+use std::sync::Arc;
 use crate::math::EPSILON;
 use crate::model::{ColorType, Flame, VariationInstance, XForm};
 use crate::variations::{Ctx, Pt};
@@ -129,17 +131,27 @@ pub struct Backdrop<'a> {
     colors: Option<Vec<[i32; 3]>>,
 }
 
+/// The flame's background image, if it has one that can be loaded.
+pub fn background_image(flame: &Flame) -> Option<Arc<ImageMap>> {
+    crate::resources::image(&flame.bg_image).filter(|i| i.width >= 2 && i.height >= 2)
+}
+
+/// True if the background needs colors per pixel (background xforms or an image).
+pub fn needs_backdrop(flame: &Flame) -> bool {
+    flame.has_bg_xforms() || !flame.bg_image.is_empty()
+}
+
 impl<'a> Backdrop<'a> {
     pub fn new(flame: &'a Flame, width: u32, height: u32) -> Self {
-        let colors = flame.has_bg_xforms().then(|| render_bg_xforms(flame, (width, height), (0, 0, width, height)));
-        Self { flame, width, height, colors }
+        Self::new_region(flame, (width, height), (0, 0, width, height))
     }
 
     /// The colors of the `w` × `h` pixels at `(x0, y0)` of a `full_w` × `full_h` image (a
     /// quilt tile). Only precomputes with background xforms; [`Backdrop::get`] is then
     /// relative to the region.
     pub fn new_region(flame: &'a Flame, full: (u32, u32), region: (u32, u32, u32, u32)) -> Self {
-        let colors = flame.has_bg_xforms().then(|| render_bg_xforms(flame, full, region));
+        let image = background_image(flame);
+        let colors = (flame.has_bg_xforms() || image.is_some()).then(|| render_bg_xforms(flame, image.as_deref(), full, region));
         Self { flame, width: region.2, height: region.3, colors }
     }
 
@@ -151,14 +163,15 @@ impl<'a> Backdrop<'a> {
         }
     }
 
-    /// The precomputed colors if the flame has background xforms.
+    /// The precomputed colors if the flame has background xforms or an image.
     pub fn colors(&self) -> Option<&[[i32; 3]]> {
         self.colors.as_deref()
     }
 }
 
-/// Colors of the region `(x0, y0, rw, rh)` of a `full` sized image.
-fn render_bg_xforms(flame: &Flame, full: (u32, u32), region: (u32, u32, u32, u32)) -> Vec<[i32; 3]> {
+/// Colors of the region `(x0, y0, rw, rh)` of a `full` sized image: the background color or
+/// image plus the background xforms.
+fn render_bg_xforms(flame: &Flame, image: Option<&ImageMap>, full: (u32, u32), region: (u32, u32, u32, u32)) -> Vec<[i32; 3]> {
     let (w, h) = full;
     let (x0, y0, rw, rh) = region;
     let mut missing = Vec::new();
@@ -192,7 +205,10 @@ fn render_bg_xforms(flame: &Flame, full: (u32, u32), region: (u32, u32, u32, u32
         for (rx, dst) in row.iter_mut().enumerate() {
             let px = rx + x0 as usize;
             let x = (px as f64 - (w as f64 - 1.0) * 0.5) / img_size * coord_scale;
-            let mut c = background_color(flame, px as u32, py as u32, w, h);
+            let mut c = match image {
+                Some(img) => background_image_color(img, px as u32, py as u32, w, h),
+                None => background_color(flame, px as u32, py as u32, w, h),
+            };
             for layer in &layers {
                 let p = Pt { x, y, ..Pt::default() };
                 for (xf, weight) in &layer.xforms {
@@ -215,6 +231,7 @@ fn render_bg_xforms(flame: &Flame, full: (u32, u32), region: (u32, u32, u32, u32
 /// True if `a` and `b` have the same background colors (for caching a [`Backdrop`]).
 pub fn same_backdrop(a: &Flame, b: &Flame) -> bool {
     a.background == b.background
+        && a.bg_image == b.bg_image
         && a.has_bg_xforms() == b.has_bg_xforms()
         && (!a.has_bg_xforms()
             || (a.cam_zoom == b.cam_zoom
@@ -255,6 +272,21 @@ mod tests {
         let mut other = flame.clone();
         other.layers[0].bg_xforms[0].weight = 0.7;
         assert!(!same_backdrop(&flame, &other));
+    }
+
+    #[test]
+    fn background_image_is_stretched_bilinearly() {
+        let img = ImageMap { width: 2, height: 2, pixels: vec![0x000000, 0xFF0000, 0x0000FF, 0xFFFFFF], alpha: vec![255; 4] };
+        // same size: the pixels themselves
+        assert_eq!(background_image_color(&img, 1, 0, 2, 2), [255, 0, 0]);
+        // 3 x 3: the middle pixel blends all four corners
+        assert_eq!(background_image_color(&img, 1, 1, 3, 3), [128, 64, 128]);
+        assert_eq!(background_image_color(&img, 2, 2, 3, 3), [255, 255, 255]);
+        let mut flame = Flame { bg_image: "/no/such/image.png".into(), ..Flame::default() };
+        assert!(needs_backdrop(&flame) && Backdrop::new(&flame, 4, 4).colors().is_none(), "a missing image keeps the plain background");
+        flame.bg_image.clear();
+        let back = crate::io::read_flames(&crate::io::write_flame(&Flame { bg_image: "bg.png".into(), ..flame })).unwrap();
+        assert_eq!(back[0].bg_image, "bg.png");
     }
 
     #[test]

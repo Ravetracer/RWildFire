@@ -183,6 +183,7 @@ pub(crate) fn parse_flame(el: &Element) -> Flame {
             "background_lr" => flame.background.lr = color_of(v),
             "background_cc" => flame.background.cc = color_of(v),
             "bg_transparency" => flame.bg_transparency = v == "1",
+            "background_image" => flame.bg_image = v.clone(),
             "fg_opacity" => flame.fg_opacity = f.unwrap_or(1.0),
             "brightness" => flame.brightness = f.unwrap_or(4.0),
             "saturation" => flame.saturation = f.unwrap_or(1.0),
@@ -626,6 +627,9 @@ pub fn write_flame(flame: &Flame) -> String {
     attr(&mut s, "background_cc", fmt_color(flame.background.cc));
     attr(&mut s, "background", fmt_color(flame.background.color));
     attr(&mut s, "bg_transparency", if flame.bg_transparency { "1" } else { "0" });
+    if !flame.bg_image.is_empty() {
+        attr(&mut s, "background_image", &flame.bg_image);
+    }
     attr(&mut s, "fg_opacity", fmt_f(flame.fg_opacity));
     attr(&mut s, "brightness", fmt_f(flame.brightness));
     attr(&mut s, "saturation", fmt_f(flame.saturation));

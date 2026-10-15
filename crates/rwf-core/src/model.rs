@@ -614,6 +614,9 @@ pub struct Flame {
     /// image sequences of variations).
     pub frame: u32,
     pub background: Background,
+    /// Image file shown behind the flame instead of the background colors, stretched to the
+    /// image size (`background_image`; empty = none).
+    pub bg_image: String,
     pub bg_transparency: bool,
     pub post_symmetry: PostSymmetry,
 
@@ -702,6 +705,7 @@ impl Default for Flame {
             preserve_z: false,
             frame: 1,
             background: Background::default(),
+            bg_image: String::new(),
             bg_transparency: true,
             post_symmetry: PostSymmetry::default(),
             layers: vec![Layer::default()],

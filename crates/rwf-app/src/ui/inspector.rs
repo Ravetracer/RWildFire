@@ -433,6 +433,23 @@ fn look_tab(ui: &mut Ui, doc: &mut Document, st: &mut InspectorState) {
                 }
             });
             ui.end_row();
+            widgets::label(ui, "Image");
+            ui.horizontal(|ui| {
+                let name = std::path::Path::new(&f.bg_image).file_name().map(|n| n.to_string_lossy().to_string());
+                let missing = !f.bg_image.is_empty() && rwf_core::render::background::background_image(f).is_none();
+                if ui.button(name.clone().unwrap_or_else(|| "Choose…".into())).on_hover_text("Image shown behind the flame instead of the colors above, stretched to the image size").clicked()
+                    && let Some(p) = rfd::FileDialog::new().add_filter("Image", &["png", "jpg", "jpeg"]).pick_file()
+                {
+                    f.bg_image = p.to_string_lossy().to_string();
+                }
+                if !f.bg_image.is_empty() && widgets::icon_button(ui, icons::X, "Remove the background image").clicked() {
+                    f.bg_image.clear();
+                }
+                if missing {
+                    ui.label(RichText::new("not found").small().color(theme::WARN)).on_hover_text(format!("Cannot load {}; the colors above are used", f.bg_image));
+                }
+            });
+            ui.end_row();
             widgets::label(ui, "Transparent");
             ui.checkbox(&mut f.bg_transparency, "in exported images");
             ui.end_row();

@@ -96,6 +96,28 @@ impl ToneParams {
 }
 
 /// Background color per output pixel (0..255 ints as f64).
+/// The background image's color at output pixel `(x, y)` of a `w` × `h` image
+/// (`LogDensityFilter.calculateBGColor`: stretched, bilinear).
+pub fn background_image_color(img: &crate::resources::ImageMap, x: u32, y: u32, w: u32, h: u32) -> [i32; 3] {
+    let rgb = |px: i64, py: i64| -> [f64; 3] {
+        // getARGBValueIgnoreBounds: black outside
+        if px < 0 || py < 0 || px >= img.width as i64 || py >= img.height as i64 {
+            return [0.0; 3];
+        }
+        let c = img.pixels[(py as u32 * img.width + px as u32) as usize];
+        [((c >> 16) & 255) as f64, ((c >> 8) & 255) as f64, (c & 255) as f64]
+    };
+    if img.width == w && img.height == h {
+        return rgb(x as i64, y as i64).map(|v| v as i32);
+    }
+    let xc = x as f64 * (img.width as f64 - 1.0) / (w as f64 - 1.0);
+    let yc = y as f64 * (img.height as f64 - 1.0) / (h as f64 - 1.0);
+    let (ix, iy) = (xc as i64, yc as i64);
+    let (lu, ru, lb, rb) = (rgb(ix, iy), rgb(ix + 1, iy), rgb(ix, iy + 1), rgb(ix + 1, iy + 1));
+    let (fx, fy) = (xc.fract(), yc.fract());
+    [0, 1, 2].map(|i| round_color(blerp(lu[i], ru[i], lb[i], rb[i], fx, fy)))
+}
+
 pub fn background_color(flame: &Flame, x: u32, y: u32, w: u32, h: u32) -> [i32; 3] {
     let bg = &flame.background;
     let c = |v: [u8; 3]| [v[0] as f64, v[1] as f64, v[2] as f64];
