@@ -48,6 +48,7 @@ pub enum Action {
     About,
     DenoiseImage,
     Scripts,
+    UserManual,
 }
 
 pub struct TopBarInfo<'a> {
@@ -130,6 +131,9 @@ pub fn show(ui: &mut Ui, info: &TopBarInfo, generator: &mut Generator, extras: &
             }
             if ui.button("Variation list…").on_hover_text("All variations with their parameters, searchable").clicked() {
                 action = Some(Action::VariationList);
+            }
+            if ui.button("User manual (PDF)").on_hover_text("Opens the user manual that comes with RWildFire in your PDF viewer").clicked() {
+                action = Some(Action::UserManual);
             }
             ui.separator();
             if ui.button("About RWildFire").clicked() {

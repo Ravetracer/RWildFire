@@ -8,3 +8,6 @@ target/
 # User manual: screenshots and the built PDF
 !docs/manual/images/*.png
 docs/manual/build/
+
+# Release archives (tools/release/package.py)
+/dist/

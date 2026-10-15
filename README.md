@@ -15,6 +15,15 @@ cargo run --release -p rwf-cli -- quilt in.flame -o big.png -w 30720 -q 1000   #
 cargo run --release -p rwf-cli -- script spiral.lua -i in.flame -o out.flame --param arms=5   # Lua script (--info, --api, --examples DIR)
 ```
 
+## Downloads and releases
+
+Ready-to-run builds are on the [releases page](https://github.com/Ravetracer/RWildFire/releases):
+a Linux AppImage and a Windows zip, each with the user manual. To publish a release, bump the
+version in all `Cargo.toml` files, commit and push, then run `python3 tools/release/release.py`:
+it tags the version and GitHub Actions (`.github/workflows/release.yml`) builds and uploads the
+archives. `python3 tools/release/package.py` builds the same archives locally into `dist/`
+(needs Docker, mingw-w64 and the manual's tools).
+
 ## User manual
 
 The user manual (`docs/manual/*.md`, screenshots in `docs/manual/images/`) is built into a PDF
@@ -90,9 +99,7 @@ Done: core editor, file compatibility, CPU and GPU renderer, 1014 variations (in
 
 Missing compared with JWildfire: nothing of the feature comparison is left (see "Not planned" below).
 
-Optional / later:
-
-- Ready-to-run downloads for Windows and Linux: a build script that compiles `rwf-app` and `rwf-cli` in release mode, fetches OIDN for the target platform (`tools/fetch_oidn.py --platform … --dest …`; into `lib/` on Linux, next to the executable on Windows) and packs everything with the license files and the user manual PDF into one zip per platform, so users only unzip and run
+Everything planned is done: the port is complete, with release downloads and the user manual.
 
 Not planned: variations that run user-written Java/GLSL code or formula engines (`custom_wf`, `c_var`, `dc_code`, `glsl_code`, `f_complex`, `colordomain`, `cut_c`, `ducks`, `fract_formula_*`), JWildfire's classic image-processing module, the choice of random number generator for rendering (no visible difference; the renderers use their own fast generators), LeapMotion, applet and launcher.
 

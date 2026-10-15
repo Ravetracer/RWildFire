@@ -60,6 +60,12 @@ From left to right:
 | Denoise image… | | Runs the AI denoiser on any PNG or JPEG file. |
 | Scripts… | | Opens the scripts window (chapter "Scripting"). |
 
+![File › Denoise image…](images/denoise-image.png){: .third}
+
+**Denoise image…** removes the grain of any PNG or JPEG file, e.g. renders from other
+programs: choose the **Image…**, the **Denoiser** (OIDN on the CPU or on an NVIDIA GPU) and the
+**Blend** (how much of the original is mixed back in), then **Denoise and save…** writes a copy.
+
 ### Edit
 
 | Command | Shortcut | What it does |
@@ -77,7 +83,7 @@ has the keyboard focus; inside a text field they copy and paste text as usual.
 **Help…** (<kbd>F1</kbd>) opens the help window with the tabs *Getting started*, *Shortcuts*,
 *FAQ*, *Coloring types*, *Variations*, *Scripting* and *About*. **Variation list…** opens it on
 the variation list: all variations with their parameters, searchable, and filters for 3D
-variations and GPU support.
+variations and GPU support. **User manual (PDF)** opens this manual in your PDF viewer.
 
 ![The variation list in the help window](images/help-variations.png){: .half}
 

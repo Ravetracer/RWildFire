@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=RWildFire
+GenericName=Fractal flame editor
+Comment=Create, edit and render fractal flames
+Exec=rwf-app %f
+Icon=rwildfire
+Categories=Graphics;2DGraphics;
+Terminal=false

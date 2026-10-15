@@ -55,7 +55,7 @@ What is different:
 
 | Component | Requirement |
 |-----------|-------------|
-| Operating system | Linux (x86-64) or Windows 10/11 (64 bit) |
+| Operating system | Linux (x86-64, glibc 2.35 or newer: Ubuntu 22.04, Debian 12, Fedora 36 and later) or Windows 10/11 (64 bit) |
 | Graphics | A GPU with Vulkan (Linux, Windows) or DirectX 12 (Windows) support. Without one, RWildFire uses its CPU renderer, which works but is much slower. |
 | Memory | 4 GB; large renders (8K and more) and mesh generation need more |
 | Optional: ffmpeg | For MP4, MOV and WebM videos. It must be installed and in the `PATH`. Without it, animations can still be saved as PNG sequences, ANB files or flame sequences. |
@@ -67,13 +67,28 @@ would be saved.
 
 ## Installation and first start
 
-Download the zip file for your system and unpack it into any folder. Start
+Download the zip file for your system from the releases page of the project
+(<https://github.com/Ravetracer/RWildFire/releases>) and unpack it into any folder:
 
-- `rwf-app` (Linux) or `rwf-app.exe` (Windows) for the editor,
-- `rwf-cli` / `rwf-cli.exe` in a terminal for the command line program.
+- **Linux**: `RWildFire-<version>-linux-x86_64.zip` holds `RWildFire-<version>-x86_64.AppImage`,
+  a single file with the editor, the command line program and the AI denoiser. Double-click it
+  or run it in a terminal; with `cli` as first argument it runs the command line program, e.g.
+  `./RWildFire-<version>-x86_64.AppImage cli render my.flame -o my.png --gpu`.
+- **Windows**: `RWildFire-<version>-windows-x86_64.zip` holds `rwf-app.exe` (the editor),
+  `rwf-cli.exe` (the command line program) and the AI denoiser's `.dll` files, which must stay
+  next to the programs.
 
-No installation is needed. You can open a flame directly by passing its file name, e.g.
-`rwf-app myflame.flame`, or by dropping the file onto the open window.
+No installation is needed. Both archives also hold this manual (also opened by **Help › User
+manual (PDF)**), a short `README.txt` and the license files.
+
+!!! note
+    Windows SmartScreen may warn that the app comes from an unknown publisher, because it is
+    not signed. Click **More info**, then **Run anyway**. On Linux, the file dialogs use the
+    desktop's portal (xdg-desktop-portal), which GNOME, KDE, Xfce and most other desktops
+    provide.
+
+You can open a flame directly by passing its file name to the program, or by dropping the file
+onto the open window.
 
 RWildFire starts with a random flame from the "Classic" generator. Press <kbd>Space</kbd> for
 another one, or open a flame with <kbd>Ctrl</kbd>+<kbd>O</kbd>.

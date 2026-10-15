@@ -322,3 +322,34 @@ The AI denoiser uses Intel Open Image Denoise (Apache License 2.0).
     ui.hyperlink_to("JWildfire on GitHub", "https://github.com/thargor6/JWildfire");
     ui.hyperlink_to("RWildFire on GitHub", "https://github.com/Ravetracer/RWildFire");
 }
+
+/// Opens the user manual PDF (`RWildFire-Manual-*.pdf`) with the system's PDF viewer. Searched
+/// next to the executable, inside an AppImage (`usr/share/doc/rwildfire`), next to the AppImage
+/// file and, for development builds, in the source tree's `docs/manual/build`.
+pub fn open_user_manual() -> Result<std::path::PathBuf, String> {
+    use std::path::PathBuf;
+    let exe_dir = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_path_buf()));
+    let mut dirs: Vec<PathBuf> = exe_dir.iter().cloned().collect();
+    if let Some(d) = &exe_dir {
+        dirs.extend(d.parent().map(|usr| usr.join("share").join("doc").join("rwildfire")));
+        // target/<profile>/rwf-app -> docs/manual/build
+        dirs.extend(d.ancestors().nth(2).map(|root| root.join("docs").join("manual").join("build")));
+    }
+    if let Some(appimage) = std::env::var_os("APPIMAGE") {
+        dirs.extend(PathBuf::from(appimage).parent().map(|d| d.to_path_buf()));
+    }
+    let pdf = dirs
+        .iter()
+        .filter_map(|d| std::fs::read_dir(d).ok())
+        .flat_map(|rd| rd.filter_map(|e| e.ok().map(|e| e.path())))
+        .filter(|p| p.file_name().is_some_and(|n| n.to_string_lossy().starts_with("RWildFire-Manual") && n.to_string_lossy().ends_with(".pdf")))
+        .max()
+        .ok_or("The user manual (RWildFire-Manual-….pdf) was not found next to the program")?;
+    #[cfg(windows)]
+    let result = std::process::Command::new("explorer").arg(&pdf).spawn();
+    #[cfg(target_os = "macos")]
+    let result = std::process::Command::new("open").arg(&pdf).spawn();
+    #[cfg(not(any(windows, target_os = "macos")))]
+    let result = std::process::Command::new("xdg-open").arg(&pdf).spawn();
+    result.map(|_| pdf.clone()).map_err(|e| format!("Could not open {}: {e}", pdf.display()))
+}

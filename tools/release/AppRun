@@ -1,0 +1,10 @@
+#!/bin/sh
+# RWildFire AppImage entry point: starts the editor, or the command line program with
+# "cli" as first argument (e.g. ./RWildFire.AppImage cli render my.flame -o my.png --gpu).
+HERE="$(dirname "$(readlink -f "$0")")"
+export RWF_OIDN_DIR="$HERE/usr/lib"
+if [ "$1" = "cli" ]; then
+    shift
+    exec "$HERE/usr/bin/rwf-cli" "$@"
+fi
+exec "$HERE/usr/bin/rwf-app" "$@"

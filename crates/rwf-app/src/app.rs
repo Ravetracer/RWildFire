@@ -284,6 +284,10 @@ impl RwfApp {
             Action::About => self.help.open_at(crate::help::Tab::About),
             Action::DenoiseImage => self.image_denoiser.open = true,
             Action::Scripts => self.scripts.open(),
+            Action::UserManual => match crate::help::open_user_manual() {
+                Ok(p) => self.notify(format!("Opening {}", p.display())),
+                Err(e) => self.notify(e),
+            },
             Action::Undo => self.doc.undo(),
             Action::Redo => self.doc.redo(),
             Action::Randomize => {

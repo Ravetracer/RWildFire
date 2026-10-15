@@ -1,0 +1,69 @@
+# Builds the release archives and publishes them as a GitHub release.
+#
+# Triggered by pushing a tag v<version> (tools/release/release.py does that), or by hand
+# ("Run workflow") for an existing tag. The tag must match the version in Cargo.toml.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to build and publish, e.g. v1.1.0"
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  RUST_VERSION: "1.98.1"
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Tag
+        id: tag
+        run: echo "tag=${{ github.event.inputs.tag || github.ref_name }}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.tag.outputs.tag }}
+
+      - name: Check the version
+        id: version
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)
+          if [ "v$version" != "${{ steps.tag.outputs.tag }}" ]; then
+            echo "::error::tag ${{ steps.tag.outputs.tag }} does not match the version $version in Cargo.toml"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends mingw-w64 poppler-utils python3-markdown fonts-dejavu-core
+          # The manual's font; DejaVu is the fallback.
+          sudo apt-get install -y --no-install-recommends fonts-inter || echo "fonts-inter not available"
+          rustup toolchain install "$RUST_VERSION" --profile minimal --target x86_64-pc-windows-gnu
+          rustup default "$RUST_VERSION"
+          google-chrome --version
+
+      - name: Build the archives
+        run: python3 tools/release/package.py --jobs "$(nproc)"
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.tag.outputs.tag }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          sed "s/{version}/$VERSION/g" tools/release/notes.md > notes.md
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            gh release upload "$TAG" dist/*.zip --clobber
+          else
+            gh release create "$TAG" dist/*.zip --title "RWildFire $VERSION" --notes-file notes.md --generate-notes
+          fi

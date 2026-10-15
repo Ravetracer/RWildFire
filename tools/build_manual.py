@@ -21,6 +21,7 @@ Source conventions:
 
 import argparse
 import datetime
+import os
 import html
 import re
 import shutil
@@ -160,6 +161,7 @@ def print_pdf(html_path: Path, pdf_path: Path):
     with tempfile.TemporaryDirectory() as profile:
         cmd = [
             chrome(), "--headless=new", "--disable-gpu", "--no-first-run", f"--user-data-dir={profile}",
+            *(["--no-sandbox"] if os.environ.get("CI") else []),
             "--no-pdf-header-footer", "--generate-pdf-document-outline", "--virtual-time-budget=20000",
             f"--print-to-pdf={pdf_path}", html_path.as_uri(),
         ]

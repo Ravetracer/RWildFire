@@ -156,6 +156,8 @@ changing the transforms.
 
 ## Z-buffer
 
+![Density estimation, symmetry, z-buffer and Preserve Z](images/insp-render-bottom.png){: .half}
+
 A z-buffer image is a 16-bit grayscale PNG whose brightness is the depth of the flame at each
 pixel. Compositing and 3D programs use it for depth effects. It is written next to the image
 when **Z-buffer** is ticked in the export dialog (or with `rwf-cli render --zbuffer`).

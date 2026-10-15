@@ -19,6 +19,9 @@
 
 //! RWildFire — desktop fractal flame editor.
 
+// Release builds on Windows start without a console window.
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 mod app;
 mod audio_player;
 mod batch_view;
@@ -71,7 +74,8 @@ fn main() -> eframe::Result {
             .with_title("RWildFire")
             .with_inner_size([1480.0, 900.0])
             .with_min_inner_size([960.0, 600.0])
-            .with_drag_and_drop(true),
+            .with_drag_and_drop(true)
+            .with_icon(eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon.png")).unwrap_or_default()),
         renderer: eframe::Renderer::Wgpu,
         wgpu_options,
         ..Default::default()
