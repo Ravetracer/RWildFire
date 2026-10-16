@@ -190,7 +190,7 @@ impl MutaGen {
                             );
                         }
                         None => {
-                            p.text(rect.center(), egui::Align2::CENTER_CENTER, "…", egui::FontId::proportional(18.0), theme::TEXT_MUTED);
+                            p.text(rect.center(), egui::Align2::CENTER_CENTER, "…", egui::FontId::proportional(theme::fs(18.0)), theme::TEXT_MUTED);
                         }
                     }
                     let stroke = if i == CENTRE {

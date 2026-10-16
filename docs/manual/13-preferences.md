@@ -6,6 +6,14 @@ once into the preferences file (`~/.config/rwildfire/preferences.txt` on Linux,
 
 ![Preferences: denoiser, editor and new flames](images/prefs-1.png){: .half}
 
+## Appearance
+
+![Font size](images/prefs-font.png){: .half}
+
+- **Font size**: the size of all texts in the user interface, in percent of the built-in size
+  (50–200 %, default 100 %). It takes effect at once; **Reset** goes back to 100 %. Sizes other
+  than 100 % can lead to UI glitches: texts may be cut off, overlap or not fit their controls.
+
 ## Denoiser
 
 - **Always denoise**: every flame that comes into the editor without a denoiser (new, random,

@@ -70,10 +70,10 @@ pub fn section_reset(ui: &mut Ui, text: &str) -> bool {
     let mut clicked = false;
     ui.add_space(6.0);
     ui.horizontal(|ui| {
-        ui.label(egui::RichText::new(text.to_uppercase()).size(10.5).color(theme::TEXT_MUTED).strong());
+        ui.label(egui::RichText::new(text.to_uppercase()).size(theme::fs(10.5)).color(theme::TEXT_MUTED).strong());
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             clicked = ui
-                .add(egui::Button::new(egui::RichText::new(crate::icons::REFRESH).size(11.0)).small().frame(false))
+                .add(egui::Button::new(egui::RichText::new(crate::icons::REFRESH).size(theme::fs(11.0))).small().frame(false))
                 .on_hover_text(format!("Reset {} to the defaults", text.to_lowercase()))
                 .clicked();
         });
@@ -132,7 +132,7 @@ pub fn segmented<T: PartialEq + Copy>(ui: &mut Ui, value: &mut T, options: &[(T,
 
 /// Flat icon-ish button with tooltip.
 pub fn icon_button(ui: &mut Ui, icon: &str, tip: &str) -> Response {
-    ui.add(egui::Button::new(egui::RichText::new(icon).size(14.0)).frame(false).min_size(vec2(24.0, 24.0))).on_hover_text(tip)
+    ui.add(egui::Button::new(egui::RichText::new(icon).size(theme::fs(14.0))).frame(false).min_size(vec2(24.0, 24.0))).on_hover_text(tip)
 }
 
 /// Combo box of the random symmetry generators.

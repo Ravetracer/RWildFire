@@ -77,6 +77,8 @@ pub struct Prefs {
     /// CPU cores the renderers leave free.
     pub free_cores: usize,
     pub controls: crate::settings::ControlStyle,
+    /// UI font size in percent of the built-in sizes.
+    pub font_percent: u32,
 }
 
 /// A set of variations the random generators may use (JWildfire's variation profiles, by
@@ -128,6 +130,7 @@ impl Default for Prefs {
             preview_seconds: 0.0,
             free_cores: 0,
             controls: Default::default(),
+            font_percent: 100,
         }
     }
 }
@@ -190,6 +193,9 @@ impl Prefs {
                 "batch_refresh" => p.batch_refresh = crate::explorer::RefreshMode::parse(v),
                 "browser_dir" => p.browser_dir = v.to_string(),
                 "grid_size" => p.grid_size = v.parse::<f64>().ok().filter(|g| *g > 0.0).unwrap_or(p.grid_size),
+                "font_size" => {
+                    p.font_percent = v.parse::<u32>().map(|n| n.clamp(*theme::FONT_PERCENT_RANGE.start(), *theme::FONT_PERCENT_RANGE.end())).unwrap_or(p.font_percent)
+                }
                 _ => {}
             }
         }
@@ -233,6 +239,7 @@ impl Prefs {
         let c = &self.controls;
         text += &format!("control_shape = {}\ncontrol_color = {}\ncontrol_numbers = {}\ncontrol_shadows = {}\n", c.shape.as_str(), c.color, c.numbers, c.shadows);
         text += &format!("batch_size = {}\nbatch_refresh = {}\n", self.batch_size, self.batch_refresh.as_str());
+        text += &format!("font_size = {}\n", self.font_percent);
         std::fs::write(&path, text).map_err(|e| format!("{}: {e}", path.display()))?;
         Ok(path)
     }
@@ -476,6 +483,23 @@ impl PrefsWindow {
         egui::Window::new("Preferences").open(&mut open).default_width(420.0).resizable(false).collapsible(false).show(ctx, |ui| {
             let h = ctx.content_rect().height() - 120.0;
             egui::ScrollArea::vertical().max_height(h).min_scrolled_height(h).show(ui, |ui| {
+                theme::section_label(ui, "Appearance");
+                widgets::grid(ui, "prefs-appearance", |ui| {
+                    widgets::label(ui, "Font size");
+                    ui.horizontal(|ui| {
+                        ui.add(egui::DragValue::new(&mut prefs.font_percent).range(theme::FONT_PERCENT_RANGE).suffix(" %"))
+                            .on_hover_text("Size of all texts in the user interface, in percent of the built-in size (100 %). Drag or type a value.");
+                        if ui.add_enabled(prefs.font_percent != 100, egui::Button::new("Reset").small()).on_hover_text("Back to 100 %").clicked() {
+                            prefs.font_percent = 100;
+                        }
+                    });
+                    ui.end_row();
+                });
+                ui.label(
+                    RichText::new("Other font sizes than 100 % can lead to UI glitches: texts may be cut off, overlap or not fit their controls.")
+                        .small()
+                        .color(theme::WARN),
+                );
                 theme::section_label(ui, "Denoiser");
                 ui.checkbox(&mut prefs.always_denoise, "Always denoise")
                     .on_hover_text("Every flame that comes into the editor without a denoiser (new, random, Explore, MutaGen, opened files) gets the settings below, so saved images and renders are denoised. The canvas shows it only with \"Denoised\". Flames that already have a denoiser keep theirs.");

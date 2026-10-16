@@ -379,7 +379,7 @@ impl Explorer {
         if strip.is_empty() {
             let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), size.y), Sense::hover());
             let text = if self.mode == Mode::Mutations { "Mutate makes variants of the editor's flame." } else { "Empty — start a new batch." };
-            ui.painter().text(rect.left_center() + vec2(8.0, 0.0), egui::Align2::LEFT_CENTER, text, egui::FontId::proportional(13.0), theme::TEXT_MUTED);
+            ui.painter().text(rect.left_center() + vec2(8.0, 0.0), egui::Align2::LEFT_CENTER, text, egui::FontId::proportional(theme::fs(13.0)), theme::TEXT_MUTED);
             return None;
         }
         let mut area = egui::ScrollArea::horizontal().id_salt(("explore-strip", strip_index(self.mode)));
@@ -399,7 +399,7 @@ impl Explorer {
                             p.image(tex.id(), rect.shrink(1.0), egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), Color32::WHITE);
                         }
                         None => {
-                            p.text(rect.center(), egui::Align2::CENTER_CENTER, "…", egui::FontId::proportional(18.0), theme::TEXT_MUTED);
+                            p.text(rect.center(), egui::Align2::CENTER_CENTER, "…", egui::FontId::proportional(theme::fs(18.0)), theme::TEXT_MUTED);
                         }
                     }
                     let stroke = if resp.hovered() { Stroke::new(2.0, theme::ACCENT) } else { Stroke::new(1.0, theme::BORDER) };

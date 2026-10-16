@@ -132,7 +132,7 @@ impl DenoisedView {
     pub fn paint_status(&self, painter: &Painter, pos: Pos2) {
         let Some((text, ok)) = self.status() else { return };
         let color = if ok { theme::TEXT } else { theme::WARN };
-        let galley = painter.layout(text, FontId::proportional(11.5), color, 520.0);
+        let galley = painter.layout(text, FontId::proportional(theme::fs(11.5)), color, 520.0);
         let r = Rect::from_min_size(pos, galley.size() + vec2(16.0, 8.0));
         painter.rect_filled(r, 6, theme::PANEL.gamma_multiply(0.92));
         painter.galley(r.min + vec2(8.0, 4.0), galley, color);

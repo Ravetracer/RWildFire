@@ -584,7 +584,7 @@ impl InteractiveRenderer {
         let painter = ui.painter_at(rect);
         let (Some(tex), Some((w, h))) = (self.texture(frame), self.renderer.as_ref().and_then(|r| r.output_size())) else {
             let msg = if gpu { "Press Start to render the flame" } else { "No GPU available" };
-            painter.text(rect.center(), egui::Align2::CENTER_CENTER, msg, egui::FontId::proportional(15.0), theme::TEXT_MUTED);
+            painter.text(rect.center(), egui::Align2::CENTER_CENTER, msg, egui::FontId::proportional(theme::fs(15.0)), theme::TEXT_MUTED);
             return;
         };
         let size = vec2(w as f32, h as f32);
@@ -630,7 +630,7 @@ impl InteractiveRenderer {
             rect.left_bottom() + vec2(10.0, -10.0),
             egui::Align2::LEFT_BOTTOM,
             zoom_text,
-            egui::FontId::proportional(12.0),
+            egui::FontId::proportional(theme::fs(12.0)),
             theme::TEXT_MUTED,
         );
     }

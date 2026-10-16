@@ -450,7 +450,7 @@ impl BatchView {
         if self.entries.is_empty() {
             ui.add_space(40.0);
             ui.vertical_centered(|ui| {
-                ui.label(RichText::new("No jobs yet").color(theme::TEXT_MUTED).size(15.0));
+                ui.label(RichText::new("No jobs yet").color(theme::TEXT_MUTED).size(theme::fs(15.0)));
                 ui.label(RichText::new("Add flame files or folders, drop files here, or add the editor's flame").color(theme::TEXT_MUTED));
             });
             return;
@@ -513,7 +513,7 @@ impl BatchView {
                 rect.center(),
                 egui::Align2::CENTER_CENTER,
                 "The running job is shown here",
-                egui::FontId::proportional(14.0),
+                egui::FontId::proportional(theme::fs(14.0)),
                 theme::TEXT_MUTED,
             );
             return;
@@ -526,7 +526,7 @@ impl BatchView {
             egui::pos2(rect.center().x, rect.top() + 2.0),
             egui::Align2::CENTER_TOP,
             name,
-            egui::FontId::proportional(12.0),
+            egui::FontId::proportional(theme::fs(12.0)),
             theme::TEXT_MUTED,
         );
         painter.image(tex.id(), img, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), Color32::WHITE);

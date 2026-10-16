@@ -927,11 +927,11 @@ impl DanceView {
         let dt = self.last_frame.elapsed().as_secs_f64();
         self.last_frame = Instant::now();
         if self.project.flames.is_empty() {
-            painter.text(avail.center(), Align2::CENTER_CENTER, "Add flames on the left to start", FontId::proportional(14.0), theme::TEXT_MUTED);
+            painter.text(avail.center(), Align2::CENTER_CENTER, "Add flames on the left to start", FontId::proportional(theme::fs(14.0)), theme::TEXT_MUTED);
             return;
         }
         let Some(gpu) = gpu else {
-            painter.text(avail.center(), Align2::CENTER_CENTER, "The realtime view needs a GPU", FontId::proportional(14.0), theme::WARN);
+            painter.text(avail.center(), Align2::CENTER_CENTER, "The realtime view needs a GPU", FontId::proportional(theme::fs(14.0)), theme::WARN);
             return;
         };
         let now = self.now();
@@ -969,7 +969,7 @@ impl DanceView {
             ui.ctx().request_repaint();
         }
         if let Some(e) = r.last_error() {
-            painter.text(avail.center(), Align2::CENTER_CENTER, e, FontId::proportional(12.0), theme::WARN);
+            painter.text(avail.center(), Align2::CENTER_CENTER, e, FontId::proportional(theme::fs(12.0)), theme::WARN);
             return;
         }
         let generation = r.output_generation();
@@ -1016,14 +1016,14 @@ impl DanceView {
         } else {
             chip.push_str(&format!("  ·  quality {density:.0}"));
         }
-        let galley = painter.layout_no_wrap(chip, FontId::proportional(11.5), theme::TEXT);
+        let galley = painter.layout_no_wrap(chip, FontId::proportional(theme::fs(11.5)), theme::TEXT);
         let cr = Rect::from_min_size(img_rect.left_top() + vec2(12.0, 12.0), galley.size() + vec2(16.0, 8.0));
         painter.rect_filled(cr, 6, theme::PANEL.gamma_multiply(0.9));
         painter.galley(cr.min + vec2(8.0, 4.0), galley, theme::TEXT);
         if self.recording.is_some() {
             let c = pos2(img_rect.right() - 24.0, img_rect.top() + 24.0);
             painter.circle_filled(c, 7.0, Color32::from_rgb(0xff, 0x40, 0x40));
-            painter.text(c - vec2(14.0, 0.0), Align2::RIGHT_CENTER, "REC", FontId::proportional(12.0), Color32::from_rgb(0xff, 0x70, 0x70));
+            painter.text(c - vec2(14.0, 0.0), Align2::RIGHT_CENTER, "REC", FontId::proportional(theme::fs(12.0)), Color32::from_rgb(0xff, 0x70, 0x70));
         }
     }
 }
@@ -1064,7 +1064,7 @@ fn spline_editor(ui: &mut Ui, curve: &mut rwf_core::animation::Track, drag: &mut
     for k in &curve.keys {
         p.circle_filled(to_screen(k.frame, k.value), 4.0, theme::ACCENT);
     }
-    p.text(rect.right_top() + vec2(-4.0, 2.0), egui::Align2::RIGHT_TOP, format!("{t_max:.0} s"), egui::FontId::proportional(10.0), theme::TEXT_MUTED);
+    p.text(rect.right_top() + vec2(-4.0, 2.0), egui::Align2::RIGHT_TOP, format!("{t_max:.0} s"), egui::FontId::proportional(theme::fs(10.0)), theme::TEXT_MUTED);
     let nearest = |q: egui::Pos2, keys: &[Key]| keys.iter().position(|k| to_screen(k.frame, k.value).distance(q) < 9.0);
     if resp.drag_started()
         && let Some(q) = resp.interact_pointer_pos()

@@ -459,7 +459,7 @@ impl QuiltView {
                 rect.center(),
                 egui::Align2::CENTER_CENTER,
                 "Choose a size and an output file, then render the quilt",
-                egui::FontId::proportional(15.0),
+                egui::FontId::proportional(theme::fs(15.0)),
                 theme::TEXT_MUTED,
             );
             return;

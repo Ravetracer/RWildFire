@@ -571,7 +571,7 @@ impl MovieView {
                         img.right_top() + vec2(-8.0, 8.0),
                         egui::Align2::RIGHT_TOP,
                         "…",
-                        egui::FontId::proportional(18.0),
+                        egui::FontId::proportional(theme::fs(18.0)),
                         theme::TEXT_MUTED,
                     );
                 }
@@ -581,7 +581,7 @@ impl MovieView {
                     rect.center(),
                     egui::Align2::CENTER_CENTER,
                     "Add flames below to start a movie",
-                    egui::FontId::proportional(15.0),
+                    egui::FontId::proportional(theme::fs(15.0)),
                     theme::TEXT_MUTED,
                 );
             }
@@ -671,7 +671,7 @@ impl MovieView {
                                         r.center(),
                                         egui::Align2::CENTER_CENTER,
                                         "…",
-                                        egui::FontId::proportional(16.0),
+                                        egui::FontId::proportional(theme::fs(16.0)),
                                         theme::TEXT_MUTED,
                                     );
                                 }

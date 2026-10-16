@@ -524,9 +524,9 @@ pub fn show(ui: &mut egui::Ui, frame: &eframe::Frame, doc: &mut Document, state:
                     _ => pos2((t[0].x + t[1].x + t[2].x) / 3.0, (t[0].y + t[1].y + t[2].y) / 3.0),
                 };
                 if style.shadows {
-                    painter.text(centre + vec2(1.0, 1.0), Align2::CENTER_CENTER, &label, FontId::proportional(12.0), Color32::from_black_alpha(200));
+                    painter.text(centre + vec2(1.0, 1.0), Align2::CENTER_CENTER, &label, FontId::proportional(theme::fs(12.0)), Color32::from_black_alpha(200));
                 }
-                painter.text(centre, Align2::CENTER_CENTER, &label, FontId::proportional(12.0), c);
+                painter.text(centre, Align2::CENTER_CENTER, &label, FontId::proportional(theme::fs(12.0)), c);
             }
             if selected || hovered {
                 let hv = hover_hit.filter(|h| h.sel == sel).map(|h| h.handle);
@@ -536,7 +536,7 @@ pub fn show(ui: &mut egui::Ui, frame: &eframe::Frame, doc: &mut Document, state:
                 }
                 let lbl = |p: Pos2, o: Pos2, s: &str| {
                     let dir = (p - o).normalized();
-                    painter.text(p + dir * 12.0, Align2::CENTER_CENTER, s, FontId::proportional(11.0), color);
+                    painter.text(p + dir * 12.0, Align2::CENTER_CENTER, s, FontId::proportional(theme::fs(11.0)), color);
                 };
                 lbl(t[1], t[0], "X");
                 lbl(t[2], t[0], "Y");
@@ -749,7 +749,7 @@ fn overlay(ui: &mut egui::Ui, avail: Rect, doc: &mut Document, state: &mut Canva
         } else {
             let painter = ui.painter_at(avail);
             let text = format!("Denoised view: waits for the preview to reach quality {:.0}", preview.target_quality);
-            let galley = painter.layout_no_wrap(text, FontId::proportional(11.5), theme::TEXT_MUTED);
+            let galley = painter.layout_no_wrap(text, FontId::proportional(theme::fs(11.5)), theme::TEXT_MUTED);
             let r = Rect::from_min_size(pos, galley.size() + vec2(16.0, 8.0));
             painter.rect_filled(r, 6, theme::PANEL.gamma_multiply(0.92));
             painter.galley(r.min + vec2(8.0, 4.0), galley, theme::TEXT_MUTED);
@@ -772,7 +772,7 @@ fn overlay(ui: &mut egui::Ui, avail: Rect, doc: &mut Document, state: &mut Canva
     painter.rect_filled(chip, 8, theme::PANEL.gamma_multiply(0.92));
     let bar = Rect::from_min_size(chip.left_bottom() + vec2(8.0, -4.0), vec2((chip.width() - 16.0) * progress, 2.0));
     painter.rect_filled(bar, 1, theme::ACCENT);
-    painter.text(chip.left_center() + vec2(10.0, -1.0), Align2::LEFT_CENTER, text, FontId::proportional(11.5), theme::TEXT_MUTED);
+    painter.text(chip.left_center() + vec2(10.0, -1.0), Align2::LEFT_CENTER, text, FontId::proportional(theme::fs(11.5)), theme::TEXT_MUTED);
 
     // Warnings (unsupported variations / shader errors), bottom-right.
     let mut warn = Vec::new();
@@ -784,7 +784,7 @@ fn overlay(ui: &mut egui::Ui, avail: Rect, doc: &mut Document, state: &mut Canva
         warn.push(format!("Not supported yet (ignored): {}", unsupported.join(", ")));
     }
     if !warn.is_empty() {
-        let galley = painter.layout(warn.join("\n"), FontId::proportional(11.5), theme::WARN, 520.0);
+        let galley = painter.layout(warn.join("\n"), FontId::proportional(theme::fs(11.5)), theme::WARN, 520.0);
         let r = Rect::from_min_size(pos2(avail.max.x - galley.size().x - 32.0, avail.max.y - galley.size().y - 22.0), galley.size() + Vec2::splat(16.0));
         painter.rect_filled(r, 8, theme::PANEL.gamma_multiply(0.95));
         painter.galley(r.min + Vec2::splat(8.0), galley, theme::WARN);

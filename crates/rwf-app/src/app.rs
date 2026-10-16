@@ -91,9 +91,9 @@ pub struct RwfApp {
 impl RwfApp {
     pub fn new(cc: &eframe::CreationContext<'_>, initial: Option<PathBuf>) -> Self {
         crate::icons::install(&cc.egui_ctx);
-        theme::apply(&cc.egui_ctx);
-        let mut rng = Rng::from_entropy();
         let prefs = crate::prefs::Prefs::load();
+        theme::apply(&cc.egui_ctx, prefs.font_percent);
+        let mut rng = Rng::from_entropy();
         let flame = prefs.adopt(generate(Generator::Classic, &mut rng));
         let mut app = Self {
             doc: Document::new(flame),
@@ -457,12 +457,12 @@ impl RwfApp {
         let modal = egui::Modal::new(egui::Id::new("close-prompt")).show(ctx, |ui| {
             ui.set_width(380.0);
             if self.doc.dirty {
-                ui.label(RichText::new("Save changes?").strong().size(16.0));
+                ui.label(RichText::new("Save changes?").strong().size(theme::fs(16.0)));
                 ui.add_space(4.0);
                 let name = self.doc.title();
                 ui.label(format!("The flame \"{}\" has changes that are not saved.", name.trim_end_matches(" •")));
             } else {
-                ui.label(RichText::new("Quit RWildFire?").strong().size(16.0));
+                ui.label(RichText::new("Quit RWildFire?").strong().size(theme::fs(16.0)));
             }
             if let Some(job) = job {
                 ui.add_space(4.0);
@@ -778,7 +778,11 @@ impl eframe::App for RwfApp {
             self.render.open_with(&self.doc.flame);
         }
         let preview_quality = self.prefs.preview_quality;
+        let font_percent = self.prefs.font_percent;
         if self.prefs_window.show(&ctx, &mut self.prefs) {
+            if self.prefs.font_percent != font_percent {
+                theme::apply(&ctx, self.prefs.font_percent);
+            }
             self.canvas.grid_size = self.prefs.grid_size;
             if self.prefs.preview_quality != preview_quality {
                 self.preview.target_quality = self.prefs.preview_quality;

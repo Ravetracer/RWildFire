@@ -480,7 +480,7 @@ impl MeshView {
             ViewMode::Mesh => {
                 let Some((_, mesh)) = &self.surface else {
                     let msg = if self.is_running() { "Sampling the volume…" } else { "Sample the volume to see the mesh" };
-                    painter.text(rect.center(), egui::Align2::CENTER_CENTER, msg, egui::FontId::proportional(15.0), theme::TEXT_MUTED);
+                    painter.text(rect.center(), egui::Align2::CENTER_CENTER, msg, egui::FontId::proportional(theme::fs(15.0)), theme::TEXT_MUTED);
                     return;
                 };
                 let s = if resp.dragged() { 2 } else { 1 };
@@ -493,7 +493,7 @@ impl MeshView {
                         rect.center(),
                         egui::Align2::CENTER_CENTER,
                         "Sample the volume to see its slices",
-                        egui::FontId::proportional(15.0),
+                        egui::FontId::proportional(theme::fs(15.0)),
                         theme::TEXT_MUTED,
                     );
                     return;
@@ -529,7 +529,7 @@ impl MeshView {
                 rect.left_bottom() + vec2(4.0, -4.0),
                 egui::Align2::LEFT_BOTTOM,
                 "Drag: turn · wheel: zoom",
-                egui::FontId::proportional(11.0),
+                egui::FontId::proportional(theme::fs(11.0)),
                 theme::TEXT_MUTED,
             );
         }

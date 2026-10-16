@@ -567,7 +567,7 @@ pub fn orbit_globe(ui: &mut Ui, f: &mut Flame, radius: f32, compact: bool) -> Re
                     q,
                     Align2::CENTER_CENTER,
                     ["X", "Y", "Z"][i],
-                    FontId::proportional(if compact { 8.5 } else { 10.0 }),
+                    FontId::proportional(theme::fs(if compact { 8.5 } else { 10.0 })),
                     fade(Color32::BLACK, 1.0),
                 );
             }
@@ -602,7 +602,7 @@ pub fn orbit_globe(ui: &mut Ui, f: &mut Flame, radius: f32, compact: bool) -> Re
             Target::Axis(i, positive) => format!("View along {}{}", if positive { "+" } else { "−" }, ["X", "Y", "Z"][i]),
         };
         let pos = pos2(geo.center.x, rect.bottom() - 1.0);
-        let galley = painter.layout_no_wrap(text, FontId::proportional(10.5), theme::TEXT);
+        let galley = painter.layout_no_wrap(text, FontId::proportional(theme::fs(10.5)), theme::TEXT);
         let bg = egui::Rect::from_center_size(pos - vec2(0.0, galley.size().y * 0.5), galley.size() + vec2(8.0, 2.0));
         painter.rect_filled(bg, 4, theme::PANEL.gamma_multiply(0.9));
         painter.galley(bg.min + vec2(4.0, 1.0), galley, theme::TEXT);

@@ -288,7 +288,7 @@ impl GradientLibrary {
                         pos2(bar.right() + 10.0, rect.center().y),
                         egui::Align2::LEFT_CENTER,
                         if g.name.is_empty() { "(unnamed)" } else { &g.name },
-                        egui::FontId::proportional(12.0),
+                        egui::FontId::proportional(theme::fs(12.0)),
                         if resp.hovered() { theme::TEXT } else { theme::TEXT_MUTED },
                     );
                     if resp.hovered() {

@@ -19,6 +19,8 @@
 
 //! Flat, dark visual theme. No gradients, few borders, one accent color.
 
+use std::sync::atomic::{AtomicU32, Ordering};
+
 use egui::{Color32, CornerRadius, FontFamily, FontId, Margin, Shadow, Stroke, Style, TextStyle, Visuals, vec2};
 
 pub const BG: Color32 = Color32::from_rgb(0x15, 0x16, 0x1a);
@@ -33,7 +35,20 @@ pub const ACCENT_DIM: Color32 = Color32::from_rgb(0x5a, 0x34, 0x22);
 pub const WARN: Color32 = Color32::from_rgb(0xf2, 0xb3, 0x4a);
 pub const CANVAS: Color32 = Color32::from_rgb(0x0e, 0x0f, 0x12);
 
-pub fn apply(ctx: &egui::Context) {
+/// UI font size in percent of the built-in sizes (Preferences › Font size).
+static FONT_PERCENT: AtomicU32 = AtomicU32::new(100);
+
+/// Font size limits of the preference, in percent.
+pub const FONT_PERCENT_RANGE: std::ops::RangeInclusive<u32> = 50..=200;
+
+/// A built-in font size scaled by the font size preference.
+pub fn fs(px: f32) -> f32 {
+    px * FONT_PERCENT.load(Ordering::Relaxed) as f32 / 100.0
+}
+
+/// Sets the theme; `font_percent` scales every font of the UI.
+pub fn apply(ctx: &egui::Context, font_percent: u32) {
+    FONT_PERCENT.store(font_percent.clamp(*FONT_PERCENT_RANGE.start(), *FONT_PERCENT_RANGE.end()), Ordering::Relaxed);
     let mut style = Style::default();
     let mut v = Visuals::dark();
     let r = CornerRadius::same(6);
@@ -105,11 +120,11 @@ pub fn apply(ctx: &egui::Context) {
     style.spacing.scroll = egui::style::ScrollStyle::solid();
 
     style.text_styles = [
-        (TextStyle::Small, FontId::new(11.0, FontFamily::Proportional)),
-        (TextStyle::Body, FontId::new(13.5, FontFamily::Proportional)),
-        (TextStyle::Button, FontId::new(13.5, FontFamily::Proportional)),
-        (TextStyle::Heading, FontId::new(17.0, FontFamily::Proportional)),
-        (TextStyle::Monospace, FontId::new(12.5, FontFamily::Monospace)),
+        (TextStyle::Small, FontId::new(fs(11.0), FontFamily::Proportional)),
+        (TextStyle::Body, FontId::new(fs(13.5), FontFamily::Proportional)),
+        (TextStyle::Button, FontId::new(fs(13.5), FontFamily::Proportional)),
+        (TextStyle::Heading, FontId::new(fs(17.0), FontFamily::Proportional)),
+        (TextStyle::Monospace, FontId::new(fs(12.5), FontFamily::Monospace)),
     ]
     .into();
 
@@ -120,6 +135,6 @@ pub fn apply(ctx: &egui::Context) {
 /// Small uppercase section label.
 pub fn section_label(ui: &mut egui::Ui, text: &str) {
     ui.add_space(6.0);
-    ui.label(egui::RichText::new(text.to_uppercase()).size(10.5).color(TEXT_MUTED).strong());
+    ui.label(egui::RichText::new(text.to_uppercase()).size(fs(10.5)).color(TEXT_MUTED).strong());
     ui.add_space(2.0);
 }

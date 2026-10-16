@@ -326,7 +326,7 @@ impl ScriptWindow {
         egui::ScrollArea::vertical().id_salt("script-list").auto_shrink([false, false]).show(ui, |ui| {
             let heading = |ui: &mut Ui, t: &str| {
                 ui.add_space(6.0);
-                ui.label(RichText::new(t.to_uppercase()).size(10.5).color(theme::TEXT_MUTED).strong());
+                ui.label(RichText::new(t.to_uppercase()).size(theme::fs(10.5)).color(theme::TEXT_MUTED).strong());
             };
             heading(ui, "Examples");
             for (name, _) in rwf_script::EXAMPLES {
@@ -431,7 +431,7 @@ impl ScriptWindow {
                 ui.label(RichText::new("Output of print() and errors appear here.").small().color(theme::TEXT_MUTED));
             }
             for (line, is_err) in &self.log {
-                let t = RichText::new(line).monospace().size(12.0);
+                let t = RichText::new(line).monospace().size(theme::fs(12.0));
                 ui.add(egui::Label::new(if *is_err { t.color(ERROR) } else { t }).wrap());
             }
         });

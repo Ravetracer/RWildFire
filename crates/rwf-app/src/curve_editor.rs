@@ -324,7 +324,7 @@ impl CurveEditor {
             p.rect_filled(range, CornerRadius::ZERO, theme::SURFACE.gamma_multiply(0.4));
         }
         let grid = Stroke::new(1.0, theme::BORDER.gamma_multiply(0.7));
-        let font = FontId::proportional(10.0);
+        let font = FontId::proportional(theme::fs(10.0));
         for f in nice_steps(v.x0, v.x1, (plot.width() / 70.0) as usize) {
             let x = to_screen(f, 0.0).x;
             p.line_segment([pos2(x, plot.top()), pos2(x, plot.bottom())], grid);

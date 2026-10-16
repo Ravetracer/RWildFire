@@ -91,9 +91,9 @@ fn row(ui: &mut Ui, title: &str, sub: &str, swatch: Color32, handle_color: Color
     p.rect_filled(sw, CornerRadius::same(3), swatch);
     p.rect_stroke(sw, CornerRadius::same(3), Stroke::new(1.0, theme::BORDER), egui::StrokeKind::Outside);
     let text_x = rect.left() + 48.0;
-    p.text(egui::pos2(text_x, rect.top() + 13.0), egui::Align2::LEFT_CENTER, title, egui::FontId::proportional(13.0), theme::TEXT);
+    p.text(egui::pos2(text_x, rect.top() + 13.0), egui::Align2::LEFT_CENTER, title, egui::FontId::proportional(theme::fs(13.0)), theme::TEXT);
     let max_w = rect.width() - 48.0 - 60.0;
-    let galley = p.layout(sub.to_string(), egui::FontId::proportional(11.0), theme::TEXT_MUTED, f32::INFINITY);
+    let galley = p.layout(sub.to_string(), egui::FontId::proportional(theme::fs(11.0)), theme::TEXT_MUTED, f32::INFINITY);
     let sub_txt = if galley.size().x > max_w {
         let mut s: String = sub.chars().take((sub.len() as f32 * max_w / galley.size().x) as usize).collect();
         s.push('…');
@@ -101,7 +101,7 @@ fn row(ui: &mut Ui, title: &str, sub: &str, swatch: Color32, handle_color: Color
     } else {
         sub.to_string()
     };
-    p.text(egui::pos2(text_x, rect.top() + 30.0), egui::Align2::LEFT_CENTER, sub_txt, egui::FontId::proportional(11.0), theme::TEXT_MUTED);
+    p.text(egui::pos2(text_x, rect.top() + 30.0), egui::Align2::LEFT_CENTER, sub_txt, egui::FontId::proportional(theme::fs(11.0)), theme::TEXT_MUTED);
 
     if resp.hovered() || selected {
         // inline actions
@@ -226,7 +226,7 @@ pub fn show(ui: &mut Ui, doc: &mut Document, st: &mut TransformsState) {
 fn layers_section(ui: &mut Ui, doc: &mut Document) {
     let n = doc.flame.layers.len();
     let title = if n > 1 { format!("Layers ({n})") } else { "Layers".to_string() };
-    egui::CollapsingHeader::new(RichText::new(title.to_uppercase()).size(10.5).color(theme::TEXT_MUTED).strong())
+    egui::CollapsingHeader::new(RichText::new(title.to_uppercase()).size(theme::fs(10.5)).color(theme::TEXT_MUTED).strong())
         .id_salt("layers")
         .default_open(n > 1)
         .show(ui, |ui| {

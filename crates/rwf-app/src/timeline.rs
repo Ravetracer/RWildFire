@@ -151,7 +151,7 @@ impl Timeline {
                 self.frame = 0.0;
             }
             let play = if self.playing { icons::PAUSE } else { icons::PLAY };
-            if ui.add(egui::Button::new(RichText::new(play).size(15.0)).fill(theme::ACCENT_DIM)).on_hover_text("Play / pause").clicked() {
+            if ui.add(egui::Button::new(RichText::new(play).size(theme::fs(15.0))).fill(theme::ACCENT_DIM)).on_hover_text("Play / pause").clicked() {
                 self.playing = !self.playing;
                 self.last_tick = Instant::now();
             }
@@ -247,12 +247,12 @@ impl Timeline {
             while f < count {
                 let x = fx(f as f64);
                 p.line_segment([pos2(x, rect.top() + 10.0), pos2(x, rect.bottom())], Stroke::new(1.0, theme::BORDER.gamma_multiply(0.6)));
-                p.text(pos2(x + 3.0, rect.top() + 1.0), Align2::LEFT_TOP, f.to_string(), FontId::proportional(10.0), theme::TEXT_MUTED);
+                p.text(pos2(x + 3.0, rect.top() + 1.0), Align2::LEFT_TOP, f.to_string(), FontId::proportional(theme::fs(10.0)), theme::TEXT_MUTED);
                 f += step;
             }
             // rows
             let row_y = |i: usize| rect.top() + 18.0 + ROW_H * i as f32 + ROW_H / 2.0;
-            p.text(pos2(rect.left() + 6.0, row_y(0)), Align2::LEFT_CENTER, "All keys", FontId::proportional(11.5), theme::TEXT);
+            p.text(pos2(rect.left() + 6.0, row_y(0)), Align2::LEFT_CENTER, "All keys", FontId::proportional(theme::fs(11.5)), theme::TEXT);
             let all_frames = doc.flame.animation.key_frames();
             for fr in &all_frames {
                 diamond(&p, pos2(fx(*fr), row_y(0)), 4.5, theme::TEXT_MUTED, Stroke::NONE);
@@ -265,7 +265,7 @@ impl Timeline {
                     p.rect_filled(Rect::from_min_max(pos2(rect.left(), y - ROW_H / 2.0), pos2(rect.right(), y + ROW_H / 2.0)), CornerRadius::ZERO, theme::SURFACE.gamma_multiply(0.35));
                 }
                 let lbl = animation::label(&doc.flame, path);
-                p.text(pos2(rect.left() + 6.0, y), Align2::LEFT_CENTER, lbl, FontId::proportional(11.0), theme::TEXT_MUTED);
+                p.text(pos2(rect.left() + 6.0, y), Align2::LEFT_CENTER, lbl, FontId::proportional(theme::fs(11.0)), theme::TEXT_MUTED);
                 if resp.double_clicked() && pointer.is_some_and(|pp| pp.x < lane_x0 && (pp.y - y).abs() < ROW_H / 2.0) {
                     self.curve_request = Some(Some(path.clone()));
                 }

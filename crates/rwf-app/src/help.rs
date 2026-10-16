@@ -63,7 +63,7 @@ fn page(ui: &mut Ui, text: &str) {
         let block = block.trim();
         if let Some(h) = block.strip_prefix("## ") {
             ui.add_space(6.0);
-            ui.label(RichText::new(h).strong().size(15.0).color(theme::TEXT));
+            ui.label(RichText::new(h).strong().size(theme::fs(15.0)).color(theme::TEXT));
         } else if block.lines().all(|l| l.trim_start().starts_with("- ")) {
             for l in block.lines() {
                 ui.horizontal_wrapped(|ui| {
@@ -96,10 +96,10 @@ fn markdown(ui: &mut Ui, text: &str) {
         let lines: Vec<&str> = block.lines().filter(|l| !l.trim().is_empty()).collect();
         let Some(first) = lines.first() else { continue };
         if let Some(h) = first.strip_prefix("# ") {
-            ui.label(RichText::new(h).strong().size(18.0).color(theme::TEXT));
+            ui.label(RichText::new(h).strong().size(theme::fs(18.0)).color(theme::TEXT));
         } else if let Some(h) = first.strip_prefix("## ") {
             ui.add_space(6.0);
-            ui.label(RichText::new(h).strong().size(15.0).color(theme::TEXT));
+            ui.label(RichText::new(h).strong().size(theme::fs(15.0)).color(theme::TEXT));
             if lines.len() > 1 {
                 rich_line(ui, &lines[1..].join(" "));
             }
@@ -307,7 +307,7 @@ impl HelpWindow {
 }
 
 fn about(ui: &mut Ui) {
-    ui.label(RichText::new(format!("RWildFire {}", env!("CARGO_PKG_VERSION"))).strong().size(18.0).color(theme::TEXT));
+    ui.label(RichText::new(format!("RWildFire {}", env!("CARGO_PKG_VERSION"))).strong().size(theme::fs(18.0)).color(theme::TEXT));
     ui.label("A fractal flame editor and renderer, written in Rust.");
     ui.add_space(8.0);
     page(

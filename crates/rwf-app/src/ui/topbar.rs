@@ -70,8 +70,8 @@ pub fn show(ui: &mut Ui, info: &TopBarInfo, generator: &mut Generator, extras: &
     let mut action = None;
     ui.horizontal_centered(|ui| {
         ui.spacing_mut().item_spacing.x = 6.0;
-        ui.label(RichText::new(icons::FIRE).color(theme::ACCENT).size(18.0));
-        ui.label(RichText::new("RWildFire").strong().size(15.0));
+        ui.label(RichText::new(icons::FIRE).color(theme::ACCENT).size(theme::fs(18.0)));
+        ui.label(RichText::new("RWildFire").strong().size(theme::fs(15.0)));
         ui.add_space(10.0);
 
         ui.menu_button("File", |ui| {

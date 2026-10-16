@@ -549,17 +549,17 @@ impl FlameBrowser {
                     tip = Some(format!("{flames} flames in the file; opens all of them (Explore › File)"));
                     let badge = egui::Rect::from_min_size(img_rect.right_top() + vec2(-34.0, 4.0), vec2(30.0, 16.0));
                     p.rect_filled(badge, CornerRadius::same(4), Color32::from_black_alpha(180));
-                    p.text(badge.center(), egui::Align2::CENTER_CENTER, format!("×{flames}"), egui::FontId::proportional(11.0), theme::TEXT);
+                    p.text(badge.center(), egui::Align2::CENTER_CENTER, format!("×{flames}"), egui::FontId::proportional(theme::fs(11.0)), theme::TEXT);
                 }
             }
             Some(Thumb::Failed(e)) => {
                 tip = Some(format!("Could not render: {e}"));
                 if present {
-                    p.text(img_rect.center(), egui::Align2::CENTER_CENTER, icons::WARNING, egui::FontId::proportional(22.0), theme::WARN);
+                    p.text(img_rect.center(), egui::Align2::CENTER_CENTER, icons::WARNING, egui::FontId::proportional(theme::fs(22.0)), theme::WARN);
                 }
             }
             _ => {
-                p.text(img_rect.center(), egui::Align2::CENTER_CENTER, "…", egui::FontId::proportional(18.0), theme::TEXT_MUTED);
+                p.text(img_rect.center(), egui::Align2::CENTER_CENTER, "…", egui::FontId::proportional(theme::fs(18.0)), theme::TEXT_MUTED);
             }
         }
         let overlay = match mark {
@@ -570,7 +570,7 @@ impl FlameBrowser {
         };
         if let Some((text, color)) = overlay {
             p.rect_filled(img_rect, CornerRadius::same(6), Color32::from_black_alpha(if present { 90 } else { 170 }));
-            p.text(img_rect.center(), egui::Align2::CENTER_CENTER, text, egui::FontId::proportional(18.0), color);
+            p.text(img_rect.center(), egui::Align2::CENTER_CENTER, text, egui::FontId::proportional(theme::fs(18.0)), color);
         }
         let stroke = if selected {
             Stroke::new(2.0, theme::ACCENT)
@@ -582,7 +582,7 @@ impl FlameBrowser {
         p.rect_stroke(img_rect, CornerRadius::same(6), stroke, egui::StrokeKind::Inside);
         let mut job = egui::text::LayoutJob::single_section(
             name,
-            egui::TextFormat::simple(egui::FontId::proportional(12.0), if selected { theme::TEXT } else { theme::TEXT_MUTED }),
+            egui::TextFormat::simple(egui::FontId::proportional(theme::fs(12.0)), if selected { theme::TEXT } else { theme::TEXT_MUTED }),
         );
         job.wrap = egui::text::TextWrapping::truncate_at_width(THUMB_W as f32);
         let galley = p.layout_job(job);
