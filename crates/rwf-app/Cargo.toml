@@ -1,6 +1,6 @@
 [package]
 name = "rwf-app"
-version = "1.2.0"
+version = "1.3.0"
 edition = "2024"
 
 [dependencies]
@@ -8,9 +8,9 @@ eframe = { version = "0.36.2", default-features = false, features = ["wgpu", "de
 egui = "0.36.2"
 egui-phosphor = "0.14.0"
 egui-wgpu = "0.36.2"
-rwf-core = { version = "1.2.0", path = "../rwf-core" }
-rwf-gpu = { version = "1.2.0", path = "../rwf-gpu" }
-rwf-script = { version = "1.2.0", path = "../rwf-script" }
+rwf-core = { version = "1.3.0", path = "../rwf-core" }
+rwf-gpu = { version = "1.3.0", path = "../rwf-gpu" }
+rwf-script = { version = "1.3.0", path = "../rwf-script" }
 png = "0.18.1"
 rfd = "0.17.2"
 wgpu = "30"
