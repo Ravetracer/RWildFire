@@ -739,6 +739,11 @@ pub struct Flame {
     pub ai_post_denoiser: crate::render::denoise::Denoiser,
     pub post_denoiser_blend: f64,
     pub post_denoiser_only_for_cpu: bool,
+    /// RWildFire: keeps the original image where pixels have enough samples (0 = off, 1 =
+    /// already from few samples), see [`crate::render::denoise::detail_weights`].
+    pub post_denoiser_detail: f64,
+    /// RWildFire: contrast adaptive sharpening of the denoised image (0 = off .. 1).
+    pub post_denoiser_sharpen: f64,
     /// Solid rendering (lights, materials, ambient occlusion, shadows).
     pub solid: crate::solid::SolidSettings,
     pub mixer: crate::mixer::ChannelMixer,
@@ -842,6 +847,8 @@ impl Default for Flame {
             post_denoiser_blend: 0.11111,
             // JWildfire defaults to true; RWildFire renders mostly on the GPU.
             post_denoiser_only_for_cpu: false,
+            post_denoiser_detail: 0.6,
+            post_denoiser_sharpen: 0.0,
             solid: crate::solid::SolidSettings::default(),
             mixer: crate::mixer::ChannelMixer::default(),
             antialias_amount: 0.25,

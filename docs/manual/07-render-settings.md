@@ -112,6 +112,14 @@ and videos; the canvas shows it only with **Denoised** in the canvas toolbar.
   to the CPU when no NVIDIA GPU is available).
 - **Blend** (0–1): mixes the original image back in. 0 is fully denoised; 0.2–0.4 keeps some
   natural grain and fine detail.
+- **Keep detail** (0–1, default 0.6): keeps the original image at lines and edges where the
+  render already has enough samples per pixel. The denoiser takes thin, sharp lines for noise
+  and softens them; pixels with many samples are already clean, so there the original is
+  better. Higher values count pixels with fewer samples as converged (1: from about 8 samples
+  per pixel), lower values only very dense ones; 0 turns it off. Smooth areas always take the
+  denoised image. Not used for solid flames.
+- **Sharpen** (0–1, default 0): sharpens the denoised image with contrast adaptive sharpening,
+  which strengthens soft edges more than sharp ones and makes few halos.
 - **Only for CPU renders**: apply the denoiser only to CPU renders (JWildfire's default, because
   JWildfire's GPU renderer was separate).
 - The line below says which denoiser is used, or why it is not available.
@@ -126,8 +134,9 @@ render back in.
 
 ![A low quality render, denoised, and a render with 100 times the quality](images/cmp-denoise.jpg)
 
-The denoiser smooths very fine structures a little. For flames with hair-thin detail, a
-higher quality without denoiser, or a Blend of 0.3, often looks best.
+The denoiser smooths very fine structures. **Keep detail** brings them back where the render
+has enough samples; for flames with hair-thin detail, raise it towards 1 or render a little
+longer. Sharpen and Blend are the other ways to get crisper results.
 
 ## Density estimation
 

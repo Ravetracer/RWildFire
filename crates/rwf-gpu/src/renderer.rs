@@ -1003,23 +1003,18 @@ impl GpuRenderer {
     }
 
     /// What the flame's post denoiser needs from this render: the unfiltered image (see
-    /// [`GpuRenderer::read_unfiltered_image`]) and the helper images, which must match it
-    /// (filtered helpers would mark the grain blobs as detail again). Nothing when the flame's
-    /// denoiser does not run on GPU renders; no helpers without the OIDN library.
+    /// [`GpuRenderer::read_unfiltered_image`]) and the helper images with the sample counts,
+    /// which must match it (filtered helpers would mark the grain blobs as detail again).
+    /// Nothing when the flame's denoiser does not run on GPU renders.
     pub fn read_denoise_input(&mut self, flame: &Flame) -> (Option<Vec<u8>>, Option<rwf_core::render::denoise::DenoiseAux>) {
         use rwf_core::render::denoise;
         if denoise::skip_reason(flame, true).is_some() {
             return (None, None);
         }
         let unfiltered = self.read_unfiltered_image();
-        let aux = if rwf_core::render::oidn::library().is_ok() {
-            self.unfiltered = unfiltered.is_some();
-            let aux = self.read_denoise_aux();
-            self.unfiltered = false;
-            aux
-        } else {
-            None
-        };
+        self.unfiltered = unfiltered.is_some();
+        let aux = self.read_denoise_aux();
+        self.unfiltered = false;
         (unfiltered, aux)
     }
 
@@ -1041,7 +1036,8 @@ impl GpuRenderer {
     }
 
     /// Helper images for the denoiser: albedo (RGB 0..1 per pixel) and, for solid flames, the
-    /// surface normals (view space, zero without a surface).
+    /// surface normals (view space, zero without a surface); for flat flames the samples per
+    /// pixel.
     pub fn read_denoise_aux(&mut self) -> Option<rwf_core::render::denoise::DenoiseAux> {
         let (w, h) = self.output_size()?;
         let size = w as u64 * h as u64 * 24;
@@ -1052,7 +1048,8 @@ impl GpuRenderer {
         let albedo = data.chunks_exact(6).flat_map(|p| [p[0], p[1], p[2]]).collect();
         let solid = self.flame.as_ref().is_some_and(|f| f.solid.enabled);
         let normal = solid.then(|| data.chunks_exact(6).flat_map(|p| [p[3], p[4], p[5]]).collect());
-        Some(rwf_core::render::denoise::DenoiseAux { albedo, normal })
+        let density = (!solid).then(|| data.chunks_exact(6).map(|p| p[3]).collect());
+        Some(rwf_core::render::denoise::DenoiseAux { albedo, normal, density })
     }
 
     /// 16-bit gray depth image mapped by the flame's z-buffer settings (`None` unless the

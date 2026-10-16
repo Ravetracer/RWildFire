@@ -47,6 +47,8 @@ pub fn key(revision: u64, flame: &Flame, gpu_render: bool) -> u64 {
     flame.ai_post_denoiser.as_str().hash(&mut h);
     flame.post_denoiser_blend.to_bits().hash(&mut h);
     flame.post_denoiser_only_for_cpu.hash(&mut h);
+    flame.post_denoiser_detail.to_bits().hash(&mut h);
+    flame.post_denoiser_sharpen.to_bits().hash(&mut h);
     gpu_render.hash(&mut h);
     h.finish()
 }

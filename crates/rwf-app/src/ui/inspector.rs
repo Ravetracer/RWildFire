@@ -592,6 +592,11 @@ pub fn denoiser_settings(ui: &mut Ui, id: &str, f: &mut rwf_core::Flame) {
         ui.end_row();
         if f.ai_post_denoiser != Denoiser::None {
             slider(ui, "Blend", &mut f.post_denoiser_blend, 0.0..=1.0).on_hover_text("Mixes the original image back in (0 = fully denoised)");
+            slider(ui, "Keep detail", &mut f.post_denoiser_detail, 0.0..=1.0).on_hover_text(
+                "Keeps the original image at lines and edges where the render already has enough samples per pixel: the denoiser takes thin lines for noise and softens them. Higher values count pixels with fewer samples as converged. 0 = off; not for solid flames.",
+            );
+            slider(ui, "Sharpen", &mut f.post_denoiser_sharpen, 0.0..=1.0)
+                .on_hover_text("Sharpens the denoised image (contrast adaptive sharpening: little effect on edges that are already sharp, few halos). 0 = off");
             widgets::label(ui, "");
             ui.checkbox(&mut f.post_denoiser_only_for_cpu, "Only for CPU renders");
             ui.end_row();

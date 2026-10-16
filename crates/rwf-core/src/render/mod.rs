@@ -68,6 +68,8 @@ fn iteration_key(flame: &Flame) -> Flame {
     f.ai_post_denoiser = Default::default();
     f.post_denoiser_blend = 0.0;
     f.post_denoiser_only_for_cpu = false;
+    f.post_denoiser_detail = 0.0;
+    f.post_denoiser_sharpen = 0.0;
     // Solid rendering: only the shadow map projection affects the iteration; materials,
     // ambient occlusion, light colors and the bokeh are applied when shading.
     let s = &mut f.solid;

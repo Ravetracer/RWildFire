@@ -81,7 +81,12 @@ environment variable `RWF_OIDN_DIR`, and in the system's library paths.
 
 **The denoiser leaves grain.**
 Raise the quality a little: at very low qualities, sparse areas have too few points for the
-denoiser to tell structure from noise. Check that Blend is 0 or small (Render tab).
+denoiser to tell structure from noise. Check that Blend is 0 or small (Render tab). A high
+**Keep detail** keeps the original grain along edges at low qualities; lower it.
+
+**The denoiser softens thin lines.**
+Raise **Keep detail** (Render tab) or the quality: lines with enough samples per pixel then
+keep the original image. **Sharpen** helps when the render cannot be made longer.
 
 **Video formats are disabled.**
 MP4, MOV and WebM are written by ffmpeg. Install it and make sure it is in the `PATH`, then

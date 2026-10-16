@@ -446,6 +446,25 @@ impl ToneMapper {
         }
     }
 
+    /// Samples per output pixel: the counts of its oversampling cells, read like an
+    /// [`Self::unfiltered`] pixel (call it on such a mapper to line up with that image).
+    pub fn pixel_counts<R: Raster>(&self, raster: &R, w: u32, h: u32) -> Vec<f32> {
+        let (os, b) = (self.oversample as i64, self.border as i64);
+        let mut out = vec![0f32; (w * h) as usize];
+        out.par_chunks_mut(w as usize).enumerate().for_each(|(y, row)| {
+            for (x, v) in row.iter_mut().enumerate() {
+                let mut n = 0.0;
+                for px in 0..os {
+                    for py in 0..os {
+                        n += read_cell(raster, x as i64 * os + px + b, y as i64 * os + py + b)[0];
+                    }
+                }
+                *v = n as f32;
+            }
+        });
+        out
+    }
+
     fn render_raster<R: Raster>(&self, flame: &Flame, raster: &R, w: u32, h: u32) -> Vec<u8> {
         let backdrop = super::background::Backdrop::new(flame, w, h);
         let mut out = vec![0u8; (w * h * 4) as usize];
