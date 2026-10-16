@@ -317,6 +317,9 @@ impl UserData for LFlame {
                 "name" => return lua.create_string(&f.name).map(Value::String),
                 "bg_transparency" => return Ok(Value::Boolean(f.bg_transparency)),
                 "solid" => return Ok(Value::Boolean(f.solid.enabled)),
+                "post_denoiser_supersample" => return Ok(Value::Boolean(f.post_denoiser_supersample)),
+                "post_denoiser_float" => return Ok(Value::Boolean(f.post_denoiser_float)),
+                "post_denoiser_normals" => return Ok(Value::Boolean(f.post_denoiser_normals)),
                 _ => {}
             }
             const INTEGERS: [&str; 8] =
@@ -333,6 +336,9 @@ impl UserData for LFlame {
                 "name" => f.name = text(&v, "name")?,
                 "bg_transparency" => f.bg_transparency = boolean(&v, &key)?,
                 "solid" => f.solid.enabled = boolean(&v, &key)?,
+                "post_denoiser_supersample" => f.post_denoiser_supersample = boolean(&v, &key)?,
+                "post_denoiser_float" => f.post_denoiser_float = boolean(&v, &key)?,
+                "post_denoiser_normals" => f.post_denoiser_normals = boolean(&v, &key)?,
                 _ => {
                     if !set_flame_number(&mut f, &key, num(&v, &key)?)? {
                         return err(format!("a flame has no field '{key}'"));

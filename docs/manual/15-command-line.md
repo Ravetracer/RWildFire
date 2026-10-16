@@ -11,6 +11,7 @@ exit code.
 rwf-cli render <file.flame> [-o out.png|.jpg|.hdr|.exr] [-w width] [-h height] [-q quality]
                [-i index] [--gpu] [-t threads] [--zbuffer] [--jpeg-quality 1-100]
                [--denoiser off|oidn|optix] [--blend 0..1] [--keep-detail 0..1] [--sharpen 0..1]
+               [--supersample] [--float-input] [--density-normals]
 ```
 
 | Option | Meaning |
@@ -25,6 +26,7 @@ rwf-cli render <file.flame> [-o out.png|.jpg|.hdr|.exr] [-w width] [-h height] [
 | `--jpeg-quality` | JPEG compression (default 95). |
 | `--denoiser`, `--blend` | Override the flame's denoiser and blend (`optix` = OIDN on an NVIDIA GPU). |
 | `--keep-detail`, `--sharpen` | Override the denoiser's Keep detail and Sharpen. |
+| `--supersample`, `--float-input`, `--density-normals` | Switch the denoiser's Supersample ×2, Float input and Density normals on. |
 
 ```
 rwf-cli render my.flame -o my.png -w 3840 -q 2000 --gpu

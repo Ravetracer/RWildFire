@@ -50,6 +50,7 @@ pub fn key(revision: u64, flame: &Flame, gpu_render: bool) -> u64 {
     flame.post_denoiser_only_for_cpu.hash(&mut h);
     flame.post_denoiser_detail.to_bits().hash(&mut h);
     flame.post_denoiser_sharpen.to_bits().hash(&mut h);
+    (flame.post_denoiser_float, flame.post_denoiser_normals).hash(&mut h);
     format!("{:?}", flame.effects).hash(&mut h);
     gpu_render.hash(&mut h);
     h.finish()
@@ -71,7 +72,7 @@ impl DenoisedView {
         let flame = flame.clone();
         std::thread::spawn(move || {
             let t0 = Instant::now();
-            let r = process(&flame, &mut rgba, source.as_deref(), w, h, gpu_render, aux.as_ref()).map(|o| (o, rgba, t0.elapsed()));
+            let r = process(&flame, &mut rgba, source.as_deref(), w, h, gpu_render, aux.as_ref(), 1).map(|o| (o, rgba, t0.elapsed()));
             let _ = tx.send(r);
         });
         self.job = Some((key, rx));

@@ -46,14 +46,14 @@ pub fn render_stereo_image(flame: &Flame, w: u32, h: u32, quality: f64, gpu: Opt
                 r.accumulate_packets(std::slice::from_ref(f), w, h, q)?;
                 r.tonemap();
                 let mut img = r.read_image().ok_or("readback failed")?;
-                let outcome = r.apply_post_processing(f, &mut img, w, h).map_err(|e| format!("denoiser: {e}"))?;
+                let outcome = r.apply_post_processing(f, &mut img, w, h, 1).map_err(|e| format!("denoiser: {e}"))?;
                 note = outcome.describe();
                 img
             }
             None => {
                 let r = CpuRender::start(f, RenderOptions { width: w, height: h, threads, max_density: Some(q), seed: 0x5EED + done as u64, zbuffer: false }).wait();
                 let mut img = r.image(alpha);
-                let outcome = r.apply_post_processing(&mut img, alpha).map_err(|e| format!("denoiser: {e}"))?;
+                let outcome = r.apply_post_processing(&mut img, alpha, 1).map_err(|e| format!("denoiser: {e}"))?;
                 note = outcome.describe();
                 img
             }

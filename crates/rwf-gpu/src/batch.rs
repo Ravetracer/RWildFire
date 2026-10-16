@@ -270,11 +270,20 @@ pub fn render_job(
     }
     let animation = BatchJob::is_animation(&flame, s);
     let alpha = !animation && flame.bg_transparency && s.format == ImageFormat::Png;
+    // Supersampling renders at twice the size (not for HDR files, which are not denoised).
+    let mut ss = if !animation && s.format.is_hdr() { 1 } else { rwf_core::render::post::supersample(&flame, true) };
+    let mut notes = Vec::new();
+    if ss > 1 && (w * ss > MAX_SIZE || h * ss > MAX_SIZE) {
+        ss = 1;
+        notes.push(format!("not supersampled: {} × {} is too large for the GPU renderer", w * 2, h * 2));
+    }
     r.set_with_alpha(alpha);
     r.set_zbuffer(s.zbuffer && !animation);
-    r.set_flame(&flame, w, h);
-    let warning =
-        (!r.unsupported_variations().is_empty()).then(|| format!("not supported on the GPU, ignored: {}", r.unsupported_variations().join(", ")));
+    r.set_flame(&flame, w * ss, h * ss);
+    if !r.unsupported_variations().is_empty() {
+        notes.insert(0, format!("not supported on the GPU, ignored: {}", r.unsupported_variations().join(", ")));
+    }
+    let warning = (!notes.is_empty()).then(|| notes.join("; "));
     let cancelled = || Err("cancelled".to_string());
 
     // Stereo 3D stills: eye images combined (PNG/JPEG only, no z-buffer, as in JWildfire)
@@ -288,7 +297,7 @@ pub fn render_job(
             }
             r.tonemap();
             let mut img = r.read_image().ok_or("readback failed")?;
-            r.apply_post_processing(f, &mut img, w, h).map_err(|e| format!("denoiser: {e}"))?;
+            r.apply_post_processing(f, &mut img, w, h, 1).map_err(|e| format!("denoiser: {e}"))?;
             k += 1.0;
             Ok(img)
         };
@@ -309,18 +318,18 @@ pub fn render_job(
         for frame in 0..frames {
             let packets = rwf_core::render::frame_packets(&flame, frame as f64);
             let mut sub = |p: f32, r: &mut GpuRenderer| progress((frame as f32 + p) / frames as f32, r);
-            if !accumulate(r, &packets, w, h, quality, &mut sub)? {
+            if !accumulate(r, &packets, w * ss, h * ss, quality, &mut sub)? {
                 let _ = sink.finish();
                 return cancelled();
             }
             r.tonemap();
             let mut img = r.read_image().ok_or("readback failed")?;
-            r.apply_post_processing(&flame, &mut img, w, h).map_err(|e| format!("denoiser: {e}"))?;
+            r.apply_post_processing(&flame, &mut img, w * ss, h * ss, ss).map_err(|e| format!("denoiser: {e}"))?;
             sink.write_frame(frame, &img).map_err(|e| e.to_string())?;
         }
         sink.finish().map_err(|e| e.to_string())?;
     } else {
-        if !accumulate(r, std::slice::from_ref(&flame), w, h, quality, progress)? {
+        if !accumulate(r, std::slice::from_ref(&flame), w * ss, h * ss, quality, progress)? {
             return cancelled();
         }
         if s.format.is_hdr() {
@@ -329,12 +338,13 @@ pub fn render_job(
         } else {
             r.tonemap();
             let mut img = r.read_image().ok_or("readback failed")?;
-            r.apply_post_processing(&flame, &mut img, w, h).map_err(|e| format!("denoiser: {e}"))?;
+            r.apply_post_processing(&flame, &mut img, w * ss, h * ss, ss).map_err(|e| format!("denoiser: {e}"))?;
             rwf_core::output::write_rgba8(&path, s.format, w, h, &img, s.jpeg_quality)?;
         }
         if s.zbuffer
             && let Some(z) = r.read_zbuffer()
         {
+            let z = if ss > 1 { rwf_core::render::post::downscale_gray16(&z, w * ss, h * ss, ss) } else { z };
             rwf_core::output::write_gray16_png(&flame.zbuffer_filename.path_for(&path), w, h, &z)?;
         }
     }

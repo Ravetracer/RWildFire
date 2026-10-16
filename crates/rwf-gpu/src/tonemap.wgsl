@@ -345,6 +345,32 @@ fn tonemap_hdr(@builtin(global_invocation_id) gid: vec3<u32>) {
     hdr_out[i + 2u] = rgb.z;
 }
 
+// `tonemap` without rounding to 8 bits: RGB 0..1, three floats per pixel (the denoiser's float
+// input; rwf_core ToneMapper::gamma_pixel_float).
+@compute @workgroup_size(16, 16)
+fn tonemap_float(@builtin(global_invocation_id) gid: vec3<u32>) {
+    if (gid.x >= T.image_w || gid.y >= T.image_h) { return; }
+    let fp = filtered(i32(gid.x), i32(gid.y));
+    let intensity = fp.x;
+    let bg = background(gid.x, gid.y);
+    var rgb = clamp(bg, vec3<f32>(0.0), vec3<f32>(255.0));
+    if (intensity > 0.0) {
+        let alpha = gamma_alpha(intensity);
+        let inv_alpha = 255.0 - clamp(alpha * 255.0 * T.alpha_scale, 0.0, 255.0);
+        rgb = clamp(vibrancy(alpha, intensity, fp.yzw) + inv_alpha * bg / 256.0, vec3<f32>(0.0), vec3<f32>(255.0));
+    }
+    if (T.mod_sat != 0.0) {
+        var hsl = rgb_to_hsl(rgb / 255.0);
+        hsl.y += T.mod_sat;
+        rgb = hsl_to_rgb(hsl) * 255.0;
+    }
+    let c = clamp(rgb / 255.0, vec3<f32>(0.0), vec3<f32>(1.0));
+    let i = (gid.y * T.image_w + gid.x) * 3u;
+    hdr_out[i] = c.x;
+    hdr_out[i + 1u] = c.y;
+    hdr_out[i + 2u] = c.z;
+}
+
 // Denoiser helper images (6 floats per pixel): albedo = the average color of the samples
 // (independent of their density, which acts like lighting), background color without hits;
 // flat flames have no normals and store the samples of the pixel's oversampling cells instead.

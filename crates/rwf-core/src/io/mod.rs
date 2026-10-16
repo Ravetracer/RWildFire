@@ -161,6 +161,9 @@ pub(crate) fn parse_flame(el: &Element) -> Flame {
             "ai_post_denoiser_only_for_cpu" => flame.post_denoiser_only_for_cpu = v.trim() == "1",
             "post_denoiser_detail" => flame.post_denoiser_detail = f.unwrap_or(0.6).clamp(0.0, 1.0),
             "post_denoiser_sharpen" => flame.post_denoiser_sharpen = f.unwrap_or(0.0).clamp(0.0, 1.0),
+            "post_denoiser_float" => flame.post_denoiser_float = v.trim() == "1",
+            "post_denoiser_normals" => flame.post_denoiser_normals = v.trim() == "1",
+            "post_denoiser_supersample" => flame.post_denoiser_supersample = v.trim() == "1",
             "post_blur_radius" => flame.post_blur_radius = f.unwrap_or(0.0).max(0.0) as u32,
             "post_blur_fade" => flame.post_blur_fade = f.unwrap_or(0.95),
             "post_blur_falloff" => flame.post_blur_falloff = f.unwrap_or(2.0),
@@ -660,6 +663,11 @@ pub fn write_flame(flame: &Flame) -> String {
     attr(&mut s, "ai_post_denoiser_only_for_cpu", if flame.post_denoiser_only_for_cpu { "1" } else { "0" });
     attr(&mut s, "post_denoiser_detail", fmt_f(flame.post_denoiser_detail));
     attr(&mut s, "post_denoiser_sharpen", fmt_f(flame.post_denoiser_sharpen));
+    for (k, on) in [("post_denoiser_float", flame.post_denoiser_float), ("post_denoiser_normals", flame.post_denoiser_normals), ("post_denoiser_supersample", flame.post_denoiser_supersample)] {
+        if on {
+            attr(&mut s, k, "1");
+        }
+    }
     attr(&mut s, "oversample", flame.spatial_oversampling.to_string());
     attr(&mut s, "de_radius", fmt_f(flame.de_radius));
     attr(&mut s, "de_curve", fmt_f(flame.de_curve));

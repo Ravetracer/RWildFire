@@ -42,11 +42,15 @@ struct Args {
     /// Overrides the denoiser's "keep detail" and "sharpen".
     keep_detail: Option<f64>,
     sharpen: Option<f64>,
+    /// Switch the denoiser's supersampling, float input and density normals on.
+    supersample: bool,
+    float_input: bool,
+    density_normals: bool,
 }
 
 fn usage() -> ! {
     eprintln!(
-        "usage: rwf-cli render <file.flame> [-o out.png|.jpg|.hdr|.exr] [-w width] [-h height] [-q quality] [-i flame-index] [--gpu] [-t threads] [--zbuffer] [--jpeg-quality 1-100] [--denoiser off|oidn|optix] [--blend 0..1] [--keep-detail 0..1] [--sharpen 0..1]\n       rwf-cli render-anim <file.flame> -o out.mp4|.mov|.webm|out-dir [-w width] [-h height] [-q quality] [--from frame] [--to frame] [--gpu]\n       rwf-cli batch [options] <files or folders...>   (rwf-cli batch for the options)\n       rwf-cli variations   (all variations: name, gpu/cpu, 2d/3d)\n       rwf-cli quilt <file.flame> -o out.png -w width [-h height] [-q quality] [--tiles COLSxROWS]\n       rwf-cli mesh <file.flame | --from-slices DIR> [-o out.obj|.ply|.sc] [--points out.ply|.obj] [--slices DIR] [--resolution N] [--quality Q] [--threshold T] [--dilate 3|5] [--blur B] [--smooth N]\n       rwf-cli movie <file.jwfmovie | --random [all|mandelbrots|bubbles|duckies]> -o out.mp4|.mov|.webm|.anb|out-dir|name.flame|name.jwfmovie [--cpu]\n       rwf-cli dance <file.rwfdance> -o out.mp4|.mov|.webm|out-dir|name.flame [--cpu]\n       rwf-cli denoise <image> [-o out.png|.jpg] [--denoiser oidn|optix] [--blend 0..1]\n       rwf-cli random <out-dir> [count] [generator filter] [--symmetry NAME] [--weighting NAME] [--gradient NAME] [-w width] [-h height] [-q quality] [--gpu]\n       rwf-cli script <file.lua> [-i in.flame] [-o out.flame] [--flames out.flame] [--param name=value]... | --info <file.lua> | --api | --examples DIR"
+        "usage: rwf-cli render <file.flame> [-o out.png|.jpg|.hdr|.exr] [-w width] [-h height] [-q quality] [-i flame-index] [--gpu] [-t threads] [--zbuffer] [--jpeg-quality 1-100] [--denoiser off|oidn|optix] [--blend 0..1] [--keep-detail 0..1] [--sharpen 0..1] [--supersample] [--float-input] [--density-normals]\n       rwf-cli render-anim <file.flame> -o out.mp4|.mov|.webm|out-dir [-w width] [-h height] [-q quality] [--from frame] [--to frame] [--gpu]\n       rwf-cli batch [options] <files or folders...>   (rwf-cli batch for the options)\n       rwf-cli variations   (all variations: name, gpu/cpu, 2d/3d)\n       rwf-cli quilt <file.flame> -o out.png -w width [-h height] [-q quality] [--tiles COLSxROWS]\n       rwf-cli mesh <file.flame | --from-slices DIR> [-o out.obj|.ply|.sc] [--points out.ply|.obj] [--slices DIR] [--resolution N] [--quality Q] [--threshold T] [--dilate 3|5] [--blur B] [--smooth N]\n       rwf-cli movie <file.jwfmovie | --random [all|mandelbrots|bubbles|duckies]> -o out.mp4|.mov|.webm|.anb|out-dir|name.flame|name.jwfmovie [--cpu]\n       rwf-cli dance <file.rwfdance> -o out.mp4|.mov|.webm|out-dir|name.flame [--cpu]\n       rwf-cli denoise <image> [-o out.png|.jpg] [--denoiser oidn|optix] [--blend 0..1]\n       rwf-cli random <out-dir> [count] [generator filter] [--symmetry NAME] [--weighting NAME] [--gradient NAME] [-w width] [-h height] [-q quality] [--gpu]\n       rwf-cli script <file.lua> [-i in.flame] [-o out.flame] [--flames out.flame] [--param name=value]... | --info <file.lua> | --api | --examples DIR"
     );
     std::process::exit(2);
 }
@@ -71,6 +75,9 @@ fn parse_args() -> Args {
         blend: None,
         keep_detail: None,
         sharpen: None,
+        supersample: false,
+        float_input: false,
+        density_normals: false,
     };
     while let Some(a) = it.next() {
         let mut val = || it.next().unwrap_or_else(|| usage());
@@ -97,6 +104,9 @@ fn parse_args() -> Args {
             "--blend" => args.blend = val().parse::<f64>().ok().map(|b| b.clamp(0.0, 1.0)),
             "--keep-detail" => args.keep_detail = val().parse::<f64>().ok().map(|b| b.clamp(0.0, 1.0)),
             "--sharpen" => args.sharpen = val().parse::<f64>().ok().map(|b| b.clamp(0.0, 1.0)),
+            "--supersample" => args.supersample = true,
+            "--float-input" => args.float_input = true,
+            "--density-normals" => args.density_normals = true,
             _ if args.input.as_os_str().is_empty() => args.input = PathBuf::from(a),
             _ => usage(),
         }
@@ -246,22 +256,24 @@ fn render_anim_cmd() {
     });
     let mut gpu_renderer = gpu.then(|| rwf_gpu::GpuRenderer::new(rwf_gpu::GpuContext::new_headless().expect("GPU")));
     let t0 = Instant::now();
+    let s = rwf_core::render::post::supersample(&flame, gpu);
     for frame in from..=to {
         let (img, denoised) = match &mut gpu_renderer {
             Some(r) => {
                 r.set_with_alpha(false);
-                let mut img = r.render_frame(&flame, frame as f64, w, h, q).unwrap_or_else(|e| {
+                let mut img = r.render_frame(&flame, frame as f64, w * s, h * s, q).unwrap_or_else(|e| {
                     eprintln!("{e}");
                     std::process::exit(1);
                 });
-                let denoised = r.apply_post_processing(&flame, &mut img, w, h);
+                let denoised = r.apply_post_processing(&flame, &mut img, w * s, h * s, s);
                 (img, denoised)
             }
             None => {
                 let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
-                let r = CpuRender::start_frame(&flame, frame as f64, RenderOptions { width: w, height: h, threads, max_density: Some(q), seed: 42 + frame as u64, zbuffer: false }).wait();
+                let opts = RenderOptions { width: w * s, height: h * s, threads, max_density: Some(q), seed: 42 + frame as u64, zbuffer: false };
+                let r = CpuRender::start_frame(&flame, frame as f64, opts).wait();
                 let mut img = r.image(false);
-                let denoised = r.apply_post_processing(&mut img, false);
+                let denoised = r.apply_post_processing(&mut img, false, s);
                 (img, denoised)
             }
         };
@@ -870,6 +882,9 @@ fn main() {
     if let Some(s) = args.sharpen {
         flame.post_denoiser_sharpen = s;
     }
+    flame.post_denoiser_supersample |= args.supersample;
+    flame.post_denoiser_float |= args.float_input;
+    flame.post_denoiser_normals |= args.density_normals;
     let flame = &flame;
     let (w, h) = match (args.width, args.height) {
         (Some(w), Some(h)) => (w, h),
@@ -924,17 +939,19 @@ fn main() {
     let mut zbuffer = None;
     let mut hdr = None;
     let mut gpu_denoise_note = None;
+    // Supersampling renders at twice the size (HDR files are saved as rendered).
+    let s = if format.is_hdr() { 1 } else { rwf_core::render::post::supersample(flame, gpu) };
     let rgba = if gpu {
         let result = (|| -> Result<Vec<u8>, String> {
             let mut r = rwf_gpu::GpuRenderer::new(rwf_gpu::GpuContext::new_headless()?);
             gpu_denoise_note = None;
             r.set_with_alpha(flame.bg_transparency);
             r.set_zbuffer(args.zbuffer);
-            r.set_flame(flame, w, h);
+            r.set_flame(flame, w * s, h * s);
             if !r.unsupported_variations().is_empty() {
                 eprintln!("warning: variations without GPU support ignored: {}", r.unsupported_variations().join(", "));
             }
-            r.accumulate_frame(flame, 0.0, w, h, quality)?;
+            r.accumulate_frame(flame, 0.0, w * s, h * s, quality)?;
             if args.zbuffer {
                 zbuffer = r.read_zbuffer();
             }
@@ -944,7 +961,7 @@ fn main() {
             }
             r.tonemap();
             let mut img = r.read_image().ok_or_else(|| "readback failed".to_string())?;
-            gpu_denoise_note = Some(r.apply_post_processing(flame, &mut img, w, h));
+            gpu_denoise_note = Some(r.apply_post_processing(flame, &mut img, w * s, h * s, s));
             Ok(img)
         })();
         match result {
@@ -955,7 +972,7 @@ fn main() {
             }
         }
     } else {
-        let opts = RenderOptions { width: w, height: h, threads: args.threads, max_density: Some(quality), seed: 42, zbuffer: args.zbuffer };
+        let opts = RenderOptions { width: w * s, height: h * s, threads: args.threads, max_density: Some(quality), seed: 42, zbuffer: args.zbuffer };
         let r = CpuRender::start(flame, opts);
         if !r.missing_variations().is_empty() {
             eprintln!("warning: unsupported variations ignored: {}", r.missing_variations().join(", "));
@@ -970,13 +987,13 @@ fn main() {
             Vec::new()
         } else {
             let mut img = r.image(flame.bg_transparency);
-            gpu_denoise_note = Some(r.apply_post_processing(&mut img, flame.bg_transparency));
+            gpu_denoise_note = Some(r.apply_post_processing(&mut img, flame.bg_transparency, s));
             img
         }
     };
     let mut rgba = rgba;
     if hdr.is_none() {
-        let outcome = gpu_denoise_note.take().unwrap_or_else(|| rwf_core::render::post::process(flame, &mut rgba, None, w, h, gpu, None));
+        let outcome = gpu_denoise_note.take().unwrap_or_else(|| rwf_core::render::post::process(flame, &mut rgba, None, w, h, gpu, None, 1));
         match outcome {
             Ok(o) if o.worth_reporting(flame) => eprintln!("{}", o.describe()),
             Ok(_) => {}
@@ -996,6 +1013,7 @@ fn main() {
     }
     if let Some(z) = zbuffer {
         let zpath = flame.zbuffer_filename.path_for(&args.output);
+        let z = if s > 1 { rwf_core::render::post::downscale_gray16(&z, w * s, h * s, s) } else { z };
         if let Err(e) = rwf_core::output::write_gray16_png(&zpath, w, h, &z) {
             eprintln!("failed to write {}: {e}", zpath.display());
             std::process::exit(1);

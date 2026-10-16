@@ -388,28 +388,29 @@ impl CpuRender {
         Some(tm.render(&self.flame, &self.shared.histogram, v.image_width, v.image_height))
     }
 
-    /// Samples per pixel of [`CpuRender::image_unfiltered`] (no albedo or normals on the
-    /// CPU). `None` for solid flames.
+    /// The denoiser's helper images for [`CpuRender::image_unfiltered`]: albedo, samples per
+    /// pixel and the color without rounding (no normals). `None` for solid flames.
     pub fn denoise_aux(&self) -> Option<super::denoise::DenoiseAux> {
         if self.shared.solid.is_some() {
             return None;
         }
         let v = &self.shared.packets[0].view;
-        let tm = ToneMapper::new(&self.flame, v.image_width, v.image_height, v.ppu, self.density(), false).unfiltered();
-        let density = tm.pixel_counts(&self.shared.histogram, v.image_width, v.image_height);
-        Some(super::denoise::DenoiseAux { density: Some(density), ..Default::default() })
+        let tm = ToneMapper::new(&self.flame, v.image_width, v.image_height, v.ppu, self.density(), false).with_packets(self.shared.packets.len()).unfiltered();
+        let (color, albedo, density) = tm.denoise_inputs(&self.flame, &self.shared.histogram, v.image_width, v.image_height);
+        Some(super::denoise::DenoiseAux { albedo, normal: None, density: Some(density), color: Some(color) })
     }
 
     /// Applies the flame's post denoiser and image effects to `img` (this render's
     /// [`CpuRender::image`]); the denoiser works on the unfiltered image, Blend mixes `img`
     /// back in.
-    pub fn apply_post_processing(&self, img: &mut [u8], with_alpha: bool) -> Result<super::post::PostOutcome, String> {
+    /// `scale` > 1 scales the image down after denoising (see [`super::post::supersample`]).
+    pub fn apply_post_processing(&self, img: &mut Vec<u8>, with_alpha: bool, scale: u32) -> Result<super::post::PostOutcome, String> {
         let v = &self.shared.packets[0].view;
         let (w, h) = (v.image_width, v.image_height);
         let active = super::denoise::skip_reason(&self.flame, false).is_none();
         let unfiltered = if active { self.image_unfiltered(with_alpha) } else { None };
         let aux = if active { self.denoise_aux() } else { None };
-        super::post::process(&self.flame, img, unfiltered.as_deref(), w, h, false, aux.as_ref())
+        super::post::process(&self.flame, img, unfiltered.as_deref(), w, h, false, aux.as_ref(), scale)
     }
 
     /// Tonemaps into linear float RGB (`RenderHDRImageThread`), 1.0 = full 8-bit white.

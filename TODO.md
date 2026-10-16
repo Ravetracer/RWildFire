@@ -35,11 +35,15 @@ Done:
 - **Sharpening** ("Sharpen", default 0): contrast adaptive sharpening of the denoised image.
   Raises the edge contrast but also the error against the reference, so it stays optional.
 
-Open (only if the result is still not good enough):
+Also done (options in the Render tab, off by default):
 
-1. **HDR float input**: pass the linear float image (`hdr=true`) instead of 8-bit sRGB, which
-   keeps fine and bright structures.
-2. **Pseudo-normals** from density gradients for non-solid flames (as the normals of solid
-   flames), giving OIDN edges to keep. Experimental.
-3. **Denoise at a higher resolution and downscale** (quality option): clearly sharper lines,
-   more render time.
+- **Supersample ×2**: final images are rendered at twice the size, denoised and scaled down
+  (`post::supersample`, `post::process`). Against a 2× reference the edge error falls to a
+  third to a half (TINA0007 15.6 → 5.6, TINA0012 3.3 → 1.6 at quality 150); four times the
+  render time. Not for the canvas, the interactive renderer, stereo images and quilts.
+- **Float input**: the unfiltered image before rounding (GPU `tonemap_float`, CPU
+  `gamma_pixel_float`). No measurable difference on the test flames; linear values in OIDN's
+  HDR mode were worse and are not used.
+- **Density normals**: normals from the log sample density of flat flames
+  (`denoise::pseudo_normals`). Mixed results (better on TINA0020 at low quality, softer on
+  TINA0001), so experimental. The CPU renderer now gives OIDN an albedo too.

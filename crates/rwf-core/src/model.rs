@@ -744,6 +744,12 @@ pub struct Flame {
     pub post_denoiser_detail: f64,
     /// RWildFire: contrast adaptive sharpening of the denoised image (0 = off .. 1).
     pub post_denoiser_sharpen: f64,
+    /// RWildFire: the denoiser reads the image without rounding to 8 bits.
+    pub post_denoiser_float: bool,
+    /// RWildFire: flat flames give the denoiser normals made from the sample density.
+    pub post_denoiser_normals: bool,
+    /// RWildFire: final images are rendered at twice the size, denoised and scaled down.
+    pub post_denoiser_supersample: bool,
     /// RWildFire: image effects applied to the finished image (after the denoiser).
     pub effects: crate::render::effects::ImageEffects,
     /// Solid rendering (lights, materials, ambient occlusion, shadows).
@@ -851,6 +857,9 @@ impl Default for Flame {
             post_denoiser_only_for_cpu: false,
             post_denoiser_detail: 0.6,
             post_denoiser_sharpen: 0.0,
+            post_denoiser_float: false,
+            post_denoiser_normals: false,
+            post_denoiser_supersample: false,
             effects: Default::default(),
             solid: crate::solid::SolidSettings::default(),
             mixer: crate::mixer::ChannelMixer::default(),

@@ -35,20 +35,21 @@ pub fn render_performance_frame(
 ) -> Result<Vec<u8>, String> {
     let flame = project.performance_flame(spectrum, frame).ok_or("no recorded performance")?;
     let (w, h, q) = (project.width.max(1), project.height.max(1), project.quality.max(1.0));
+    let s = rwf_core::render::post::supersample(&flame, gpu.is_some());
     let img = match gpu {
         Some(r) => {
-            r.accumulate_packets(std::slice::from_ref(&flame), w, h, q)?;
+            r.accumulate_packets(std::slice::from_ref(&flame), w * s, h * s, q)?;
             r.tonemap();
             let mut img = r.read_image().ok_or("readback failed")?;
-            r.apply_post_processing(&flame, &mut img, w, h).map_err(|e| format!("denoiser: {e}"))?;
+            r.apply_post_processing(&flame, &mut img, w * s, h * s, s).map_err(|e| format!("denoiser: {e}"))?;
             img
         }
         None => {
             let threads = rwf_core::render::cpu_threads();
-            let opts = RenderOptions { width: w, height: h, threads, max_density: Some(q), seed: 0xDA2CE + frame as u64, zbuffer: false };
+            let opts = RenderOptions { width: w * s, height: h * s, threads, max_density: Some(q), seed: 0xDA2CE + frame as u64, zbuffer: false };
             let r = CpuRender::start(&flame, opts).wait();
             let mut img = r.image(false);
-            r.apply_post_processing(&mut img, false).map_err(|e| format!("denoiser: {e}"))?;
+            r.apply_post_processing(&mut img, false, s).map_err(|e| format!("denoiser: {e}"))?;
             img
         }
     };

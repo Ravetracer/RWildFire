@@ -34,20 +34,21 @@ pub fn render_movie_frame(movie: &Movie, frame: u32, gpu: Option<&mut GpuRendere
     let packets = movie.packets(frame as f64);
     let first = packets.first().ok_or("the movie has no parts")?;
     let (w, h, q) = (movie.width.max(1), movie.height.max(1), movie.quality.max(1.0));
+    let s = rwf_core::render::post::supersample(first, gpu.is_some());
     let img = match gpu {
         Some(r) => {
-            r.accumulate_packets(&packets, w, h, q)?;
+            r.accumulate_packets(&packets, w * s, h * s, q)?;
             r.tonemap();
             let mut img = r.read_image().ok_or("readback failed")?;
-            r.apply_post_processing(first, &mut img, w, h).map_err(|e| format!("denoiser: {e}"))?;
+            r.apply_post_processing(first, &mut img, w * s, h * s, s).map_err(|e| format!("denoiser: {e}"))?;
             img
         }
         None => {
             let threads = rwf_core::render::cpu_threads();
-            let opts = RenderOptions { width: w, height: h, threads, max_density: Some(q), seed: 0x5EED + frame as u64, zbuffer: false };
+            let opts = RenderOptions { width: w * s, height: h * s, threads, max_density: Some(q), seed: 0x5EED + frame as u64, zbuffer: false };
             let r = CpuRender::start_packets(&packets, opts).wait();
             let mut img = r.image(false);
-            r.apply_post_processing(&mut img, false).map_err(|e| format!("denoiser: {e}"))?;
+            r.apply_post_processing(&mut img, false, s).map_err(|e| format!("denoiser: {e}"))?;
             img
         }
     };

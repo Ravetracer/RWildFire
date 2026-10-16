@@ -120,14 +120,14 @@ fn save_cpu(r: &CpuRender, run: &SaveJob) -> Result<String, String> {
         rwf_core::render::post::hdr_note(&run.flame)
     } else {
         let mut img = r.image(run.with_alpha);
-        let outcome = r.apply_post_processing(&mut img, run.with_alpha).map_err(|e| format!("denoiser: {e}"))?;
+        let outcome = r.apply_post_processing(&mut img, run.with_alpha, run.scale).map_err(|e| format!("denoiser: {e}"))?;
         rwf_core::output::write_rgba8(&run.path, run.format, w, h, &img, run.jpeg_quality)?;
         outcome.describe()
     };
     if run.zbuffer
         && let Some(z) = r.zbuffer_image()
     {
-        rwf_core::output::write_gray16_png(&run.flame.zbuffer_filename.path_for(&run.path), w, h, &z)?;
+        rwf_core::output::write_gray16_png(&run.flame.zbuffer_filename.path_for(&run.path), w, h, &run.downscale_z(z))?;
     }
     Ok(note)
 }
@@ -142,14 +142,14 @@ fn save_gpu(r: &mut GpuRenderer, run: &SaveJob) -> Result<String, String> {
     } else {
         r.tonemap();
         let mut img = r.read_image().ok_or("readback failed")?;
-        let outcome = r.apply_post_processing(&run.flame, &mut img, w, h).map_err(|e| format!("denoiser: {e}"))?;
+        let outcome = r.apply_post_processing(&run.flame, &mut img, w * run.scale, h * run.scale, run.scale).map_err(|e| format!("denoiser: {e}"))?;
         rwf_core::output::write_rgba8(&run.path, run.format, w, h, &img, run.jpeg_quality)?;
         outcome.describe()
     };
     if run.zbuffer
         && let Some(z) = r.read_zbuffer()
     {
-        rwf_core::output::write_gray16_png(&run.flame.zbuffer_filename.path_for(&run.path), w, h, &z)?;
+        rwf_core::output::write_gray16_png(&run.flame.zbuffer_filename.path_for(&run.path), w, h, &run.downscale_z(z))?;
     }
     Ok(note)
 }
@@ -165,6 +165,15 @@ struct SaveJob {
     jpeg_quality: u8,
     zbuffer: bool,
     flame: Flame,
+    /// Supersampling: the render is this many times larger (see `post::supersample`).
+    scale: u32,
+}
+
+impl SaveJob {
+    /// The z-buffer of the (larger) render at the final size.
+    fn downscale_z(&self, z: Vec<u16>) -> Vec<u16> {
+        if self.scale > 1 { rwf_core::render::post::downscale_gray16(&z, self.width * self.scale, self.height * self.scale, self.scale) } else { z }
+    }
 }
 
 impl ExportDialog {
@@ -235,19 +244,22 @@ impl ExportDialog {
             });
             self.running = Some(Running {
                 job: Job::Stereo { result: rx, done, total },
-                save: SaveJob { path, width: self.width, height: self.height, with_alpha: alpha, format: self.image_format, jpeg_quality: self.jpeg_quality, zbuffer: false, flame: f },
+                save: SaveJob { path, width: self.width, height: self.height, with_alpha: alpha, format: self.image_format, jpeg_quality: self.jpeg_quality, zbuffer: false, flame: f, scale: 1 },
                 started: Instant::now(),
                 target_density: self.quality,
             });
             self.status = None;
             return;
         }
+        let on_gpu = self.backend == Backend::Gpu && gpu.is_some();
+        // HDR files are saved as rendered: no denoiser, no supersampling.
+        let scale = if self.image_format.is_hdr() { 1 } else { rwf_core::render::post::supersample(&f, on_gpu) };
         let job = match (self.backend, gpu) {
             (Backend::Gpu, Some(ctx)) => {
                 let mut r = GpuRenderer::new(ctx);
                 r.set_with_alpha(alpha);
                 r.set_zbuffer(self.zbuffer);
-                r.set_flame(&f, self.width, self.height);
+                r.set_flame(&f, self.width * scale, self.height * scale);
                 if let Some(e) = r.last_error() {
                     self.status = Some(format!("GPU error: {e}"));
                     return;
@@ -260,7 +272,7 @@ impl ExportDialog {
                 let threads = crate::settings::cpu_threads();
                 let render = CpuRender::start(
                     &f,
-                    RenderOptions { width: self.width, height: self.height, threads, max_density: Some(self.quality), seed: 0x5EED, zbuffer: self.zbuffer },
+                    RenderOptions { width: self.width * scale, height: self.height * scale, threads, max_density: Some(self.quality), seed: 0x5EED, zbuffer: self.zbuffer },
                 );
                 Job::Cpu { render: Some(render), saving: None }
             }
@@ -276,6 +288,7 @@ impl ExportDialog {
                 jpeg_quality: self.jpeg_quality,
                 zbuffer: self.zbuffer,
                 flame: f,
+                scale,
             },
             started: Instant::now(),
             target_density: self.quality,
@@ -361,18 +374,19 @@ impl ExportDialog {
                         let _ = sink.finish();
                         return Err("Cancelled".into());
                     }
+                    let s = rwf_core::render::post::supersample(&flame, gpu_r.is_some());
                     let (img, outcome) = match &mut gpu_r {
                         Some(r) => {
-                            let mut img = r.render_frame(&flame, frame as f64, w, h, q)?;
-                            let outcome = r.apply_post_processing(&flame, &mut img, w, h);
+                            let mut img = r.render_frame(&flame, frame as f64, w * s, h * s, q)?;
+                            let outcome = r.apply_post_processing(&flame, &mut img, w * s, h * s, s);
                             (img, outcome)
                         }
                         None => {
                             let threads = crate::settings::cpu_threads();
-                            let r = CpuRender::start_frame(&flame, frame as f64, RenderOptions { width: w, height: h, threads, max_density: Some(q), seed: 0x5EED + frame as u64, zbuffer: false })
-                                .wait();
+                            let opts = RenderOptions { width: w * s, height: h * s, threads, max_density: Some(q), seed: 0x5EED + frame as u64, zbuffer: false };
+                            let r = CpuRender::start_frame(&flame, frame as f64, opts).wait();
                             let mut img = r.image(false);
-                            let outcome = r.apply_post_processing(&mut img, false);
+                            let outcome = r.apply_post_processing(&mut img, false, s);
                             (img, outcome)
                         }
                     };

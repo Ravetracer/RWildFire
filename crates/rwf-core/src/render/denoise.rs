@@ -87,6 +87,9 @@ pub struct DenoiseAux {
     pub albedo: Vec<f32>,
     pub normal: Option<Vec<f32>>,
     pub density: Option<Vec<f32>>,
+    /// The unfiltered image without rounding to 8 bits, RGB 0..1 (for
+    /// [`Flame::post_denoiser_float`]).
+    pub color: Option<Vec<f32>>,
 }
 
 /// What [`apply_post_denoiser`] did.
@@ -188,6 +191,16 @@ pub fn apply_post_denoiser_from(
     if post.sharpen > 0.0 {
         how.push_str(", sharpened");
     }
+    if post.float_color.is_some() {
+        how.push_str(", float input");
+    } else if flame.post_denoiser_float {
+        how.push_str(", 8-bit input (no float image from this render)");
+    }
+    if post.pseudo_normals.is_some() {
+        how.push_str(", density normals");
+    } else if flame.post_denoiser_normals && !aux.is_some_and(|a| a.normal.is_some()) {
+        how.push_str(", no density normals (needs the OIDN library and a flat flame)");
+    }
     Ok(DenoiseOutcome::Denoised(how))
 }
 
@@ -198,6 +211,10 @@ struct PostProcess {
     /// Per pixel share of the original image kept for its sample count (see
     /// [`detail_weights`]); `None` if off or the render gave no counts.
     detail: Option<Vec<f32>>,
+    /// The denoiser's input without rounding (RGB 0..1), if asked for and available.
+    float_color: Option<Vec<f32>>,
+    /// Normals made from the sample density (flat flames), if asked for and available.
+    pseudo_normals: Option<Vec<f32>>,
 }
 
 impl PostProcess {
@@ -207,7 +224,18 @@ impl PostProcess {
             .and_then(|a| a.density.as_deref())
             .filter(|d| d.len() == n && flame.post_denoiser_detail > 0.0)
             .map(|d| detail_weights(d, flame.post_denoiser_detail));
-        Self { blend: flame.post_denoiser_blend, sharpen: flame.post_denoiser_sharpen, detail }
+        let float_color = aux.and_then(|a| a.color.clone()).filter(|c| c.len() == n * 3 && flame.post_denoiser_float);
+        let pseudo_normals = aux
+            .filter(|a| flame.post_denoiser_normals && a.normal.is_none() && a.albedo.len() == n * 3)
+            .and_then(|a| a.density.as_deref())
+            .filter(|d| d.len() == n)
+            .map(|d| pseudo_normals(d, width as usize, height as usize));
+        Self { blend: flame.post_denoiser_blend, sharpen: flame.post_denoiser_sharpen, detail, float_color, pseudo_normals }
+    }
+
+    /// The denoiser's input: the float image if used, else `source` (default: `rgba`).
+    fn input(&self, rgba: &[u8], source: Option<&[u8]>) -> Vec<f32> {
+        self.float_color.clone().unwrap_or_else(|| input_rgb(rgba, source))
     }
 
     /// Sharpens the denoised RGB (0..1) and writes it into the RGBA8 image, mixing in the
@@ -231,6 +259,30 @@ impl PostProcess {
             }
         }
     }
+}
+
+/// Normals for a flat flame from its samples per pixel: the log density as a height field
+/// (smoothed a little), so lines and edges of the flame get slopes the denoiser can keep.
+/// Zero where there are no samples. Per pixel X, Y, Z in -1..1.
+pub fn pseudo_normals(density: &[f32], width: usize, height: usize) -> Vec<f32> {
+    let heights: Vec<f32> = density.iter().map(|n| (1.0 + n.max(0.0)).log2()).collect();
+    let hf = super::effects::blur(&heights, width, height, [1, 1, 0]);
+    let at = |x: usize, y: usize| hf[y * width + x];
+    let mut out = vec![0f32; width * height * 3];
+    out.par_chunks_mut(width * 3).enumerate().for_each(|(y, row)| {
+        let (yu, yd) = (y.saturating_sub(1), (y + 1).min(height - 1));
+        for x in 0..width {
+            if density[y * width + x] <= 0.0 {
+                continue;
+            }
+            let gx = (at((x + 1).min(width - 1), y) - at(x.saturating_sub(1), y)) * 0.5;
+            let gy = (at(x, yd) - at(x, yu)) * 0.5;
+            let (nx, ny, nz) = (-gx * 0.5, -gy * 0.5, 1.0);
+            let len = (nx * nx + ny * ny + nz * nz).sqrt();
+            row[x * 3..x * 3 + 3].copy_from_slice(&[nx / len, ny / len, nz / len]);
+        }
+    });
+    out
 }
 
 /// Where the (denoised) RGB image has structure: 0 in smooth areas, 1 near edges, from the
@@ -349,9 +401,11 @@ fn denoise_with_library(
     if rgba.len() != width as usize * height as usize * 4 {
         return Err("image size mismatch".into());
     }
-    let mut color = input_rgb(rgba, source);
+    let mut color = post.input(rgba, source);
     let albedo = aux.map(|a| a.albedo.as_slice()).filter(|a| !a.is_empty());
-    let normal = aux.and_then(|a| a.normal.as_deref());
+    let normal = aux.and_then(|a| a.normal.as_deref()).or(post.pseudo_normals.as_deref());
+    // The float input stays in the sRGB-like 0..1 range: linearized values in OIDN's HDR mode
+    // gave larger errors in the measurements (tests/denoise_sharpness.rs).
     let used = oidn::denoise(&mut color, width as usize, height as usize, false, true, prefer, albedo, normal)?;
     post.finish(rgba, &mut color, width, height);
     Ok(used)
@@ -361,7 +415,7 @@ fn denoise_with_library(
 /// keeping alpha. `blend` mixes the original back in (0 = fully denoised, 1 = original), as
 /// the OptiX denoiser's blend factor.
 pub fn denoise(tool: &Path, rgba: &mut [u8], width: u32, height: u32, blend: f64) -> Result<(), String> {
-    denoise_with_tool(tool, rgba, None, width, height, &PostProcess { blend, sharpen: 0.0, detail: None })
+    denoise_with_tool(tool, rgba, None, width, height, &PostProcess { blend, sharpen: 0.0, detail: None, float_color: None, pseudo_normals: None })
 }
 
 /// [`denoise`] with the denoiser's input taken from `source` (default: `rgba`).
@@ -375,7 +429,7 @@ fn denoise_with_tool(tool: &Path, rgba: &mut [u8], source: Option<&[u8]>, width:
     let input = dir.join(format!("{stem}.pfm"));
     let output = dir.join(format!("{stem}_out.pfm"));
     let result = (|| {
-        let color = input_rgb(rgba, source);
+        let color = post.input(rgba, source);
         write_pfm(&input, width, height, &color).map_err(|e| format!("writing {}: {e}", input.display()))?;
         let out = Command::new(tool)
             .arg("--ldr")
@@ -503,13 +557,13 @@ mod tests {
         let smeared = [20.0, 20.0, 20.0, 80.0, 110.0, 80.0, 20.0, 20.0];
         let mut denoised: Vec<f32> = smeared.iter().flat_map(|v| [v / 255.0; 3]).collect();
         let density = vec![5000.0; 8];
-        let post = PostProcess { blend: 0.0, sharpen: 0.0, detail: Some(detail_weights(&density, 0.6)) };
+        let post = PostProcess { blend: 0.0, sharpen: 0.0, detail: Some(detail_weights(&density, 0.6)), float_color: None, pseudo_normals: None };
         post.finish(&mut rgba, &mut denoised, w, h);
         assert_eq!(rgba[16], 200);
         // Few samples: the denoised image.
         let mut rgba2: Vec<u8> = (0..8).flat_map(|x| if x == 4 { [200, 200, 200, 255] } else { [20, 20, 20, 255] }).collect();
         let mut denoised: Vec<f32> = smeared.iter().flat_map(|v| [v / 255.0; 3]).collect();
-        let post = PostProcess { blend: 0.0, sharpen: 0.0, detail: Some(detail_weights(&[2.0; 8], 0.6)) };
+        let post = PostProcess { blend: 0.0, sharpen: 0.0, detail: Some(detail_weights(&[2.0; 8], 0.6)), float_color: None, pseudo_normals: None };
         post.finish(&mut rgba2, &mut denoised, w, h);
         assert_eq!(rgba2[16], 110);
     }

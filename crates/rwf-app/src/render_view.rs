@@ -733,7 +733,7 @@ impl InteractiveRenderer {
                         rwf_core::render::post::hdr_note(&flame)
                     }
                     Pixels::Rgba(mut img) => {
-                        let outcome = rwf_core::render::post::process(&flame, &mut img, source.as_deref(), w, h, true, aux.as_ref())
+                        let outcome = rwf_core::render::post::process(&flame, &mut img, source.as_deref(), w, h, true, aux.as_ref(), 1)
                             .map_err(|e| format!("denoiser: {e}"))?;
                         rwf_core::output::write_rgba8(&path, format, w, h, &img, jpeg_quality)?;
                         outcome.describe()

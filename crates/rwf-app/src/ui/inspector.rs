@@ -600,6 +600,21 @@ pub fn denoiser_settings(ui: &mut Ui, id: &str, f: &mut rwf_core::Flame) {
             );
             slider(ui, "Sharpen", &mut f.post_denoiser_sharpen, 0.0..=1.0, widgets::flame_defaults().post_denoiser_sharpen)
                 .on_hover_text("Sharpens the denoised image (contrast adaptive sharpening: little effect on edges that are already sharp, few halos). 0 = off");
+            widgets::label(ui, "Quality");
+            ui.checkbox(&mut f.post_denoiser_supersample, "Supersample ×2").on_hover_text(
+                "Renders saved images, videos and batch renders at twice the width and height, denoises them there and scales them down: clearly sharper lines and detail, but about four times the render time and memory. The canvas, the interactive renderer and stereo images keep their size.",
+            );
+            ui.end_row();
+            widgets::label(ui, "");
+            ui.checkbox(&mut f.post_denoiser_float, "Float input").on_hover_text(
+                "Gives the denoiser the image before rounding to 8 bits, which keeps the finest steps in dark areas. In the measurements it made little difference; try it for very dark, faint flames.",
+            );
+            ui.end_row();
+            widgets::label(ui, "");
+            ui.checkbox(&mut f.post_denoiser_normals, "Density normals").on_hover_text(
+                "Experimental: gives the denoiser surface normals made from the sample density of flat flames, as edge hints. Needs the OIDN library; solid flames use their real normals. The effect depends on the flame: compare with and without.",
+            );
+            ui.end_row();
             widgets::label(ui, "");
             ui.checkbox(&mut f.post_denoiser_only_for_cpu, "Only for CPU renders");
             ui.end_row();

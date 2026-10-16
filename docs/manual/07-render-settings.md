@@ -120,6 +120,19 @@ and videos; the canvas shows it only with **Denoised** in the canvas toolbar.
   denoised image. Not used for solid flames.
 - **Sharpen** (0–1, default 0): sharpens the denoised image with contrast adaptive sharpening,
   which strengthens soft edges more than sharp ones and makes few halos.
+- **Supersample ×2**: renders saved images, videos, batch, movie and dance renders at twice
+  the width and height, denoises them there and scales them down. Lines and fine detail come
+  out clearly sharper (in the measurements the error at edges fell to a third to a half), at
+  about four times the render time and memory. The look changes a little, as with a narrower
+  filter. The canvas, the interactive renderer and stereo images keep their size; the status
+  of a saved image says whether it was supersampled.
+- **Float input**: the denoiser reads the image before it is rounded to 8 bits. This keeps
+  the finest steps in dark areas; on the test flames it made no visible difference, so try it
+  for very dark, faint flames.
+- **Density normals** (experimental): flat flames give the denoiser surface normals made from
+  the sample density, as hints where edges are. The effect depends on the flame (slightly
+  better on some, slightly softer on others); compare with and without. Needs the OIDN
+  library; solid flames always use their real normals.
 - **Only for CPU renders**: apply the denoiser only to CPU renders (JWildfire's default, because
   JWildfire's GPU renderer was separate).
 - The line below says which denoiser is used, or why it is not available.

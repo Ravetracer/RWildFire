@@ -254,6 +254,7 @@ pub struct GpuRenderer {
     tonemap_pipeline: wgpu::ComputePipeline,
     tonemap_hdr_pipeline: wgpu::ComputePipeline,
     tonemap_aux_pipeline: wgpu::ComputePipeline,
+    tonemap_float_pipeline: wgpu::ComputePipeline,
     de_pipeline: wgpu::ComputePipeline,
     de_uniforms: wgpu::Buffer,
     pipelines: Option<Pipelines>,
@@ -290,6 +291,9 @@ pub struct GpuRenderer {
     with_alpha: bool,
     /// The next tonemap passes skip the spatial filter and density estimation (denoiser input).
     unfiltered: bool,
+    /// The next float tonemap pass writes the 8-bit image's colors without rounding instead of
+    /// HDR values (denoiser float input).
+    float_pass: bool,
     tone_base: Option<ToneUniforms>,
     output_generation: u64,
     /// Number of flame states accumulated into the histogram (motion blur packets).
@@ -357,6 +361,7 @@ impl GpuRenderer {
         let tonemap_pipeline = mk("tonemap");
         let tonemap_hdr_pipeline = mk("tonemap_hdr");
         let tonemap_aux_pipeline = mk("tonemap_aux");
+        let tonemap_float_pipeline = mk("tonemap_float");
         let de_pipeline = mk("density_estimate");
         let thread_count = 64 * 1024;
         Self {
@@ -372,6 +377,7 @@ impl GpuRenderer {
             tonemap_pipeline,
             tonemap_hdr_pipeline,
             tonemap_aux_pipeline,
+            tonemap_float_pipeline,
             de_pipeline,
             pipelines: None,
             pipeline_cache: Vec::new(),
@@ -393,6 +399,7 @@ impl GpuRenderer {
             frame_seed: 1,
             with_alpha: false,
             unfiltered: false,
+            float_pass: false,
             tone_base: None,
             output_generation: 0,
             packets: 1,
@@ -997,9 +1004,11 @@ impl GpuRenderer {
     /// the renderer's helper images when the OIDN library is used.
     /// The denoiser works on the image without spatial filter and density estimation (see
     /// [`GpuRenderer::read_denoise_input`]); Blend mixes `img` back in.
-    pub fn apply_post_processing(&mut self, flame: &Flame, img: &mut [u8], w: u32, h: u32) -> Result<rwf_core::render::post::PostOutcome, String> {
+    /// `w` × `h` is the rendered size; `scale` > 1 scales the image down after denoising (see
+    /// [`rwf_core::render::post::supersample`]).
+    pub fn apply_post_processing(&mut self, flame: &Flame, img: &mut Vec<u8>, w: u32, h: u32, scale: u32) -> Result<rwf_core::render::post::PostOutcome, String> {
         let (unfiltered, aux) = if self.output_size() == Some((w, h)) { self.read_denoise_input(flame) } else { (None, None) };
-        rwf_core::render::post::process(flame, img, unfiltered.as_deref(), w, h, true, aux.as_ref())
+        rwf_core::render::post::process(flame, img, unfiltered.as_deref(), w, h, true, aux.as_ref(), scale)
     }
 
     /// What the flame's post denoiser needs from this render: the unfiltered image (see
@@ -1013,7 +1022,15 @@ impl GpuRenderer {
         }
         let unfiltered = self.read_unfiltered_image();
         self.unfiltered = unfiltered.is_some();
-        let aux = self.read_denoise_aux();
+        let mut aux = self.read_denoise_aux();
+        if flame.post_denoiser_float
+            && unfiltered.is_some()
+            && let Some(a) = aux.as_mut()
+        {
+            self.float_pass = true;
+            a.color = self.read_hdr();
+            self.float_pass = false;
+        }
         self.unfiltered = false;
         (unfiltered, aux)
     }
@@ -1049,7 +1066,7 @@ impl GpuRenderer {
         let solid = self.flame.as_ref().is_some_and(|f| f.solid.enabled);
         let normal = solid.then(|| data.chunks_exact(6).flat_map(|p| [p[3], p[4], p[5]]).collect());
         let density = (!solid).then(|| data.chunks_exact(6).map(|p| p[3]).collect());
-        Some(rwf_core::render::denoise::DenoiseAux { albedo, normal, density })
+        Some(rwf_core::render::denoise::DenoiseAux { albedo, normal, density, color: None })
     }
 
     /// 16-bit gray depth image mapped by the flame's z-buffer settings (`None` unless the
@@ -1180,6 +1197,7 @@ impl GpuRenderer {
         };
         let pipeline = match (hdr.is_some(), aux) {
             (true, true) => &self.tonemap_aux_pipeline,
+            (true, false) if self.float_pass => &self.tonemap_float_pipeline,
             (true, false) => &self.tonemap_hdr_pipeline,
             _ => &self.tonemap_pipeline,
         };

@@ -57,7 +57,7 @@ animatable setting: `centre_x`, `centre_y`, `pixels_per_unit`, `cam_zoom`, `cam_
 `saturation`, `low_density_brightness`, `balance_red/green/blue`, `fg_opacity`,
 `post_symmetry_order`, …
 Denoiser: `post_denoiser_blend`, `post_denoiser_detail` (Keep detail), `post_denoiser_sharpen`
-(0..1). Image effects: `effects_exposure`, `effects_contrast`, `effects_highlights`,
+(0..1), `post_denoiser_supersample`, `post_denoiser_float`, `post_denoiser_normals` (bool). Image effects: `effects_exposure`, `effects_contrast`, `effects_highlights`,
 `effects_shadows`, `effects_whites`, `effects_blacks`, `effects_texture`, `effects_clarity`,
 `effects_dehaze`, `effects_vignette`, `effects_vignette_size`, `effects_vignette_feather`,
 `effects_grain`, `effects_grain_size` (see the Effects tab for the ranges).

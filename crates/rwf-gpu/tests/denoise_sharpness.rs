@@ -119,7 +119,7 @@ fn denoise_sharpness() {
         for &q in &qs {
             r.reset_accumulation();
             let noisy = r.render_frame(&base, 0.0, w, h, q).unwrap();
-            let (src, aux) = r.read_denoise_input(&base);
+            let (src, aux) = r.read_denoise_input(&Flame { post_denoiser_float: true, ..base.clone() });
             let aux = aux.unwrap();
             let d = aux.density.as_ref().unwrap();
             let lit: Vec<f32> = d.iter().copied().filter(|v| *v > 0.0).collect();
@@ -146,10 +146,36 @@ fn denoise_sharpness() {
                 apply_post_denoiser_from(&base, &mut img, None, w, h, true, None).unwrap();
                 img
             });
-            for det in [0.4, 0.6, 0.8, 1.0] {
+            for det in [0.0, 0.6] {
                 let f = Flame { post_denoiser_detail: det, ..base.clone() };
                 report(&format!("detail={det}"), &run(&f, Some(&aux)));
+                let fl = Flame { post_denoiser_float: true, ..f.clone() };
+                report(&format!("detail={det} float"), &run(&fl, Some(&aux)));
+                let nm = Flame { post_denoiser_normals: true, ..f.clone() };
+                report(&format!("detail={det} normals"), &run(&nm, Some(&aux)));
+                let both = Flame { post_denoiser_normals: true, post_denoiser_float: true, ..f.clone() };
+                report(&format!("detail={det} float+normals"), &run(&both, Some(&aux)));
             }
+            // Supersampling: the same quality at twice the size, denoised and scaled down,
+            // against a high quality render at twice the size, scaled down (supersampling also
+            // changes the look: the filter is half as wide).
+            r.reset_accumulation();
+            let ref2 = rwf_core::render::post::downscale(&r.render_frame(&base, 0.0, 2 * w, 2 * h, 5000.0).unwrap(), 2 * w, 2 * h, 2);
+            let report2 = |label: &str, img: &[u8]| {
+                let m = metrics(img, &ref2, w as usize, h as usize);
+                eprintln!("  {label:<28} rmse {:6.2}  edge {:6.2}  flat {:6.2}  sharp {:.3}  (2x reference)", m.rmse, m.edge_rmse, m.flat_rmse, m.sharp);
+                save(&format!("{name}_q{q}_{}", label.replace([' ', '=', '.', ','], "_")), img, w, h);
+            };
+            r.reset_accumulation();
+            let big = r.render_frame(&base, 0.0, 2 * w, 2 * h, q).unwrap();
+            let (bsrc, baux) = r.read_denoise_input(&Flame { post_denoiser_float: true, ..base.clone() });
+            for det in [0.0, 0.6] {
+                let f = Flame { post_denoiser_detail: det, ..base.clone() };
+                let mut img = big.clone();
+                apply_post_denoiser_from(&f, &mut img, bsrc.as_deref(), 2 * w, 2 * h, true, baux.as_ref()).unwrap();
+                report2(&format!("detail={det} supersample"), &rwf_core::render::post::downscale(&img, 2 * w, 2 * h, 2));
+            }
+            report2("supersample, no denoiser", &rwf_core::render::post::downscale(&big, 2 * w, 2 * h, 2));
             for sh in [0.3, 0.6] {
                 let f = Flame { post_denoiser_sharpen: sh, post_denoiser_detail: 0.6, ..base.clone() };
                 report(&format!("detail=0.6 sharpen={sh}"), &run(&f, Some(&aux)));

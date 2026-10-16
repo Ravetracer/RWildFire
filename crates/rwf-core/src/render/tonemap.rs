@@ -392,6 +392,63 @@ impl ToneMapper {
         [red as u8, green as u8, blue as u8, alpha_out as u8]
     }
 
+    /// [`Self::gamma_pixel`] without rounding to 8 bits: RGB 0..1 (the denoiser's float input).
+    pub fn gamma_pixel_float(&self, f: [f64; 4], bg: [i32; 3]) -> [f32; 3] {
+        let p = &self.params;
+        let intensity = f[0];
+        let mut rgb = [0f64; 3];
+        if intensity > 0.0 {
+            let alpha = if intensity <= p.gamma_threshold {
+                let frac = intensity / p.gamma_threshold;
+                (1.0 - frac) * intensity * p.scl_gamma + frac * intensity.powf(p.gamma)
+            } else {
+                intensity.powf(p.gamma)
+            };
+            let log_scl = p.vib_int * alpha / intensity;
+            let inv_alpha = 255.0 - (alpha * 255.0 * p.alpha_scale).clamp(0.0, 255.0);
+            for k in 0..3 {
+                let c = f[k + 1];
+                let raw = if p.inverse_vib_int > 0.0 { log_scl * c + p.inverse_vib_int * c.powf(p.gamma) } else { log_scl * c };
+                rgb[k] = (raw + inv_alpha * bg[k] as f64 / 256.0).clamp(0.0, 255.0);
+            }
+        } else {
+            rgb = bg.map(|c| c.clamp(0, 255) as f64);
+        }
+        if p.mod_saturation != 0.0 {
+            let (h, s, l) = rgb_to_hsl(rgb[0] / 255.0, rgb[1] / 255.0, rgb[2] / 255.0);
+            let (r2, g2, b2) = hsl_to_rgb(h, s + p.mod_saturation, l);
+            rgb = [r2 * 255.0, g2 * 255.0, b2 * 255.0];
+        }
+        rgb.map(|c| (c / 255.0).clamp(0.0, 1.0) as f32)
+    }
+
+    /// What the denoiser reads besides the 8-bit image, per pixel: the color without rounding
+    /// (RGB 0..1), the albedo (the average sample color, RGB 0..1; the background without
+    /// samples) and the samples. Call it on an [`Self::unfiltered`] mapper.
+    pub fn denoise_inputs<R: Raster>(&self, flame: &Flame, raster: &R, w: u32, h: u32) -> (Vec<f32>, Vec<f32>, Vec<f32>) {
+        match flame.mixer.color_func() {
+            Some(func) => self.denoise_inputs_raster(flame, &mix_raster(raster, &func), w, h),
+            None => self.denoise_inputs_raster(flame, raster, w, h),
+        }
+    }
+
+    fn denoise_inputs_raster<R: Raster>(&self, flame: &Flame, raster: &R, w: u32, h: u32) -> (Vec<f32>, Vec<f32>, Vec<f32>) {
+        let backdrop = super::background::Backdrop::new(flame, w, h);
+        let n = (w * h) as usize;
+        let (mut color, mut albedo) = (vec![0f32; n * 3], vec![0f32; n * 3]);
+        let wl = self.params.white_level;
+        color.par_chunks_mut(w as usize * 3).zip(albedo.par_chunks_mut(w as usize * 3)).enumerate().for_each(|(y, (crow, arow))| {
+            for x in 0..w as usize {
+                let f = self.filtered(raster, x as u32, y as u32);
+                let bg = backdrop.get(x as u32, y as u32);
+                crow[x * 3..x * 3 + 3].copy_from_slice(&self.gamma_pixel_float(f, bg));
+                let a: [f64; 3] = if f[0] > 0.0 { [f[1], f[2], f[3]].map(|c| c / f[0] * wl / 255.0) } else { bg.map(|c| c as f64 / 255.0) };
+                arow[x * 3..x * 3 + 3].copy_from_slice(&a.map(|c| c.clamp(0.0, 1.0) as f32));
+            }
+        });
+        (color, albedo, self.pixel_counts(raster, w, h))
+    }
+
     /// Gamma correction + background blend without quantization (`transformPointHDR`): linear
     /// RGB where 1.0 is 8-bit full scale. The saturation modifier is not applied (as in JWildfire).
     pub fn gamma_pixel_hdr(&self, f: [f64; 4], bg: [i32; 3]) -> [f32; 3] {
