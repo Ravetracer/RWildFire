@@ -134,11 +134,11 @@ fn transform_tab(ui: &mut Ui, doc: &mut Document, st: &mut InspectorState) {
         ui.text_edit_singleline(&mut xf.name);
         ui.end_row();
         if matches!(sel, Selection::XForm(_) | Selection::Background(_)) {
-            slider_log(ui, "Weight", &mut xf.weight, 0.001..=50.0);
+            slider_log(ui, "Weight", &mut xf.weight, 0.001..=50.0, widgets::xform_defaults().weight);
         }
         widgets::label(ui, "Opacity");
         let mut op = if xf.draw_mode == DrawMode::Hidden { 0.0 } else { xf.opacity };
-        if ui.add(egui::Slider::new(&mut op, 0.0..=1.0)).changed() {
+        if widgets::reset_on_double_click(ui.add(egui::Slider::new(&mut op, 0.0..=1.0)), &mut op, 1.0).changed() {
             xf.opacity = op;
             xf.draw_mode = if op <= 1e-8 {
                 DrawMode::Hidden
@@ -179,8 +179,8 @@ fn transform_tab(ui: &mut Ui, doc: &mut Document, st: &mut InspectorState) {
                 }
             });
         ui.end_row();
-        slider(ui, "Position", &mut xf.color, 0.0..=1.0);
-        slider(ui, "Speed", &mut xf.color_symmetry, -1.0..=1.0);
+        slider(ui, "Position", &mut xf.color, 0.0..=1.0, widgets::xform_defaults().color);
+        slider(ui, "Speed", &mut xf.color_symmetry, -1.0..=1.0, widgets::xform_defaults().color_symmetry);
         if xf.color_type == ColorType::Target {
             widgets::label(ui, "Target");
             widgets::color_rgb(ui, &mut xf.target_color);
@@ -275,14 +275,14 @@ fn transform_tab(ui: &mut Ui, doc: &mut Document, st: &mut InspectorState) {
     ui.add_space(4.0);
     egui::CollapsingHeader::new(RichText::new("Color modulation").color(theme::TEXT_MUTED)).show(ui, |ui| {
         grid(ui, "mods", |ui| {
-            slider(ui, "Gamma", &mut xf.mod_gamma, -2.0..=2.0);
-            slider(ui, "Gamma speed", &mut xf.mod_gamma_speed, -1.0..=1.0);
-            slider(ui, "Contrast", &mut xf.mod_contrast, -2.0..=2.0);
-            slider(ui, "Contrast speed", &mut xf.mod_contrast_speed, -1.0..=1.0);
-            slider(ui, "Saturation", &mut xf.mod_saturation, -2.0..=2.0);
-            slider(ui, "Saturation speed", &mut xf.mod_saturation_speed, -1.0..=1.0);
-            slider(ui, "Hue", &mut xf.mod_hue, -1.0..=1.0);
-            slider(ui, "Hue speed", &mut xf.mod_hue_speed, -1.0..=1.0);
+            slider(ui, "Gamma", &mut xf.mod_gamma, -2.0..=2.0, widgets::xform_defaults().mod_gamma);
+            slider(ui, "Gamma speed", &mut xf.mod_gamma_speed, -1.0..=1.0, widgets::xform_defaults().mod_gamma_speed);
+            slider(ui, "Contrast", &mut xf.mod_contrast, -2.0..=2.0, widgets::xform_defaults().mod_contrast);
+            slider(ui, "Contrast speed", &mut xf.mod_contrast_speed, -1.0..=1.0, widgets::xform_defaults().mod_contrast_speed);
+            slider(ui, "Saturation", &mut xf.mod_saturation, -2.0..=2.0, widgets::xform_defaults().mod_saturation);
+            slider(ui, "Saturation speed", &mut xf.mod_saturation_speed, -1.0..=1.0, widgets::xform_defaults().mod_saturation_speed);
+            slider(ui, "Hue", &mut xf.mod_hue, -1.0..=1.0, widgets::xform_defaults().mod_hue);
+            slider(ui, "Hue speed", &mut xf.mod_hue_speed, -1.0..=1.0, widgets::xform_defaults().mod_hue_speed);
         });
         ui.label(RichText::new("Color modulation is applied by the CPU renderer.").small().color(theme::TEXT_MUTED));
     });
@@ -290,8 +290,8 @@ fn transform_tab(ui: &mut Ui, doc: &mut Document, st: &mut InspectorState) {
     if solid {
         egui::CollapsingHeader::new(RichText::new("Solid material").color(theme::TEXT_MUTED)).default_open(true).show(ui, |ui| {
             grid(ui, "xf-material", |ui| {
-                slider(ui, "Material", &mut xf.material, 0.0..=8.0).on_hover_text("Material index; fractional values blend two materials");
-                slider(ui, "Material speed", &mut xf.material_speed, -1.0..=1.0);
+                slider(ui, "Material", &mut xf.material, 0.0..=8.0, widgets::xform_defaults().material).on_hover_text("Material index; fractional values blend two materials");
+                slider(ui, "Material speed", &mut xf.material_speed, -1.0..=1.0, widgets::xform_defaults().material_speed);
             });
         });
     }
@@ -328,9 +328,9 @@ fn zbuffer_section(ui: &mut Ui, f: &mut rwf_core::Flame, st: &mut InspectorState
     egui::CollapsingHeader::new(RichText::new("Z-buffer").color(theme::TEXT_MUTED)).id_salt("zbuffer").show(ui, |ui| {
         ui.label(RichText::new("How depth maps to gray in z-buffer images (Export › Z-buffer, rwf-cli render --zbuffer).").small().color(theme::TEXT_MUTED));
         grid(ui, "zbuf", |ui| {
-            slider(ui, "Scale", &mut f.zbuffer_scale, -10.0..=10.0).on_hover_text("Negative: black near the camera");
-            slider(ui, "Shift", &mut f.zbuffer_shift, -2.0..=2.0);
-            slider(ui, "Bias", &mut f.zbuffer_bias, 0.0..=1.0).on_hover_text("Gray level of the empty background");
+            slider(ui, "Scale", &mut f.zbuffer_scale, -10.0..=10.0, widgets::flame_defaults().zbuffer_scale).on_hover_text("Negative: black near the camera");
+            slider(ui, "Shift", &mut f.zbuffer_shift, -2.0..=2.0, widgets::flame_defaults().zbuffer_shift);
+            slider(ui, "Bias", &mut f.zbuffer_bias, 0.0..=1.0, widgets::flame_defaults().zbuffer_bias).on_hover_text("Gray level of the empty background");
             widgets::label(ui, "File name");
             ui.horizontal(|ui| {
                 ui.selectable_value(&mut f.zbuffer_filename, ZBufferFilename::PostDepth, "image_depth.png");
@@ -405,9 +405,9 @@ fn xaos_section(ui: &mut Ui, doc: &mut Document, st: &mut InspectorState, i: usi
         grid(ui, "xaos", |ui| {
             for j in 0..n {
                 if st.xaos_to {
-                    slider(ui, &crate::icons::arrows(&format!("Transform {} →", j + 1)), &mut layer.xforms[j].chaos[i], 0.0..=2.0);
+                    slider(ui, &crate::icons::arrows(&format!("Transform {} →", j + 1)), &mut layer.xforms[j].chaos[i], 0.0..=2.0, 1.0);
                 } else {
-                    slider(ui, &crate::icons::arrows(&format!("→ Transform {}", j + 1)), &mut layer.xforms[i].chaos[j], 0.0..=2.0);
+                    slider(ui, &crate::icons::arrows(&format!("→ Transform {}", j + 1)), &mut layer.xforms[i].chaos[j], 0.0..=2.0, 1.0);
                 }
             }
         });
@@ -463,7 +463,7 @@ fn camera_tab(ui: &mut Ui, doc: &mut Document) {
         gizmo::wheel_row(ui, "Dolly", &mut f.cam_pos_z, Wheel::Linear(0.01), f64::MIN..=f64::MAX, 0.0, 4).on_hover_text("Camera position Z");
         drag(ui, "Position X", &mut f.cam_pos_x, 0.01);
         drag(ui, "Position Y", &mut f.cam_pos_y, 0.01);
-        slider(ui, "Depth fade", &mut f.dimish_z, 0.0..=4.0);
+        slider(ui, "Depth fade", &mut f.dimish_z, 0.0..=4.0, widgets::flame_defaults().dimish_z);
         drag(ui, "Fade distance", &mut f.dim_z_distance, 0.01);
         widgets::label(ui, "Fade color");
         widgets::color_rgb(ui, &mut f.dim_z_color).on_hover_text("Color that distant points fade into with \"Depth fade\" (black: they just get darker)");
@@ -487,9 +487,9 @@ fn camera_tab(ui: &mut Ui, doc: &mut Document) {
             .on_hover_text("Anaglyph: one image for red/cyan glasses. Side by side: both eyes next to each other. Interpolated pairs: side-by-side pairs at growing eye distance, one row each.");
             ui.end_row();
             if st.is_on() {
-                slider(ui, "Eye angle", &mut st.angle, 0.0..=10.0).on_hover_text("How far each eye turns towards the focal point (degrees)");
-                slider(ui, "Eye distance", &mut st.eye_dist, 0.0..=0.5).on_hover_text("Distance of each eye from the center");
-                slider(ui, "Focal offset", &mut st.focal_offset, -2.0..=2.0).on_hover_text("Depth of the point the eyes turn around");
+                slider(ui, "Eye angle", &mut st.angle, 0.0..=10.0, widgets::flame_defaults().stereo3d.angle).on_hover_text("How far each eye turns towards the focal point (degrees)");
+                slider(ui, "Eye distance", &mut st.eye_dist, 0.0..=0.5, widgets::flame_defaults().stereo3d.eye_dist).on_hover_text("Distance of each eye from the center");
+                slider(ui, "Focal offset", &mut st.focal_offset, -2.0..=2.0, widgets::flame_defaults().stereo3d.focal_offset).on_hover_text("Depth of the point the eyes turn around");
                 if st.mode == Stereo3dMode::Anaglyph {
                     for (label, c) in [("Left eye", &mut st.left_color), ("Right eye", &mut st.right_color)] {
                         widgets::label(ui, label);
@@ -516,7 +516,7 @@ fn camera_tab(ui: &mut Ui, doc: &mut Document) {
         f.reset_section(FlameSection::DepthOfField);
     }
     grid(ui, "dof", |ui| {
-        slider(ui, "Amount", &mut f.cam_dof, 0.0..=5.0).on_hover_text("0 = off. Needs a 3D camera (pitch/yaw/perspective) to be visible.");
+        slider(ui, "Amount", &mut f.cam_dof, 0.0..=5.0, widgets::flame_defaults().cam_dof).on_hover_text("0 = off. Needs a 3D camera (pitch/yaw/perspective) to be visible.");
         if f.cam_dof.abs() > 1e-8 {
             widgets::label(ui, "Mode");
             ui.horizontal(|ui| {
@@ -528,8 +528,8 @@ fn camera_tab(ui: &mut Ui, doc: &mut Document) {
                 drag(ui, "Focus X", &mut f.focus_x, 0.01);
                 drag(ui, "Focus Y", &mut f.focus_y, 0.01);
                 drag(ui, "Focus Z", &mut f.focus_z, 0.01);
-                slider(ui, "Sharp area", &mut f.cam_dof_area, 0.0..=4.0);
-                slider(ui, "Exponent", &mut f.cam_dof_exponent, 0.1..=4.0);
+                slider(ui, "Sharp area", &mut f.cam_dof_area, 0.0..=4.0, widgets::flame_defaults().cam_dof_area);
+                slider(ui, "Exponent", &mut f.cam_dof_exponent, 0.1..=4.0, widgets::flame_defaults().cam_dof_exponent);
             } else {
                 drag(ui, "Focus plane Z", &mut f.cam_z, 0.01);
             }
@@ -547,9 +547,9 @@ fn camera_tab(ui: &mut Ui, doc: &mut Document) {
                 f.set_dof_shape(shape);
             }
             ui.end_row();
-            slider(ui, "Shape scale", &mut f.cam_dof_scale, 0.0..=4.0);
-            slider(ui, "Shape angle", &mut f.cam_dof_angle, -180.0..=180.0);
-            slider(ui, "Fade", &mut f.cam_dof_fade, 0.0..=1.0);
+            slider(ui, "Shape scale", &mut f.cam_dof_scale, 0.0..=4.0, widgets::flame_defaults().cam_dof_scale);
+            slider(ui, "Shape angle", &mut f.cam_dof_angle, -180.0..=180.0, widgets::flame_defaults().cam_dof_angle);
+            slider(ui, "Fade", &mut f.cam_dof_fade, 0.0..=1.0, widgets::flame_defaults().cam_dof_fade);
             let names = f.cam_dof_shape.param_names();
             let params = [&mut f.cam_dof_param1, &mut f.cam_dof_param2, &mut f.cam_dof_param3, &mut f.cam_dof_param4, &mut f.cam_dof_param5, &mut f.cam_dof_param6];
             for (name, v) in names.iter().zip(params) {
@@ -594,11 +594,11 @@ pub fn denoiser_settings(ui: &mut Ui, id: &str, f: &mut rwf_core::Flame) {
         });
         ui.end_row();
         if f.ai_post_denoiser != Denoiser::None {
-            slider(ui, "Blend", &mut f.post_denoiser_blend, 0.0..=1.0).on_hover_text("Mixes the original image back in (0 = fully denoised)");
-            slider(ui, "Keep detail", &mut f.post_denoiser_detail, 0.0..=1.0).on_hover_text(
+            slider(ui, "Blend", &mut f.post_denoiser_blend, 0.0..=1.0, widgets::flame_defaults().post_denoiser_blend).on_hover_text("Mixes the original image back in (0 = fully denoised)");
+            slider(ui, "Keep detail", &mut f.post_denoiser_detail, 0.0..=1.0, widgets::flame_defaults().post_denoiser_detail).on_hover_text(
                 "Keeps the original image at lines and edges where the render already has enough samples per pixel: the denoiser takes thin lines for noise and softens them. Higher values count pixels with fewer samples as converged. 0 = off; not for solid flames.",
             );
-            slider(ui, "Sharpen", &mut f.post_denoiser_sharpen, 0.0..=1.0)
+            slider(ui, "Sharpen", &mut f.post_denoiser_sharpen, 0.0..=1.0, widgets::flame_defaults().post_denoiser_sharpen)
                 .on_hover_text("Sharpens the denoised image (contrast adaptive sharpening: little effect on edges that are already sharp, few halos). 0 = off");
             widgets::label(ui, "");
             ui.checkbox(&mut f.post_denoiser_only_for_cpu, "Only for CPU renders");
@@ -620,20 +620,20 @@ fn look_tab(ui: &mut Ui, doc: &mut Document, st: &mut InspectorState) {
             f.reset_section(FlameSection::Tone);
         }
         grid(ui, "tone", |ui| {
-            slider(ui, "Brightness", &mut f.brightness, 0.0..=20.0);
-            slider(ui, "Gamma", &mut f.gamma, 1.0..=8.0);
-            slider(ui, "Gamma threshold", &mut f.gamma_threshold, 0.0..=0.2);
-            slider(ui, "Vibrancy", &mut f.vibrancy, 0.0..=1.0);
-            slider(ui, "Contrast", &mut f.contrast, 0.1..=4.0);
-            slider(ui, "Saturation", &mut f.saturation, 0.0..=2.0);
-            slider(ui, "White level", &mut f.white_level, 20.0..=400.0);
-            slider(ui, "Low density", &mut f.low_density_brightness, 0.0..=1.0);
+            slider(ui, "Brightness", &mut f.brightness, 0.0..=20.0, widgets::flame_defaults().brightness);
+            slider(ui, "Gamma", &mut f.gamma, 1.0..=8.0, widgets::flame_defaults().gamma);
+            slider(ui, "Gamma threshold", &mut f.gamma_threshold, 0.0..=0.2, widgets::flame_defaults().gamma_threshold);
+            slider(ui, "Vibrancy", &mut f.vibrancy, 0.0..=1.0, widgets::flame_defaults().vibrancy);
+            slider(ui, "Contrast", &mut f.contrast, 0.1..=4.0, widgets::flame_defaults().contrast);
+            slider(ui, "Saturation", &mut f.saturation, 0.0..=2.0, widgets::flame_defaults().saturation);
+            slider(ui, "White level", &mut f.white_level, 20.0..=400.0, widgets::flame_defaults().white_level);
+            slider(ui, "Low density", &mut f.low_density_brightness, 0.0..=1.0, widgets::flame_defaults().low_density_brightness);
         });
         egui::CollapsingHeader::new(RichText::new("Color balance").color(theme::TEXT_MUTED)).show(ui, |ui| {
             grid(ui, "balance", |ui| {
-                slider(ui, "Red", &mut f.balance_red, 0.0..=2.0);
-                slider(ui, "Green", &mut f.balance_green, 0.0..=2.0);
-                slider(ui, "Blue", &mut f.balance_blue, 0.0..=2.0);
+                slider(ui, "Red", &mut f.balance_red, 0.0..=2.0, widgets::flame_defaults().balance_red);
+                slider(ui, "Green", &mut f.balance_green, 0.0..=2.0, widgets::flame_defaults().balance_green);
+                slider(ui, "Blue", &mut f.balance_blue, 0.0..=2.0, widgets::flame_defaults().balance_blue);
             });
         });
 
@@ -687,7 +687,7 @@ fn look_tab(ui: &mut Ui, doc: &mut Document, st: &mut InspectorState) {
                 }
             });
             ui.end_row();
-            slider(ui, "Foreground opacity", &mut f.fg_opacity, 0.0..=3.0)
+            slider(ui, "Foreground opacity", &mut f.fg_opacity, 0.0..=3.0, widgets::flame_defaults().fg_opacity)
                 .on_hover_text("How much the flame covers the background in transparent images (1 = normal, less = more see-through)");
             widgets::label(ui, "Transparent");
             ui.checkbox(&mut f.bg_transparency, "in exported images");
@@ -730,7 +730,7 @@ fn gradient_editor(ui: &mut Ui, doc: &mut Document, st: &mut InspectorState) {
                 }
             });
             if st.random_gen.is_some() {
-                ui.add(egui::Slider::new(&mut st.random_points, 3..=58).text("key colors"));
+                widgets::reset_on_double_click(ui.add(egui::Slider::new(&mut st.random_points, 3..=58).text("key colors")), &mut st.random_points, 7);
                 ui.checkbox(&mut st.random_fade, "Fade between the colors");
                 ui.checkbox(&mut st.random_uniform, "Uniform spacing");
             }
@@ -793,7 +793,7 @@ fn gradient_editor(ui: &mut Ui, doc: &mut Document, st: &mut InspectorState) {
         ui.label(RichText::new(s).small().color(theme::TEXT_MUTED));
     }
     grid(ui, "grad-cycle", |ui| {
-        slider(ui, "Color cycle", &mut layer.gradient_shift, 0.0..=256.0).on_hover_text(
+        slider(ui, "Color cycle", &mut layer.gradient_shift, 0.0..=256.0, widgets::flame_defaults().layers[0].gradient_shift).on_hover_text(
             "Moves the colors along the gradient when rendering, without changing the gradient (256 = one full turn). \
              Key it on the timeline to cycle the colors in animations; fractional values blend neighbouring colors.",
         );
@@ -812,7 +812,9 @@ fn gradient_editor(ui: &mut Ui, doc: &mut Document, st: &mut InspectorState) {
         grid(ui, "grad", |ui| {
             let mut int = |ui: &mut Ui, label: &str, v: &mut i32, range: std::ops::RangeInclusive<i32>, tip: &str| {
                 widgets::label(ui, label);
-                changed |= ui.add(egui::Slider::new(v, range)).on_hover_text(tip).changed();
+                // Neutral: 1 for the frequency, 0 for the others.
+                let neutral = if label == "Frequency" { 1 } else { 0 };
+                changed |= widgets::reset_on_double_click(ui.add(egui::Slider::new(v, range)), v, neutral).on_hover_text(tip).changed();
                 ui.end_row();
             };
             int(ui, "Shift", &mut m.shift, -255..=255, "Moves the colors along the gradient");
@@ -827,7 +829,7 @@ fn gradient_editor(ui: &mut Ui, doc: &mut Document, st: &mut InspectorState) {
             int(ui, "Green", &mut m.green, -255..=255, "");
             int(ui, "Blue", &mut m.blue, -255..=255, "");
             int(ui, "Swap RGB", &mut m.swap_rgb, 0..=255, "Swaps the color channels (RBG, GRB, GBR, BRG, BGR over the range)");
-            changed |= slider(ui, "Lightness", &mut ge.lum, -0.5..=0.5).changed();
+            changed |= slider(ui, "Lightness", &mut ge.lum, -0.5..=0.5, 0.0).changed();
         });
         if ui.small_button(format!("{} Reset", icons::REFRESH)).on_hover_text("Back to the gradient before these adjustments").clicked() {
             ge.mods = Default::default();
@@ -928,12 +930,12 @@ fn gradient_editor(ui: &mut Ui, doc: &mut Document, st: &mut InspectorState) {
                 });
                 ui.end_row();
                 if gm.is_on() {
-                    slider(ui, "Horiz. scale", &mut gm.h_scale, -4.0..=4.0).on_hover_text("How far a point's x moves across the image (it is mirrored at the edges)");
-                    slider(ui, "Horiz. offset", &mut gm.h_offset, -2.0..=2.0);
-                    slider(ui, "Vert. scale", &mut gm.v_scale, -4.0..=4.0).on_hover_text("How far a point's y moves across the image (it is mirrored at the edges)");
-                    slider(ui, "Vert. offset", &mut gm.v_offset, -2.0..=2.0);
-                    slider(ui, "Color shift", &mut gm.local_color_add, -2.0..=2.0).on_hover_text("How much the color index moves the position in the image");
-                    slider(ui, "Color scale", &mut gm.local_color_scale, -2.0..=2.0).on_hover_text("How much the color index scales the position in the image");
+                    slider(ui, "Horiz. scale", &mut gm.h_scale, -4.0..=4.0, widgets::flame_defaults().layers[0].gradient_map.h_scale).on_hover_text("How far a point's x moves across the image (it is mirrored at the edges)");
+                    slider(ui, "Horiz. offset", &mut gm.h_offset, -2.0..=2.0, widgets::flame_defaults().layers[0].gradient_map.h_offset);
+                    slider(ui, "Vert. scale", &mut gm.v_scale, -4.0..=4.0, widgets::flame_defaults().layers[0].gradient_map.v_scale).on_hover_text("How far a point's y moves across the image (it is mirrored at the edges)");
+                    slider(ui, "Vert. offset", &mut gm.v_offset, -2.0..=2.0, widgets::flame_defaults().layers[0].gradient_map.v_offset);
+                    slider(ui, "Color shift", &mut gm.local_color_add, -2.0..=2.0, widgets::flame_defaults().layers[0].gradient_map.local_color_add).on_hover_text("How much the color index moves the position in the image");
+                    slider(ui, "Color scale", &mut gm.local_color_scale, -2.0..=2.0, widgets::flame_defaults().layers[0].gradient_map.local_color_scale).on_hover_text("How much the color index scales the position in the image");
                 }
             });
         });
@@ -950,7 +952,7 @@ fn render_tab(ui: &mut Ui, doc: &mut Document, preview: &mut Preview, canvas: &m
             ui.selectable_value(&mut preview.backend, Backend::Cpu, "CPU");
         });
         ui.end_row();
-        slider_log(ui, "Target quality", &mut preview.target_quality, 10.0..=5000.0);
+        slider_log(ui, "Target quality", &mut preview.target_quality, 10.0..=5000.0, crate::prefs::Prefs::default().preview_quality);
         widgets::label(ui, "Resolution");
         ui.horizontal(|ui| {
             for (s, l) in [(0.5, "½"), (0.75, "¾"), (1.0, "Full")] {
@@ -970,7 +972,7 @@ fn render_tab(ui: &mut Ui, doc: &mut Document, preview: &mut Preview, canvas: &m
         f.sample_density = q;
     }
     grid(ui, "quality", |ui| {
-        slider_log(ui, "Quality", &mut f.sample_density, 10.0..=10000.0);
+        slider_log(ui, "Quality", &mut f.sample_density, 10.0..=10000.0, widgets::flame_defaults().sample_density);
         widgets::label(ui, "Filter");
         egui::ComboBox::from_id_salt("kernel").selected_text(f.filter_kernel.label()).show_ui(ui, |ui| {
             for k in FilterKernel::ALL {
@@ -978,19 +980,19 @@ fn render_tab(ui: &mut Ui, doc: &mut Document, preview: &mut Preview, canvas: &m
             }
         });
         ui.end_row();
-        slider(ui, "Filter radius", &mut f.spatial_filter_radius, 0.0..=3.0);
+        slider(ui, "Filter radius", &mut f.spatial_filter_radius, 0.0..=3.0, widgets::flame_defaults().spatial_filter_radius);
         if f.filter_kernel.is_adaptive() {
-            slider(ui, "Sharpness", &mut f.filter_sharpness, 0.0..=15.0).on_hover_text("Edge threshold: below it the soft kernel is used");
-            slider(ui, "Low density", &mut f.filter_low_density, 0.0..=0.5).on_hover_text("Intensity below which the wide low-density kernel is used");
+            slider(ui, "Sharpness", &mut f.filter_sharpness, 0.0..=15.0, widgets::flame_defaults().filter_sharpness).on_hover_text("Edge threshold: below it the soft kernel is used");
+            slider(ui, "Low density", &mut f.filter_low_density, 0.0..=0.5, widgets::flame_defaults().filter_low_density).on_hover_text("Intensity below which the wide low-density kernel is used");
             widgets::label(ui, "Indicator");
             ui.checkbox(&mut f.filter_indicator, "Show chosen kernel").on_hover_text("Red: detail, green: soft, blue: low density");
             ui.end_row();
         }
         widgets::label(ui, "Oversampling");
-        ui.add(egui::Slider::new(&mut f.spatial_oversampling, 1..=4));
+        widgets::reset_on_double_click(ui.add(egui::Slider::new(&mut f.spatial_oversampling, 1..=4)), &mut f.spatial_oversampling, widgets::flame_defaults().spatial_oversampling);
         ui.end_row();
-        slider(ui, "Antialias amount", &mut f.antialias_amount, 0.0..=1.0);
-        slider(ui, "Antialias radius", &mut f.antialias_radius, 0.0..=2.0);
+        slider(ui, "Antialias amount", &mut f.antialias_amount, 0.0..=1.0, widgets::flame_defaults().antialias_amount);
+        slider(ui, "Antialias radius", &mut f.antialias_radius, 0.0..=2.0, widgets::flame_defaults().antialias_radius);
     });
 
     if widgets::section_reset(ui, "Post blur") {
@@ -998,11 +1000,11 @@ fn render_tab(ui: &mut Ui, doc: &mut Document, preview: &mut Preview, canvas: &m
     }
     grid(ui, "post_blur", |ui| {
         widgets::label(ui, "Radius");
-        ui.add(egui::Slider::new(&mut f.post_blur_radius, 0..=16)).on_hover_text("Splats samples over a radial kernel (0 = off)");
+        widgets::reset_on_double_click(ui.add(egui::Slider::new(&mut f.post_blur_radius, 0..=16)), &mut f.post_blur_radius, 0).on_hover_text("Splats samples over a radial kernel (0 = off)");
         ui.end_row();
         if f.post_blur_radius > 0 {
-            slider(ui, "Fade", &mut f.post_blur_fade, 0.0..=1.0).on_hover_text("Fraction of samples that are not blurred");
-            slider(ui, "Falloff", &mut f.post_blur_falloff, 0.0..=10.0);
+            slider(ui, "Fade", &mut f.post_blur_fade, 0.0..=1.0, widgets::flame_defaults().post_blur_fade).on_hover_text("Fraction of samples that are not blurred");
+            slider(ui, "Falloff", &mut f.post_blur_falloff, 0.0..=10.0, widgets::flame_defaults().post_blur_falloff);
         }
     });
 
@@ -1027,9 +1029,9 @@ fn render_tab(ui: &mut Ui, doc: &mut Document, preview: &mut Preview, canvas: &m
         f.reset_section(FlameSection::DensityEstimation);
     }
     grid(ui, "de", |ui| {
-        slider(ui, "Radius", &mut f.de_radius, 0.0..=2.0).on_hover_text("Adaptive smoothing of sparse areas (0 = off)");
-        slider(ui, "Curve", &mut f.de_curve, 0.0..=1.0);
-        slider(ui, "Compare line", &mut f.de_comparison_line, 0.0..=1.0).on_hover_text("Shows the image with/without density estimation side by side (0 = off)");
+        slider(ui, "Radius", &mut f.de_radius, 0.0..=2.0, widgets::flame_defaults().de_radius).on_hover_text("Adaptive smoothing of sparse areas (0 = off)");
+        slider(ui, "Curve", &mut f.de_curve, 0.0..=1.0, widgets::flame_defaults().de_curve);
+        slider(ui, "Compare line", &mut f.de_comparison_line, 0.0..=1.0, widgets::flame_defaults().de_comparison_line).on_hover_text("Shows the image with/without density estimation side by side (0 = off)");
     });
 
     if widgets::section_reset(ui, "Symmetry") {
@@ -1048,7 +1050,7 @@ fn render_tab(ui: &mut Ui, doc: &mut Document, preview: &mut Preview, canvas: &m
             PostSymmetryType::None => {}
             PostSymmetryType::Point => {
                 widgets::label(ui, "Order");
-                ui.add(egui::Slider::new(&mut ps.order, 2..=32));
+                widgets::reset_on_double_click(ui.add(egui::Slider::new(&mut ps.order, 2..=32)), &mut ps.order, widgets::flame_defaults().post_symmetry.order);
                 ui.end_row();
                 drag(ui, "Center X", &mut ps.centre_x, 0.01);
                 drag(ui, "Center Y", &mut ps.centre_y, 0.01);
@@ -1056,8 +1058,8 @@ fn render_tab(ui: &mut Ui, doc: &mut Document, preview: &mut Preview, canvas: &m
             _ => {
                 drag(ui, "Center X", &mut ps.centre_x, 0.01);
                 drag(ui, "Center Y", &mut ps.centre_y, 0.01);
-                slider(ui, "Distance", &mut ps.distance, -4.0..=4.0);
-                slider(ui, "Rotation", &mut ps.rotation, -180.0..=180.0);
+                slider(ui, "Distance", &mut ps.distance, -4.0..=4.0, widgets::flame_defaults().post_symmetry.distance);
+                slider(ui, "Rotation", &mut ps.rotation, -180.0..=180.0, widgets::flame_defaults().post_symmetry.rotation);
             }
         }
     });

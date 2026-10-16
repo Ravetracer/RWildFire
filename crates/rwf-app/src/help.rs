@@ -175,6 +175,7 @@ const SHORTCUTS: &[(&str, &str)] = &[
     ("Shift+drag / Ctrl+drag a corner", "Only turn / only scale"),
     ("Drag the background", "Move the view (any mouse button)"),
     ("Mouse wheel", "Zoom around the cursor"),
+    ("Double-click a slider", "Reset it to its default value"),
     ("Browse: arrows, Enter, Delete", "Select, open, delete a flame"),
     ("Dance: 1 … 9, Space", "Switch to pool flame 1 … 9, play/pause"),
 ];

@@ -444,10 +444,12 @@ impl ScriptWindow {
                 let label = ui.label(RichText::new(decl.name.replace('_', " ")).color(theme::TEXT_MUTED));
                 let r = match (&decl.kind, value) {
                     (ParamKind::Number { min, max }, ParamValue::Number(v)) => {
-                        ui.add(egui::Slider::new(v, *min..=*max).clamping(egui::SliderClamping::Never).max_decimals(4))
+                        let r = ui.add(egui::Slider::new(v, *min..=*max).clamping(egui::SliderClamping::Never).max_decimals(4));
+                        reset_number(r, v, &decl.default)
                     }
                     (ParamKind::Integer { min, max }, ParamValue::Number(v)) => {
-                        ui.add(egui::Slider::new(v, *min as f64..=*max as f64).integer().clamping(egui::SliderClamping::Never))
+                        let r = ui.add(egui::Slider::new(v, *min as f64..=*max as f64).integer().clamping(egui::SliderClamping::Never));
+                        reset_number(r, v, &decl.default)
                     }
                     (ParamKind::Bool, ParamValue::Bool(b)) => ui.checkbox(b, ""),
                     (ParamKind::Choice(options), ParamValue::Text(t)) => {
@@ -499,5 +501,13 @@ impl ScriptWindow {
             Some(false) => self.pending = None,
             None => {}
         }
+    }
+}
+
+/// Double-click on a number parameter resets it to the default of the script header.
+fn reset_number(r: egui::Response, v: &mut f64, default: &ParamValue) -> egui::Response {
+    match default {
+        ParamValue::Number(d) => crate::ui::widgets::reset_on_double_click(r, v, *d),
+        _ => r,
     }
 }

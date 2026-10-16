@@ -596,7 +596,7 @@ impl DanceView {
                     ui.end_row();
                     widgets::drag(ui, "Amplitude", amplitude, 0.05);
                     widgets::drag(ui, "Offset", offset, 0.01);
-                    widgets::slider(ui, "Release (s)", release, 0.0..=2.0).on_hover_text("How slowly the value falls back after a peak");
+                    widgets::slider(ui, "Release (s)", release, 0.0..=2.0, 0.15).on_hover_text("How slowly the value falls back after a peak");
                 }
                 MotionKind::Sine { min, max, rpm } | MotionKind::SawTooth { min, max, rpm } => {
                     widgets::drag(ui, "From", min, 0.05);
@@ -789,7 +789,7 @@ impl DanceView {
                 grid(ui, &format!("dance-balance-{i}"), |ui| {
                     for (label, v) in [("Red", &mut b.red), ("Green", &mut b.green), ("Blue", &mut b.blue)] {
                         widgets::label(ui, label);
-                        ui.add(egui::Slider::new(v, -255..=255));
+                        widgets::reset_on_double_click(ui.add(egui::Slider::new(v, -255..=255)), v, 0);
                         ui.end_row();
                     }
                     widgets::drag(ui, "Start (s)", &mut b.start, 0.1);
@@ -911,7 +911,7 @@ impl DanceView {
             ui.add(egui::DragValue::new(&mut self.project.morph_frames).range(0..=240).suffix(" fr"))
                 .on_hover_text("Length of the morph when switching flames (frames at the export frame rate)");
             ui.label(RichText::new("Detail").color(theme::TEXT_MUTED));
-            ui.add(egui::Slider::new(&mut self.resolution, 0.2..=1.0).show_value(false)).on_hover_text("Resolution of the realtime view");
+            widgets::reset_on_double_click(ui.add(egui::Slider::new(&mut self.resolution, 0.2..=1.0).show_value(false)), &mut self.resolution, 0.5).on_hover_text("Resolution of the realtime view");
             ui.checkbox(&mut self.show_spectrum, "Spectrum");
             if let Some(s) = &self.sound_status {
                 ui.label(RichText::new(s).small().color(theme::WARN));

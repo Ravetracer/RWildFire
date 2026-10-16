@@ -82,19 +82,44 @@ pub fn section_reset(ui: &mut Ui, text: &str) -> bool {
     clicked
 }
 
-/// Labeled slider row inside a [`grid`]. Values outside the range can still be typed in.
-pub fn slider(ui: &mut Ui, text: &str, v: &mut f64, range: std::ops::RangeInclusive<f64>) -> Response {
+/// Labeled slider row inside a [`grid`]. Values outside the range can still be typed in; a
+/// double-click resets the value to `default`.
+pub fn slider(ui: &mut Ui, text: &str, v: &mut f64, range: std::ops::RangeInclusive<f64>, default: f64) -> Response {
     label(ui, text);
     let r = ui.add(egui::Slider::new(v, range).clamping(egui::SliderClamping::Never).max_decimals(4));
     ui.end_row();
-    r
+    reset_on_double_click(r, v, default)
 }
 
-pub fn slider_log(ui: &mut Ui, text: &str, v: &mut f64, range: std::ops::RangeInclusive<f64>) -> Response {
+/// [`slider`] on a logarithmic scale.
+pub fn slider_log(ui: &mut Ui, text: &str, v: &mut f64, range: std::ops::RangeInclusive<f64>, default: f64) -> Response {
     label(ui, text);
     let r = ui.add(egui::Slider::new(v, range).logarithmic(true).clamping(egui::SliderClamping::Never).max_decimals(3));
     ui.end_row();
+    reset_on_double_click(r, v, default)
+}
+
+/// Sets `v` to `default` when the widget of `r` was double-clicked (and reports the change).
+/// The pointer input is checked as well: a slider's track only senses drags.
+pub fn reset_on_double_click<T: Copy + PartialEq>(mut r: Response, v: &mut T, default: T) -> Response {
+    let on_widget = r.ctx.input(|i| i.pointer.button_double_clicked(egui::PointerButton::Primary) && i.pointer.interact_pos().is_some_and(|p| r.rect.contains(p)));
+    if (r.double_clicked() || on_widget) && *v != default {
+        *v = default;
+        r.mark_changed();
+    }
     r
+}
+
+/// The default flame, for the defaults of the flame's sliders.
+pub fn flame_defaults() -> &'static rwf_core::Flame {
+    static FLAME: std::sync::LazyLock<rwf_core::Flame> = std::sync::LazyLock::new(rwf_core::Flame::default);
+    &FLAME
+}
+
+/// The default transform, for the defaults of the transform sliders.
+pub fn xform_defaults() -> &'static rwf_core::model::XForm {
+    static XFORM: std::sync::LazyLock<rwf_core::model::XForm> = std::sync::LazyLock::new(rwf_core::model::XForm::default);
+    &XFORM
 }
 
 pub fn drag(ui: &mut Ui, text: &str, v: &mut f64, speed: f64) -> Response {

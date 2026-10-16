@@ -76,21 +76,21 @@ pub fn tab(ui: &mut Ui, fx: &mut ImageEffects, st: &mut EffectsState) {
             (d.exposure, d.contrast, d.highlights, d.shadows, d.whites, d.blacks);
     }
     grid(ui, "fx-light", |ui| {
-        slider(ui, "Exposure", &mut fx.exposure, -3.0..=3.0).on_hover_text(
+        slider(ui, "Exposure", &mut fx.exposure, -3.0..=3.0, d.exposure).on_hover_text(
             "Brightens or darkens the finished image in photographic stops (+1 doubles the light). Brightness on the Look tab changes the tone mapping of the render instead.",
         );
-        slider(ui, "Contrast", &mut fx.contrast, -1.0..=1.0).on_hover_text(
+        slider(ui, "Contrast", &mut fx.contrast, -1.0..=1.0, d.contrast).on_hover_text(
             "S-curve around the middle gray: > 0 darker shadows and brighter highlights, < 0 flatter. Black and white stay. Contrast on the Look tab changes the tone mapping instead.",
         );
-        slider(ui, "Highlights", &mut fx.highlights, -1.0..=1.0).on_hover_text(
+        slider(ui, "Highlights", &mut fx.highlights, -1.0..=1.0, d.highlights).on_hover_text(
             "Brightens (> 0) or darkens (< 0) only the bright areas, found on a blurred copy so fine detail is not cut apart. Negative values recover detail in bright glows.",
         );
-        slider(ui, "Shadows", &mut fx.shadows, -1.0..=1.0)
+        slider(ui, "Shadows", &mut fx.shadows, -1.0..=1.0, d.shadows)
             .on_hover_text("Brightens (> 0) or darkens (< 0) only the dark areas; positive values bring out faint structures.");
-        slider(ui, "Whites", &mut fx.whites, -1.0..=1.0).on_hover_text(
+        slider(ui, "Whites", &mut fx.whites, -1.0..=1.0, d.whites).on_hover_text(
             "Moves the white point: > 0 brighter highlights that clip sooner, < 0 compressed highlights without pure white. White level on the Look tab works before the gamma curve instead.",
         );
-        slider(ui, "Blacks", &mut fx.blacks, -1.0..=1.0)
+        slider(ui, "Blacks", &mut fx.blacks, -1.0..=1.0, d.blacks)
             .on_hover_text("Moves the black point: > 0 lifts the blacks to a dark gray, < 0 deepens them (dark detail turns black).");
     });
 
@@ -98,12 +98,12 @@ pub fn tab(ui: &mut Ui, fx: &mut ImageEffects, st: &mut EffectsState) {
         (fx.texture, fx.clarity, fx.dehaze) = (d.texture, d.clarity, d.dehaze);
     }
     grid(ui, "fx-detail", |ui| {
-        slider(ui, "Texture", &mut fx.texture, -1.0..=1.0).on_hover_text(
+        slider(ui, "Texture", &mut fx.texture, -1.0..=1.0, d.texture).on_hover_text(
             "Local contrast of fine detail (a few pixels): > 0 crisper lines and structures, < 0 softer. Scales with the image size, so the preview matches the render.",
         );
-        slider(ui, "Clarity", &mut fx.clarity, -1.0..=1.0)
+        slider(ui, "Clarity", &mut fx.clarity, -1.0..=1.0, d.clarity)
             .on_hover_text("Local contrast of larger structures, mostly in the midtones: > 0 more depth and punch, < 0 a soft, dreamy look.");
-        slider(ui, "Dehaze", &mut fx.dehaze, 0.0..=1.0).on_hover_text(
+        slider(ui, "Dehaze", &mut fx.dehaze, 0.0..=1.0, d.dehaze).on_hover_text(
             "Removes haze and milky glow: subtracts the local minimum of the color channels and stretches the rest. Strongest in bright, washed-out areas; on a black background it mostly deepens the contrast.",
         );
     });
@@ -146,18 +146,18 @@ pub fn tab(ui: &mut Ui, fx: &mut ImageEffects, st: &mut EffectsState) {
         (fx.vignette, fx.vignette_size, fx.vignette_feather) = (d.vignette, d.vignette_size, d.vignette_feather);
     }
     grid(ui, "fx-vignette", |ui| {
-        slider(ui, "Amount", &mut fx.vignette, -1.0..=1.0).on_hover_text("Darkens (< 0) or lightens (> 0) the edges and corners of the image");
-        slider(ui, "Size", &mut fx.vignette_size, 0.0..=1.0).on_hover_text("Where the vignette starts: 0 at the center, 1 only in the corners");
-        slider(ui, "Feather", &mut fx.vignette_feather, 0.0..=1.0).on_hover_text("How soft the transition is: 0 a hard edge, 1 a gradual fade");
+        slider(ui, "Amount", &mut fx.vignette, -1.0..=1.0, d.vignette).on_hover_text("Darkens (< 0) or lightens (> 0) the edges and corners of the image");
+        slider(ui, "Size", &mut fx.vignette_size, 0.0..=1.0, d.vignette_size).on_hover_text("Where the vignette starts: 0 at the center, 1 only in the corners");
+        slider(ui, "Feather", &mut fx.vignette_feather, 0.0..=1.0, d.vignette_feather).on_hover_text("How soft the transition is: 0 a hard edge, 1 a gradual fade");
     });
 
     if widgets::section_reset(ui, "Grain") {
         (fx.grain, fx.grain_size) = (d.grain, d.grain_size);
     }
     grid(ui, "fx-grain", |ui| {
-        slider(ui, "Amount", &mut fx.grain, 0.0..=1.0)
+        slider(ui, "Amount", &mut fx.grain, 0.0..=1.0, d.grain)
             .on_hover_text("Adds film grain, strongest in the midtones. It is reproducible: the same image always gets the same grain.");
-        slider(ui, "Size", &mut fx.grain_size, 0.5..=4.0)
+        slider(ui, "Size", &mut fx.grain_size, 0.5..=4.0, d.grain_size)
             .on_hover_text("Grain size: 1 = one pixel at an image height of 1000 pixels, so the preview shows it like the final render");
     });
 }

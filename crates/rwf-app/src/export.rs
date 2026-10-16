@@ -453,7 +453,7 @@ impl ExportDialog {
                     });
                     ui.end_row();
                     ui.label(RichText::new("Quality").color(theme::TEXT_MUTED));
-                    if ui.add(egui::Slider::new(&mut self.quality, 50.0..=20000.0).logarithmic(true)).changed() {
+                    if crate::ui::widgets::reset_on_double_click(ui.add(egui::Slider::new(&mut self.quality, 50.0..=20000.0).logarithmic(true)), &mut self.quality, 1000.0).changed() {
                         self.quality_profile = None;
                     }
                     ui.end_row();
@@ -475,7 +475,7 @@ impl ExportDialog {
                         ui.end_row();
                         if self.image_format == ImageFormat::Jpeg {
                             ui.label(RichText::new("JPEG quality").color(theme::TEXT_MUTED));
-                            ui.add(egui::Slider::new(&mut self.jpeg_quality, 50..=100));
+                            crate::ui::widgets::reset_on_double_click(ui.add(egui::Slider::new(&mut self.jpeg_quality, 50..=100)), &mut self.jpeg_quality, 95);
                             ui.end_row();
                         }
                         if matches!(self.image_format, ImageFormat::Png) {

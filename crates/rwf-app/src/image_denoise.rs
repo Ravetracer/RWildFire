@@ -85,7 +85,7 @@ impl ImageDenoiser {
                         }
                     });
                     ui.end_row();
-                    widgets::slider(ui, "Blend", &mut self.blend, 0.0..=0.99).on_hover_text("Mixes the original image back in (0 = fully denoised)");
+                    widgets::slider(ui, "Blend", &mut self.blend, 0.0..=0.99, 0.0).on_hover_text("Mixes the original image back in (0 = fully denoised)");
                 });
                 if let Err(e) = denoise::backend() {
                     ui.label(RichText::new(e).small().color(theme::WARN));

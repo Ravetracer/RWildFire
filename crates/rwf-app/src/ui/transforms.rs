@@ -266,10 +266,10 @@ fn layers_section(ui: &mut Ui, doc: &mut Document) {
                                 ui.text_edit_singleline(&mut layer.name);
                                 ui.end_row();
                                 widgets::label(ui, "Weight");
-                                ui.add(egui::Slider::new(&mut layer.weight, 0.0..=4.0).clamping(egui::SliderClamping::Never));
+                                widgets::reset_on_double_click(ui.add(egui::Slider::new(&mut layer.weight, 0.0..=4.0).clamping(egui::SliderClamping::Never)), &mut layer.weight, widgets::flame_defaults().layers[0].weight);
                                 ui.end_row();
                                 widgets::label(ui, "Density");
-                                ui.add(egui::Slider::new(&mut layer.density, 0.0..=1.0));
+                                widgets::reset_on_double_click(ui.add(egui::Slider::new(&mut layer.density, 0.0..=1.0)), &mut layer.density, widgets::flame_defaults().layers[0].density);
                                 ui.end_row();
                             });
                         }

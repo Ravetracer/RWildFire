@@ -16,6 +16,9 @@ The panels on the left and right can be made wider by dragging their inner edge.
 title shows the name of the open file; a dot (•) after the name means there are unsaved
 changes.
 
+A **double-click on a slider** (its track, handle or number) sets it back to its default value;
+the reset buttons next to the section titles reset a whole section.
+
 ## The top bar
 
 ![The top bar](images/topbar.png)

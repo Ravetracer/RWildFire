@@ -350,7 +350,7 @@ impl QuiltView {
                 });
                 ui.end_row();
                 widgets::label(ui, "Quality");
-                ui.add(egui::Slider::new(&mut self.quality, 50.0..=20000.0).logarithmic(true).max_decimals(0));
+                widgets::reset_on_double_click(ui.add(egui::Slider::new(&mut self.quality, 50.0..=20000.0).logarithmic(true).max_decimals(0)), &mut self.quality, 1000.0);
                 ui.end_row();
             });
         });

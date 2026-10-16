@@ -491,14 +491,14 @@ impl InteractiveRenderer {
             theme::section_label(ui, "Tone");
             let before = f.clone();
             grid(ui, "ir-tone", |ui| {
-                slider(ui, "Brightness", &mut f.brightness, 0.0..=20.0);
-                slider(ui, "Gamma", &mut f.gamma, 1.0..=8.0);
-                slider(ui, "Gamma threshold", &mut f.gamma_threshold, 0.0..=0.2);
-                slider(ui, "Vibrancy", &mut f.vibrancy, 0.0..=1.0);
-                slider(ui, "Contrast", &mut f.contrast, 0.1..=4.0);
-                slider(ui, "Saturation", &mut f.saturation, 0.0..=2.0);
-                slider(ui, "White level", &mut f.white_level, 20.0..=400.0);
-                slider(ui, "Low density", &mut f.low_density_brightness, 0.0..=1.0);
+                slider(ui, "Brightness", &mut f.brightness, 0.0..=20.0, widgets::flame_defaults().brightness);
+                slider(ui, "Gamma", &mut f.gamma, 1.0..=8.0, widgets::flame_defaults().gamma);
+                slider(ui, "Gamma threshold", &mut f.gamma_threshold, 0.0..=0.2, widgets::flame_defaults().gamma_threshold);
+                slider(ui, "Vibrancy", &mut f.vibrancy, 0.0..=1.0, widgets::flame_defaults().vibrancy);
+                slider(ui, "Contrast", &mut f.contrast, 0.1..=4.0, widgets::flame_defaults().contrast);
+                slider(ui, "Saturation", &mut f.saturation, 0.0..=2.0, widgets::flame_defaults().saturation);
+                slider(ui, "White level", &mut f.white_level, 20.0..=400.0, widgets::flame_defaults().white_level);
+                slider(ui, "Low density", &mut f.low_density_brightness, 0.0..=1.0, widgets::flame_defaults().low_density_brightness);
             });
             if *f != before
                 && let Some(r) = self.renderer.as_mut()
@@ -538,7 +538,7 @@ impl InteractiveRenderer {
                 ui.end_row();
                 if self.image_format == ImageFormat::Jpeg {
                     widgets::label(ui, "JPEG quality");
-                    ui.add(egui::Slider::new(&mut self.jpeg_quality, 50..=100));
+                    widgets::reset_on_double_click(ui.add(egui::Slider::new(&mut self.jpeg_quality, 50..=100)), &mut self.jpeg_quality, 95);
                     ui.end_row();
                 }
             });

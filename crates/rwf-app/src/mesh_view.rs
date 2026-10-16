@@ -32,6 +32,11 @@ use rwf_core::Flame;
 use rwf_core::meshgen::{self, Bounds, Mesh, MeshSettings, Volume};
 
 use crate::ui::widgets::{self, grid};
+
+/// Default mesh settings (for the double-click reset of the sliders).
+fn mesh_defaults() -> rwf_core::meshgen::MeshSettings {
+    rwf_core::meshgen::MeshSettings::new(rwf_core::meshgen::Bounds { min: [-1.0; 3], max: [1.0; 3] })
+}
 use crate::{icons, theme};
 
 const PREVIEW_W: u32 = 900;
@@ -278,10 +283,10 @@ impl MeshView {
                 }
                 ui.end_row();
                 widgets::label(ui, "Resolution");
-                ui.add(egui::Slider::new(&mut self.settings.resolution, 32..=512).logarithmic(true)).on_hover_text("Voxels along the longest side");
+                widgets::reset_on_double_click(ui.add(egui::Slider::new(&mut self.settings.resolution, 32..=512).logarithmic(true)), &mut self.settings.resolution, mesh_defaults().resolution).on_hover_text("Voxels along the longest side");
                 ui.end_row();
                 widgets::label(ui, "Quality");
-                ui.add(egui::Slider::new(&mut self.settings.quality, 1.0..=500.0).logarithmic(true).max_decimals(0))
+                widgets::reset_on_double_click(ui.add(egui::Slider::new(&mut self.settings.quality, 1.0..=500.0).logarithmic(true).max_decimals(0)), &mut self.settings.quality, mesh_defaults().quality)
                     .on_hover_text("Samples per voxel");
                 ui.end_row();
             });
@@ -314,7 +319,7 @@ impl MeshView {
         grid(ui, "mesh-surface", |ui| {
             let s = &mut self.settings;
             widgets::label(ui, "Threshold");
-            ui.add(egui::Slider::new(&mut s.threshold, 0.01..=0.99)).on_hover_text("Density level of the surface (higher: thinner)");
+            widgets::reset_on_double_click(ui.add(egui::Slider::new(&mut s.threshold, 0.01..=0.99)), &mut s.threshold, mesh_defaults().threshold).on_hover_text("Density level of the surface (higher: thinner)");
             ui.end_row();
             widgets::label(ui, "Pre-filter");
             egui::ComboBox::from_id_salt("mesh-dilate")
@@ -332,10 +337,10 @@ impl MeshView {
                 .on_hover_text("Thickens thin structures slice by slice before the blur (JWildfire's dilate pre-filters)");
             ui.end_row();
             widgets::label(ui, "Blur");
-            ui.add(egui::Slider::new(&mut s.blur, 0.0..=4.0).suffix(" vx")).on_hover_text("Smooths the density before the surface is extracted");
+            widgets::reset_on_double_click(ui.add(egui::Slider::new(&mut s.blur, 0.0..=4.0).suffix(" vx")), &mut s.blur, mesh_defaults().blur).on_hover_text("Smooths the density before the surface is extracted");
             ui.end_row();
             widgets::label(ui, "Smoothing");
-            ui.add(egui::Slider::new(&mut s.smooth_passes, 0..=50)).on_hover_text("Taubin smoothing passes of the mesh");
+            widgets::reset_on_double_click(ui.add(egui::Slider::new(&mut s.smooth_passes, 0..=50)), &mut s.smooth_passes, mesh_defaults().smooth_passes).on_hover_text("Taubin smoothing passes of the mesh");
             ui.end_row();
             widgets::label(ui, "λ / μ");
             ui.horizontal(|ui| {

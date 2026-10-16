@@ -512,7 +512,7 @@ impl PrefsWindow {
                             }
                         });
                         ui.end_row();
-                        widgets::slider(ui, "Blend", &mut prefs.blend, 0.0..=1.0).on_hover_text("Mixes the original image back in (0 = fully denoised)");
+                        widgets::slider(ui, "Blend", &mut prefs.blend, 0.0..=1.0, rwf_core::Flame::default().post_denoiser_blend).on_hover_text("Mixes the original image back in (0 = fully denoised)");
                     });
                     match denoise::backend() {
                         Ok(b) => ui.label(RichText::new(format!("Denoiser found: {b}")).small().color(theme::TEXT_MUTED)),

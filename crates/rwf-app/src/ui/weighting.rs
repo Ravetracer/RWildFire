@@ -61,9 +61,9 @@ pub fn section(ui: &mut Ui, xf: &mut XForm, preview: &mut FieldPreview) {
                     ui.selectable_value(&mut w.input, FieldInput::Position, "Source point");
                 });
             ui.end_row();
-            slider(ui, "Color", &mut w.color_intensity, -2.0..=2.0);
-            slider(ui, "Variation amount", &mut w.var_amount_intensity, -2.0..=2.0);
-            slider(ui, "Jitter", &mut w.jitter_intensity, -2.0..=2.0);
+            slider(ui, "Color", &mut w.color_intensity, -2.0..=2.0, rwf_core::weighting::WeightingField::default().color_intensity);
+            slider(ui, "Variation amount", &mut w.var_amount_intensity, -2.0..=2.0, rwf_core::weighting::WeightingField::default().var_amount_intensity);
+            slider(ui, "Jitter", &mut w.jitter_intensity, -2.0..=2.0, rwf_core::weighting::WeightingField::default().jitter_intensity);
             for (k, p) in w.var_params.iter_mut().enumerate() {
                 widgets::label(ui, &format!("Parameter {}", k + 1));
                 var_param_row(ui, k, p, &var_names, &xf_params(&p.var_name));
@@ -80,16 +80,16 @@ pub fn section(ui: &mut Ui, xf: &mut XForm, preview: &mut FieldPreview) {
                     }
                 });
                 ui.end_row();
-                slider(ui, "Width", &mut w.cmap_x_size, 0.1..=20.0);
-                slider(ui, "Height", &mut w.cmap_y_size, 0.1..=20.0);
-                slider(ui, "Centre X", &mut w.cmap_x_centre, -5.0..=5.0);
-                slider(ui, "Centre Y", &mut w.cmap_y_centre, -5.0..=5.0);
+                slider(ui, "Width", &mut w.cmap_x_size, 0.1..=20.0, rwf_core::weighting::WeightingField::default().cmap_x_size);
+                slider(ui, "Height", &mut w.cmap_y_size, 0.1..=20.0, rwf_core::weighting::WeightingField::default().cmap_y_size);
+                slider(ui, "Centre X", &mut w.cmap_x_centre, -5.0..=5.0, rwf_core::weighting::WeightingField::default().cmap_x_centre);
+                slider(ui, "Centre Y", &mut w.cmap_y_centre, -5.0..=5.0, rwf_core::weighting::WeightingField::default().cmap_y_centre);
             } else {
                 widgets::label(ui, "Seed");
                 ui.add(egui::DragValue::new(&mut w.noise_seed).speed(1.0));
                 ui.end_row();
                 widgets::label(ui, "Frequency");
-                ui.add(egui::Slider::new(&mut w.noise_frequency, 0.01..=20.0).logarithmic(true).clamping(egui::SliderClamping::Never));
+                widgets::reset_on_double_click(ui.add(egui::Slider::new(&mut w.noise_frequency, 0.01..=20.0).logarithmic(true).clamping(egui::SliderClamping::Never)), &mut w.noise_frequency, rwf_core::weighting::WeightingField::default().noise_frequency);
                 ui.end_row();
             }
             if w.field_type.is_fractal() {
@@ -103,8 +103,8 @@ pub fn section(ui: &mut Ui, xf: &mut XForm, preview: &mut FieldPreview) {
                 widgets::label(ui, "Octaves");
                 ui.add(egui::DragValue::new(&mut w.fractal_octaves).speed(0.05).range(1..=10));
                 ui.end_row();
-                slider(ui, "Gain", &mut w.fractal_gain, 0.0..=1.0);
-                slider(ui, "Lacunarity", &mut w.fractal_lacunarity, 1.0..=4.0);
+                slider(ui, "Gain", &mut w.fractal_gain, 0.0..=1.0, rwf_core::weighting::WeightingField::default().fractal_gain);
+                slider(ui, "Lacunarity", &mut w.fractal_lacunarity, 1.0..=4.0, rwf_core::weighting::WeightingField::default().fractal_lacunarity);
             }
             if w.field_type == FieldType::CellularNoise {
                 widgets::label(ui, "Return");

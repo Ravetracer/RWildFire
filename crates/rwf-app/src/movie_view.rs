@@ -393,7 +393,7 @@ impl MovieView {
                 changed |= ui.add(egui::DragValue::new(&mut m.fps).range(1.0..=240.0).speed(0.2).suffix(" fps")).changed();
                 ui.end_row();
                 widgets::label(ui, "Quality");
-                ui.add(egui::Slider::new(&mut m.quality, 20.0..=5000.0).logarithmic(true).max_decimals(0));
+                widgets::reset_on_double_click(ui.add(egui::Slider::new(&mut m.quality, 20.0..=5000.0).logarithmic(true).max_decimals(0)), &mut m.quality, rwf_core::movie::Movie::default().quality);
                 ui.end_row();
                 widgets::label(ui, "Motion blur");
                 ui.horizontal(|ui| {

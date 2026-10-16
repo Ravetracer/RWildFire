@@ -585,7 +585,7 @@ impl BatchView {
                     SizeKind::Flame => {}
                 }
                 widgets::label(ui, "Quality");
-                ui.add(egui::Slider::new(&mut self.settings.quality, 50.0..=20000.0).logarithmic(true).max_decimals(0));
+                widgets::reset_on_double_click(ui.add(egui::Slider::new(&mut self.settings.quality, 50.0..=20000.0).logarithmic(true).max_decimals(0)), &mut self.settings.quality, rwf_gpu::batch::BatchSettings::default().quality);
                 ui.end_row();
                 widgets::label(ui, "Format");
                 egui::ComboBox::from_id_salt("batch-fmt").selected_text(self.settings.format.label()).show_ui(ui, |ui| {
@@ -596,7 +596,7 @@ impl BatchView {
                 ui.end_row();
                 if self.settings.format == ImageFormat::Jpeg {
                     widgets::label(ui, "JPEG quality");
-                    ui.add(egui::Slider::new(&mut self.settings.jpeg_quality, 50..=100));
+                    widgets::reset_on_double_click(ui.add(egui::Slider::new(&mut self.settings.jpeg_quality, 50..=100)), &mut self.settings.jpeg_quality, rwf_gpu::batch::BatchSettings::default().jpeg_quality);
                     ui.end_row();
                 }
                 widgets::label(ui, "Depth");

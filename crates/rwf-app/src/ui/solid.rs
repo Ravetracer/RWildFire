@@ -93,16 +93,16 @@ pub fn solid_section(ui: &mut Ui, f: &mut Flame) {
         ui.checkbox(&mut s.ao_enabled, "Enabled");
         if s.ao_enabled {
             grid(ui, "sld-ao-grid", |ui| {
-                slider(ui, "Intensity", &mut s.ao_intensity, 0.0..=4.0);
-                slider(ui, "Search radius", &mut s.ao_search_radius, 0.25..=30.0);
-                slider(ui, "Blur radius", &mut s.ao_blur_radius, 0.25..=10.0);
-                slider(ui, "Falloff", &mut s.ao_falloff, 0.0..=10.0);
-                slider(ui, "Affect diffuse", &mut s.ao_affect_diffuse, 0.0..=1.0);
+                slider(ui, "Intensity", &mut s.ao_intensity, 0.0..=4.0, widgets::flame_defaults().solid.ao_intensity);
+                slider(ui, "Search radius", &mut s.ao_search_radius, 0.25..=30.0, widgets::flame_defaults().solid.ao_search_radius);
+                slider(ui, "Blur radius", &mut s.ao_blur_radius, 0.25..=10.0, widgets::flame_defaults().solid.ao_blur_radius);
+                slider(ui, "Falloff", &mut s.ao_falloff, 0.0..=10.0, widgets::flame_defaults().solid.ao_falloff);
+                slider(ui, "Affect diffuse", &mut s.ao_affect_diffuse, 0.0..=1.0, widgets::flame_defaults().solid.ao_affect_diffuse);
                 widgets::label(ui, "Radius samples");
-                ui.add(egui::Slider::new(&mut s.ao_radius_samples, 1..=32));
+                widgets::reset_on_double_click(ui.add(egui::Slider::new(&mut s.ao_radius_samples, 1..=32)), &mut s.ao_radius_samples, widgets::flame_defaults().solid.ao_radius_samples);
                 ui.end_row();
                 widgets::label(ui, "Azimuth samples");
-                ui.add(egui::Slider::new(&mut s.ao_azimuth_samples, 1..=32));
+                widgets::reset_on_double_click(ui.add(egui::Slider::new(&mut s.ao_azimuth_samples, 1..=32)), &mut s.ao_azimuth_samples, widgets::flame_defaults().solid.ao_azimuth_samples);
                 ui.end_row();
             });
         }
@@ -119,11 +119,11 @@ pub fn solid_section(ui: &mut Ui, f: &mut Flame) {
             ui.end_row();
             if s.shadow_type != ShadowType::Off {
                 widgets::label(ui, "Map size");
-                ui.add(egui::Slider::new(&mut s.shadowmap_size, 256..=8192).logarithmic(true));
+                widgets::reset_on_double_click(ui.add(egui::Slider::new(&mut s.shadowmap_size, 256..=8192).logarithmic(true)), &mut s.shadowmap_size, widgets::flame_defaults().solid.shadowmap_size);
                 ui.end_row();
-                slider(ui, "Bias", &mut s.shadowmap_bias, 0.0..=0.2);
+                slider(ui, "Bias", &mut s.shadowmap_bias, 0.0..=0.2, widgets::flame_defaults().solid.shadowmap_bias);
                 if s.shadow_type == ShadowType::Smooth {
-                    slider(ui, "Smoothness", &mut s.shadow_smooth_radius, 0.0..=10.0);
+                    slider(ui, "Smoothness", &mut s.shadow_smooth_radius, 0.0..=10.0, widgets::flame_defaults().solid.shadow_smooth_radius);
                 }
             }
         });
@@ -143,14 +143,14 @@ pub fn solid_section(ui: &mut Ui, f: &mut Flame) {
                 }
             });
             grid(ui, &format!("sld-light-{i}"), |ui| {
-                slider(ui, "Altitude", &mut l.altitude, -90.0..=90.0);
-                slider(ui, "Azimuth", &mut l.azimuth, -180.0..=180.0);
-                slider(ui, "Intensity", &mut l.intensity, 0.0..=2.0);
+                slider(ui, "Altitude", &mut l.altitude, -90.0..=90.0, rwf_core::solid::DistantLight::default().altitude);
+                slider(ui, "Azimuth", &mut l.azimuth, -180.0..=180.0, rwf_core::solid::DistantLight::default().azimuth);
+                slider(ui, "Intensity", &mut l.intensity, 0.0..=2.0, rwf_core::solid::DistantLight::default().intensity);
                 widgets::label(ui, "Shadows");
                 ui.checkbox(&mut l.cast_shadows, "Cast shadows");
                 ui.end_row();
                 if l.cast_shadows {
-                    slider(ui, "Shadow intensity", &mut l.shadow_intensity, 0.0..=1.0);
+                    slider(ui, "Shadow intensity", &mut l.shadow_intensity, 0.0..=1.0, rwf_core::solid::DistantLight::default().shadow_intensity);
                 }
             });
             ui.add_space(4.0);
@@ -175,8 +175,8 @@ pub fn solid_section(ui: &mut Ui, f: &mut Flame) {
                 }
             });
             grid(ui, &format!("sld-mat-{i}"), |ui| {
-                slider(ui, "Ambient", &mut m.ambient, 0.0..=2.0);
-                slider(ui, "Diffuse", &mut m.diffuse, 0.0..=2.0);
+                slider(ui, "Ambient", &mut m.ambient, 0.0..=2.0, rwf_core::solid::Material::default().ambient);
+                slider(ui, "Diffuse", &mut m.diffuse, 0.0..=2.0, rwf_core::solid::Material::default().diffuse);
                 widgets::label(ui, "Diffuse response");
                 egui::ComboBox::from_id_salt(format!("sld-mat-diff-{i}")).selected_text(m.light_diff_func.label()).show_ui(ui, |ui| {
                     for d in LightDiffFunc::ALL {
@@ -184,8 +184,8 @@ pub fn solid_section(ui: &mut Ui, f: &mut Flame) {
                     }
                 });
                 ui.end_row();
-                slider(ui, "Specular", &mut m.phong, 0.0..=2.0);
-                slider(ui, "Specular size", &mut m.phong_size, 1.0..=200.0);
+                slider(ui, "Specular", &mut m.phong, 0.0..=2.0, rwf_core::solid::Material::default().phong);
+                slider(ui, "Specular size", &mut m.phong_size, 1.0..=200.0, rwf_core::solid::Material::default().phong_size);
                 widgets::label(ui, "Specular color");
                 color_f64(ui, &mut m.phong_color);
                 ui.end_row();
@@ -200,7 +200,7 @@ pub fn solid_section(ui: &mut Ui, f: &mut Flame) {
                 });
                 ui.end_row();
                 if !m.refl_map_filename.is_empty() {
-                    slider(ui, "Reflection", &mut m.refl_map_intensity, 0.0..=2.0);
+                    slider(ui, "Reflection", &mut m.refl_map_intensity, 0.0..=2.0, rwf_core::solid::Material::default().refl_map_intensity);
                 }
             });
             ui.add_space(4.0);
@@ -224,10 +224,10 @@ pub fn solid_section(ui: &mut Ui, f: &mut Flame) {
                     }
                 });
                 ui.end_row();
-                slider(ui, "Intensity", &mut s.post_bokeh_intensity, 0.0..=0.1);
-                slider(ui, "Brightness", &mut s.post_bokeh_brightness, 0.0..=4.0);
-                slider(ui, "Size", &mut s.post_bokeh_size, 0.0..=8.0);
-                slider(ui, "Activation", &mut s.post_bokeh_activation, 0.0..=1.0);
+                slider(ui, "Intensity", &mut s.post_bokeh_intensity, 0.0..=0.1, widgets::flame_defaults().solid.post_bokeh_intensity);
+                slider(ui, "Brightness", &mut s.post_bokeh_brightness, 0.0..=4.0, widgets::flame_defaults().solid.post_bokeh_brightness);
+                slider(ui, "Size", &mut s.post_bokeh_size, 0.0..=8.0, widgets::flame_defaults().solid.post_bokeh_size);
+                slider(ui, "Activation", &mut s.post_bokeh_activation, 0.0..=1.0, widgets::flame_defaults().solid.post_bokeh_activation);
             });
         });
     }
