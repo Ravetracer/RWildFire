@@ -38,6 +38,7 @@ pub enum Tab {
     Camera,
     Look,
     Render,
+    Effects,
 }
 
 /// Relative gradient adjustments applied on top of a captured base gradient.
@@ -69,6 +70,7 @@ pub struct InspectorState {
     pub library: crate::gradients::GradientLibrary,
     pub wfield_preview: super::weighting::FieldPreview,
     pub mixer: super::mixer::MixerState,
+    pub effects: super::effects::EffectsState,
     rotate_step: f64,
     scale_step: f64,
     move_step: f64,
@@ -102,13 +104,14 @@ pub fn show(ui: &mut Ui, doc: &mut Document, st: &mut InspectorState, preview: &
         st.scale_step = 10.0;
         st.move_step = 0.1;
     }
-    widgets::segmented(ui, &mut st.tab, &[(Tab::Transform, "Transform"), (Tab::Camera, "Camera"), (Tab::Look, "Look"), (Tab::Render, "Render")]);
+    widgets::segmented(ui, &mut st.tab, &[(Tab::Transform, "Transform"), (Tab::Camera, "Camera"), (Tab::Look, "Look"), (Tab::Render, "Render"), (Tab::Effects, "Effects")]);
     ui.add_space(6.0);
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| match st.tab {
         Tab::Transform => transform_tab(ui, doc, st),
         Tab::Camera => camera_tab(ui, doc),
         Tab::Look => look_tab(ui, doc, st),
         Tab::Render => render_tab(ui, doc, preview, canvas, st),
+        Tab::Effects => super::effects::tab(ui, &mut doc.flame.effects, &mut st.effects),
     });
 }
 

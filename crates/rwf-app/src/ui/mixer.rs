@@ -69,7 +69,7 @@ pub fn section(ui: &mut Ui, mixer: &mut ChannelMixer, st: &mut MixerState) {
         });
     }
     let curve = &mut mixer.curves[st.curve];
-    curve_editor(ui, curve, st, curve_color(st.curve));
+    curve_editor(ui, curve, &mut st.drag, curve_color(st.curve));
     ui.horizontal(|ui| {
         egui::ComboBox::from_id_salt("mixer-interp").selected_text(interp_label(curve.interpolation)).width(80.0).show_ui(ui, |ui| {
             for m in [CurveInterpolation::Spline, CurveInterpolation::Bezier, CurveInterpolation::Linear] {
@@ -83,7 +83,7 @@ pub fn section(ui: &mut Ui, mixer: &mut ChannelMixer, st: &mut MixerState) {
     ui.label(egui::RichText::new("Click to add a point, right-click a point to remove it.").small().color(theme::TEXT_MUTED));
 }
 
-fn interp_label(m: CurveInterpolation) -> &'static str {
+pub(super) fn interp_label(m: CurveInterpolation) -> &'static str {
     match m {
         CurveInterpolation::Spline => "Spline",
         CurveInterpolation::Bezier => "Bezier",
@@ -100,7 +100,9 @@ fn curve_color(i: usize) -> Color32 {
     }
 }
 
-fn curve_editor(ui: &mut Ui, curve: &mut Curve, st: &mut MixerState, color: Color32) {
+/// Editor for one curve over 0..25600 (click adds a point, drag moves it, right-click removes
+/// it); `drag` keeps the dragged point between frames.
+pub(super) fn curve_editor(ui: &mut Ui, curve: &mut Curve, drag: &mut Option<usize>, color: Color32) {
     let w = ui.available_width();
     let (rect, resp) = ui.allocate_exact_size(vec2(w, (w * 0.75).min(240.0)), Sense::click_and_drag());
     let plot = rect.shrink(POINT_RADIUS + 2.0);
@@ -123,10 +125,10 @@ fn curve_editor(ui: &mut Ui, curve: &mut Curve, st: &mut MixerState, color: Colo
     if let Some(p) = resp.interact_pointer_pos() {
         if resp.drag_started() {
             let origin = ui.input(|i| i.pointer.press_origin()).unwrap_or(p);
-            st.drag = hit(origin, curve);
+            *drag = hit(origin, curve);
         }
         if resp.dragged()
-            && let Some(i) = st.drag
+            && let Some(i) = *drag
             && i < curve.x.len()
         {
             let (x, y) = from_screen(p);
@@ -138,7 +140,7 @@ fn curve_editor(ui: &mut Ui, curve: &mut Curve, st: &mut MixerState, color: Colo
         }
     }
     if resp.drag_stopped() {
-        st.drag = None;
+        *drag = None;
     }
     if resp.clicked()
         && let Some(p) = resp.interact_pointer_pos()
@@ -177,7 +179,7 @@ fn curve_editor(ui: &mut Ui, curve: &mut Curve, st: &mut MixerState, color: Colo
     painter.add(Shape::line(pts, Stroke::new(1.8, color)));
     for i in 0..curve.x.len() {
         let c = to_screen(curve.x[i] as f64, curve.y[i]);
-        let active = st.drag == Some(i) || curve.selected_idx == i as i32;
+        let active = *drag == Some(i) || curve.selected_idx == i as i32;
         painter.circle(c, POINT_RADIUS, if active { color } else { theme::SURFACE }, Stroke::new(1.5, color));
     }
 }

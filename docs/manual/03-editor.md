@@ -9,7 +9,7 @@ RWildFire has one main window. Its parts are always in the same place:
 | Top bar | top | Menus, undo/redo, random flames, the switches for the workspaces (Browse, Explore, Animate, Render), Export |
 | Transforms panel | left | Layers, the list of transforms, final and background transforms, and the variations of the selected transform |
 | Canvas | center | The live preview with the transform handles and the canvas toolbar |
-| Inspector | right | Four tabs with all settings: Transform, Camera, Look, Render |
+| Inspector | right | Five tabs with all settings: Transform, Camera, Look, Render, Effects |
 | Strips | bottom (optional) | The Explore strip and the animation timeline, when switched on |
 
 The panels on the left and right can be made wider by dragging their inner edge. The window

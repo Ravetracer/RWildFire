@@ -112,18 +112,15 @@ impl Default for ExportDialog {
     }
 }
 
-/// Status note for HDR files, which are not denoised.
-const HDR_NOTE: &str = "not denoised: HDR images are saved as rendered";
-
 /// Saves a finished CPU render: image in the chosen format plus the optional z-buffer.
 fn save_cpu(r: &CpuRender, run: &SaveJob) -> Result<String, String> {
     let (w, h) = (run.width, run.height);
     let note = if run.format.is_hdr() {
         rwf_core::output::write_float_rgb(&run.path, run.format, w, h, &r.image_hdr())?;
-        HDR_NOTE.to_string()
+        rwf_core::render::post::hdr_note(&run.flame)
     } else {
         let mut img = r.image(run.with_alpha);
-        let outcome = r.apply_post_denoiser(&mut img, run.with_alpha).map_err(|e| format!("denoiser: {e}"))?;
+        let outcome = r.apply_post_processing(&mut img, run.with_alpha).map_err(|e| format!("denoiser: {e}"))?;
         rwf_core::output::write_rgba8(&run.path, run.format, w, h, &img, run.jpeg_quality)?;
         outcome.describe()
     };
@@ -141,11 +138,11 @@ fn save_gpu(r: &mut GpuRenderer, run: &SaveJob) -> Result<String, String> {
     let note = if run.format.is_hdr() {
         let rgb = r.read_hdr().ok_or("readback failed")?;
         rwf_core::output::write_float_rgb(&run.path, run.format, w, h, &rgb)?;
-        HDR_NOTE.to_string()
+        rwf_core::render::post::hdr_note(&run.flame)
     } else {
         r.tonemap();
         let mut img = r.read_image().ok_or("readback failed")?;
-        let outcome = r.apply_post_denoiser(&run.flame, &mut img, w, h).map_err(|e| format!("denoiser: {e}"))?;
+        let outcome = r.apply_post_processing(&run.flame, &mut img, w, h).map_err(|e| format!("denoiser: {e}"))?;
         rwf_core::output::write_rgba8(&run.path, run.format, w, h, &img, run.jpeg_quality)?;
         outcome.describe()
     };
@@ -367,7 +364,7 @@ impl ExportDialog {
                     let (img, outcome) = match &mut gpu_r {
                         Some(r) => {
                             let mut img = r.render_frame(&flame, frame as f64, w, h, q)?;
-                            let outcome = r.apply_post_denoiser(&flame, &mut img, w, h);
+                            let outcome = r.apply_post_processing(&flame, &mut img, w, h);
                             (img, outcome)
                         }
                         None => {
@@ -375,7 +372,7 @@ impl ExportDialog {
                             let r = CpuRender::start_frame(&flame, frame as f64, RenderOptions { width: w, height: h, threads, max_density: Some(q), seed: 0x5EED + frame as u64, zbuffer: false })
                                 .wait();
                             let mut img = r.image(false);
-                            let outcome = r.apply_post_denoiser(&mut img, false);
+                            let outcome = r.apply_post_processing(&mut img, false);
                             (img, outcome)
                         }
                     };

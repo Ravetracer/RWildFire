@@ -30,8 +30,8 @@ maintenance, fixes, new features and releases. User-facing documentation is the 
 
 | Path | Content |
 |------|---------|
-| `crates/rwf-core` | Flame model (`model.rs`), `.flame` IO (`io/`), 1014 variations (`variations/`), CPU renderer (`render/`), tone mapping, DE, filters, denoiser glue (`render/denoise.rs`, `render/oidn.rs`), random generators and mutations (`random/`), animation (`animation.rs`), movie maker, dance, mesh generator, solid rendering, weighting fields, formulas, resources |
-| `crates/rwf-gpu` | wgpu renderer: per-flame generated WGSL (`codegen.rs`), `renderer.rs`, `tonemap.wgsl`, `solid.wgsl`, batch, quilt, movie, dance, stereo, sub-flames, render state |
+| `crates/rwf-core` | Flame model (`model.rs`), `.flame` IO (`io/`), 1014 variations (`variations/`), CPU renderer (`render/`), tone mapping, DE, filters, denoiser glue (`render/denoise.rs`, `render/oidn.rs`), image effects (`render/effects.rs`, `render/post.rs`), random generators and mutations (`random/`), animation (`animation.rs`), movie maker, dance, mesh generator, solid rendering, weighting fields, formulas, resources |
+| `crates/rwf-gpu` | wgpu renderer: per-flame generated WGSL (`codegen.rs`), `renderer.rs`, `tonemap.wgsl`, `solid.wgsl`, `effects.wgsl` (preview effects), batch, quilt, movie, dance, stereo, sub-flames, render state |
 | `crates/rwf-script` | Lua 5.4 scripting (mlua, vendored): `api.rs`, header/params in `lib.rs`, `API.md` (reference, also shown in the app and the manual), example scripts in `scripts/` |
 | `crates/rwf-app` | egui/eframe editor. `app.rs` (top level, actions), `doc.rs` (document, undo, multi-flame save), `canvas.rs`, `ui/` (transforms panel, inspector tabs, widgets, top bar), workspaces (`render_view`, `batch_view`, `quilt_view`, `movie_view`, `dance_view`, `mesh_view`, `browser`), `explorer.rs`, `mutagen.rs`, `script_view.rs`, `prefs.rs`/`settings.rs`, `help.rs`, `build.rs` (Windows exe icon) |
 | `crates/rwf-cli` | Command line program (`render`, `render-anim`, `batch`, `quilt`, `random`, `movie`, `dance`, `mesh`, `denoise`, `script`, `variations`) |
@@ -136,6 +136,9 @@ java -cp "<out>:lib/*:resources" org.jwildfire.cli.FlameRenderer -f x.flame -w W
   `half = size / 2 - 1`, i.e. the kernel is centered one cell after the pixel. The denoiser
   reads the **unfiltered** image (`ToneMapper::unfiltered`, `GpuRenderer::read_denoise_input`),
   shifted by `tonemap::unfiltered_shift` to line up; filtered input made OIDN keep the grain.
+- Final images (export, batch, movie, dance, CLI) go through `render::post::process`: the
+  denoiser, then the image effects (CPU reference). The GPU effects pass (`rwf-gpu`
+  `effects.rs`) only feeds the live preview and must compute the same (`tests/effects.rs`).
 - OIDN is loaded at runtime (`libloading`), searched in `RWF_OIDN_DIR`, next to the exe
   (`lib/` on Linux), `./oidn`, then the system.
 - `GpuRenderer::render_frame` twice with the same flame keeps accumulating: call

@@ -43,6 +43,9 @@ pub struct Preview {
     gpu: Option<GpuRenderer>,
     gpu_error: Option<String>,
     gpu_texture: Option<(egui::TextureId, u64)>,
+    /// Image effects of the GPU preview, and the egui texture of their output.
+    effects: Option<rwf_gpu::effects::EffectsPass>,
+    effects_texture: Option<(egui::TextureId, u64)>,
     gpu_iters: u32,
     cpu: Option<CpuRender>,
     cpu_texture: Option<egui::TextureHandle>,
@@ -82,6 +85,8 @@ impl Preview {
             gpu,
             gpu_error,
             gpu_texture: None,
+            effects: None,
+            effects_texture: None,
             gpu_iters: 32,
             cpu: None,
             cpu_texture: None,
@@ -239,9 +244,26 @@ impl Preview {
         let generation = gpu.output_generation();
         let view = gpu.output_view()?.clone();
         let out_size = gpu.output_size()?;
+        let gpu_ctx = gpu.context().clone();
         self.track_rate(samples);
 
         let rs = frame.wgpu_render_state()?;
+        if flame.effects.is_active() {
+            let pass = self.effects.get_or_insert_with(|| rwf_gpu::effects::EffectsPass::new(&gpu_ctx.device));
+            if pass.run(&gpu_ctx, &view, out_size.0, out_size.1, &flame.effects) {
+                let (fx_view, fx_gen) = (pass.output_view()?.clone(), pass.generation());
+                let mut renderer = rs.renderer.write();
+                match self.effects_texture {
+                    Some((_, g)) if g == fx_gen => {}
+                    Some((id, _)) => {
+                        renderer.update_egui_texture_from_wgpu_texture(&rs.device, &fx_view, wgpu::FilterMode::Linear, id);
+                        self.effects_texture = Some((id, fx_gen));
+                    }
+                    None => self.effects_texture = Some((renderer.register_native_texture(&rs.device, &fx_view, wgpu::FilterMode::Linear), fx_gen)),
+                }
+                return Some(PreviewImage { texture: self.effects_texture?.0, size: out_size });
+            }
+        }
         let mut renderer = rs.renderer.write();
         match self.gpu_texture {
             Some((id, g)) if g == generation => {
@@ -295,7 +317,8 @@ impl Preview {
         let needs_final = finished && !self.cpu_final_uploaded;
         if (samples != self.cpu_uploaded_samples || needs_final) && self.cpu_last_upload.elapsed() >= Duration::from_millis(interval) {
             // Density estimation is costly on the CPU: only for the converged image.
-            let img = if finished { r.image(false) } else { r.image_fast(false) };
+            let mut img = if finished { r.image(false) } else { r.image_fast(false) };
+            rwf_core::render::effects::apply(&flame.effects, &mut img, size.0, size.1);
             self.cpu_final_uploaded = finished;
             let color = egui::ColorImage::from_rgba_unmultiplied([size.0 as usize, size.1 as usize], &img);
             match &mut self.cpu_texture {

@@ -2,22 +2,20 @@
 
 ## Post-render image effects
 
-Adjustments applied to the final image after tone mapping and denoising, to improve image
-quality.
+Done: Effects tab (exposure, contrast, highlights, shadows, whites, blacks, texture, clarity,
+dehaze, tone curves, vignette, grain), stored as `effects_*` flame attributes.
+`rwf_core::render::effects` is the reference (saved images, after the denoiser, via
+`render::post::process`); `rwf-gpu` `effects.wgsl` computes the same for the live preview
+(parity test: at most 1/255 apart). Dehaze is a simplified dark channel prior (blurred dark
+channel, no airlight estimation). Not applied to HDR files and quilts.
 
-Pipeline: render → tone mapping (GPU) → OIDN (read back) → upload → effects pass (GPU). Effects
-run on the GPU in float precision with a fixed order; the CPU path stays the reference and is
-used by the CLI. Settings are stored in the flame as RWildFire-only attributes (check that
-JWildfire ignores unknown attributes).
+Open:
 
-| Effect | Effort | Approach |
-|---|---|---|
-| Exposure, contrast, whites, blacks | easy | Per-pixel math in one shader pass. Partly overlaps with brightness, gamma and white level; the UI must make the difference clear. |
-| Curves | easy | Lookup table in the parameter buffer; reuse `curve_editor`. |
-| Highlights, shadows | medium | Per pixel gives flat results; use a blurred luminance image as mask to avoid halos. |
-| Vignette, grain | easy | Per pixel; grain from a seeded noise hash so renders are reproducible. |
-| Texture, clarity | medium | Local contrast: original minus blurred copy, added back (small radius for texture, large for clarity). Needs a separable GPU blur pass. |
-| Dehaze | hard | Dark channel prior assumes photographic haze; on flames with a black background it mostly lifts contrast. Do it last, or approximate with clarity plus a black point shift. |
+- Check that JWildfire ignores the `effects_*` and `post_denoiser_*` attributes (the Java
+  source was not available when this was written; other RWildFire-only attributes such as
+  `gradient_curves` already rely on it).
+- Effects in the quilt renderer: per-pixel effects could run per tile, blurs need the whole
+  image or overlapping tiles.
 
 ## Sharper lines after the OIDN denoiser
 

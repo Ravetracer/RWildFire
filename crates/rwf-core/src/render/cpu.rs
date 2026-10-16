@@ -400,15 +400,16 @@ impl CpuRender {
         Some(super::denoise::DenoiseAux { density: Some(density), ..Default::default() })
     }
 
-    /// Applies the flame's post denoiser to `img` (this render's [`CpuRender::image`]); the
-    /// denoiser works on the unfiltered image, Blend mixes `img` back in.
-    pub fn apply_post_denoiser(&self, img: &mut [u8], with_alpha: bool) -> Result<super::denoise::DenoiseOutcome, String> {
+    /// Applies the flame's post denoiser and image effects to `img` (this render's
+    /// [`CpuRender::image`]); the denoiser works on the unfiltered image, Blend mixes `img`
+    /// back in.
+    pub fn apply_post_processing(&self, img: &mut [u8], with_alpha: bool) -> Result<super::post::PostOutcome, String> {
         let v = &self.shared.packets[0].view;
         let (w, h) = (v.image_width, v.image_height);
         let active = super::denoise::skip_reason(&self.flame, false).is_none();
         let unfiltered = if active { self.image_unfiltered(with_alpha) } else { None };
         let aux = if active { self.denoise_aux() } else { None };
-        super::denoise::apply_post_denoiser_from(&self.flame, img, unfiltered.as_deref(), w, h, false, aux.as_ref())
+        super::post::process(&self.flame, img, unfiltered.as_deref(), w, h, false, aux.as_ref())
     }
 
     /// Tonemaps into linear float RGB (`RenderHDRImageThread`), 1.0 = full 8-bit white.

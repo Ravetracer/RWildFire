@@ -177,7 +177,8 @@ pub fn render_quilt(r: &mut GpuRenderer, job: &QuiltJob, on: &mut dyn FnMut(Quil
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let tiles = job.tiles();
     let mut flame = job.flame.clone();
-    // The denoiser works on whole images; tiles would get visible seams.
+    // The denoiser and the image effects work on whole images; tiles would get visible seams.
+    // The tile renders are not post-processed anyway; tiles are read with `read_image`.
     flame.ai_post_denoiser = Default::default();
     r.set_with_alpha(flame.bg_transparency);
     r.set_zbuffer(false);

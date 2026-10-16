@@ -45,6 +45,8 @@ fn sample_flames_generate_valid_programs() {
 fn solid_programs_and_passes_are_valid() {
     validate_wgsl(include_str!("../src/solid.wgsl")).unwrap();
     validate_wgsl(include_str!("../src/tonemap.wgsl")).unwrap();
+    validate_wgsl(include_str!("../src/effects.wgsl")).unwrap();
+    validate_wgsl(include_str!("../src/effects_blur.wgsl")).unwrap();
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../testdata/TINA0001.flame");
     let mut flame = rwf_core::io::read_flames_from_file(std::path::Path::new(path)).unwrap().remove(0);
     flame.solid.enabled = true;

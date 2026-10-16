@@ -91,6 +91,11 @@ pub struct InteractiveRenderer {
     last_tick: Option<Instant>,
     iters: u32,
     texture: Option<(egui::TextureId, u64)>,
+    /// The flame's image effects on the shown image: the pass, its egui texture, and for which
+    /// image (revision, output generation, effects) it ran last.
+    effects: Option<rwf_gpu::effects::EffectsPass>,
+    effects_texture: Option<(egui::TextureId, u64)>,
+    effects_for: Option<(u64, u64, String)>,
     next_refresh: Instant,
     refresh_interval: Duration,
     needs_refresh: bool,
@@ -131,6 +136,9 @@ impl Default for InteractiveRenderer {
             last_tick: None,
             iters: 32,
             texture: None,
+            effects: None,
+            effects_texture: None,
+            effects_for: None,
             next_refresh: Instant::now(),
             refresh_interval: FIRST_REFRESH,
             needs_refresh: false,
@@ -309,11 +317,31 @@ impl InteractiveRenderer {
         }
     }
 
-    /// Registers the output texture with egui (again after it was recreated).
+    /// Registers the output texture with egui (again after it was recreated); with the
+    /// flame's image effects applied, if it has any.
     fn texture(&mut self, frame: &eframe::Frame) -> Option<egui::TextureId> {
         let r = self.renderer.as_ref()?;
         let (view, generation) = (r.output_view()?.clone(), r.output_generation());
         let rs = frame.wgpu_render_state()?;
+        if let (Some(fx), Some((w, h))) = (self.flame.as_ref().map(|f| &f.effects).filter(|e| e.is_active()), r.output_size()) {
+            let key = (self.image_rev, generation, format!("{fx:?}"));
+            let ctx = r.context().clone();
+            let pass = self.effects.get_or_insert_with(|| rwf_gpu::effects::EffectsPass::new(&ctx.device));
+            let ran = self.effects_for.as_ref() == Some(&key) || pass.run(&ctx, &view, w, h, fx);
+            if ran {
+                self.effects_for = Some(key);
+                let (fx_view, fx_gen) = (pass.output_view()?.clone(), pass.generation());
+                match self.effects_texture {
+                    Some((_, g)) if g == fx_gen => {}
+                    Some((id, _)) => {
+                        rs.renderer.write().update_egui_texture_from_wgpu_texture(&rs.device, &fx_view, wgpu::FilterMode::Linear, id);
+                        self.effects_texture = Some((id, fx_gen));
+                    }
+                    None => self.effects_texture = Some((rs.renderer.write().register_native_texture(&rs.device, &fx_view, wgpu::FilterMode::Linear), fx_gen)),
+                }
+                return self.effects_texture.map(|t| t.0);
+            }
+        }
         match self.texture {
             Some((_, g)) if g == generation => {}
             Some((id, _)) => {
@@ -702,10 +730,10 @@ impl InteractiveRenderer {
                 let note = match pixels {
                     Pixels::Hdr(rgb) => {
                         rwf_core::output::write_float_rgb(&path, format, w, h, &rgb)?;
-                        "not denoised: HDR images are saved as rendered".to_string()
+                        rwf_core::render::post::hdr_note(&flame)
                     }
                     Pixels::Rgba(mut img) => {
-                        let outcome = rwf_core::render::denoise::apply_post_denoiser_from(&flame, &mut img, source.as_deref(), w, h, true, aux.as_ref())
+                        let outcome = rwf_core::render::post::process(&flame, &mut img, source.as_deref(), w, h, true, aux.as_ref())
                             .map_err(|e| format!("denoiser: {e}"))?;
                         rwf_core::output::write_rgba8(&path, format, w, h, &img, jpeg_quality)?;
                         outcome.describe()

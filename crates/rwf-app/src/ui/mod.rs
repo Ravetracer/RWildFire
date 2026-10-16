@@ -20,6 +20,7 @@
 //! UI panels.
 
 pub mod camera_gizmo;
+pub mod effects;
 pub mod inspector;
 pub mod mixer;
 pub mod solid;

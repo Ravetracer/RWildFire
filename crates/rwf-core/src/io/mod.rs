@@ -271,6 +271,7 @@ pub(crate) fn parse_flame(el: &Element) -> Flame {
     }
     flame.solid = crate::solid::SolidSettings::take_from_attrs(&mut flame.extra_attrs);
     flame.mixer = crate::mixer::ChannelMixer::take_from_attrs(&mut flame.extra_attrs);
+    flame.effects = crate::render::effects::ImageEffects::take_from_attrs(&mut flame.extra_attrs);
     flame.stereo3d = crate::stereo::Stereo3d::take_from_attrs(&mut flame.extra_attrs);
 
     let layer_elements: Vec<&Element> = el.children_named("layer").collect();
@@ -652,6 +653,7 @@ pub fn write_flame(flame: &Flame) -> String {
     attr(&mut s, "zbuffer_filename", flame.zbuffer_filename.as_str());
     flame.solid.write_attrs(|k, v| attr(&mut s, k, v));
     flame.mixer.write_attrs(|k, v| attr(&mut s, k, v));
+    flame.effects.write_attrs(|k, v| attr(&mut s, k, v));
     flame.stereo3d.write_attrs(|k, v| attr(&mut s, k, v));
     attr(&mut s, "ai_post_denoiser", flame.ai_post_denoiser.as_str());
     attr(&mut s, "post_optix_denoiser_blend", fmt_f(flame.post_denoiser_blend));

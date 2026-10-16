@@ -744,6 +744,8 @@ pub struct Flame {
     pub post_denoiser_detail: f64,
     /// RWildFire: contrast adaptive sharpening of the denoised image (0 = off .. 1).
     pub post_denoiser_sharpen: f64,
+    /// RWildFire: image effects applied to the finished image (after the denoiser).
+    pub effects: crate::render::effects::ImageEffects,
     /// Solid rendering (lights, materials, ambient occlusion, shadows).
     pub solid: crate::solid::SolidSettings,
     pub mixer: crate::mixer::ChannelMixer,
@@ -849,6 +851,7 @@ impl Default for Flame {
             post_denoiser_only_for_cpu: false,
             post_denoiser_detail: 0.6,
             post_denoiser_sharpen: 0.0,
+            effects: Default::default(),
             solid: crate::solid::SolidSettings::default(),
             mixer: crate::mixer::ChannelMixer::default(),
             antialias_amount: 0.25,

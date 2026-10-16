@@ -53,6 +53,9 @@ fn edits_current_flame() {
         local v = xf:add_variation("julian", 0.4)
         v.power = 5
         flame.brightness = 7
+        flame.effects_vignette = -0.5
+        flame.effects_clarity = flame.effects_vignette + 0.75
+        flame.post_denoiser_detail = 0.9
         flame.width = 640
         flame.name = "changed"
         print("xforms", flame.xform_count)
@@ -66,6 +69,7 @@ fn edits_current_flame() {
     assert_eq!(xf.variations[1].name, "julian");
     assert_eq!(xf.variations[1].param("power"), Some(5.0));
     assert_eq!((f.brightness, f.width, f.name.as_str()), (7.0, 640, "changed"));
+    assert_eq!((f.effects.vignette, f.effects.clarity, f.post_denoiser_detail), (-0.5, 0.25, 0.9));
     assert_eq!(out.log, vec!["xforms\t2"]);
 }
 

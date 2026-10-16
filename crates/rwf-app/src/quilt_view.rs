@@ -365,6 +365,14 @@ impl QuiltView {
             self.height.div_ceil(self.rows)
         );
         ui.label(RichText::new(info).small().color(theme::TEXT_MUTED));
+        if let Some(f) = self.flame.as_ref().filter(|f| f.ai_post_denoiser != rwf_core::render::denoise::Denoiser::None || f.effects.is_active()) {
+            let what = match (f.ai_post_denoiser != rwf_core::render::denoise::Denoiser::None, f.effects.is_active()) {
+                (true, true) => "The flame's denoiser and image effects are",
+                (true, false) => "The flame's denoiser is",
+                _ => "The flame's image effects are",
+            };
+            ui.label(RichText::new(format!("{what} not applied to quilts: they work on the whole image, tiles would get seams.")).small().color(theme::WARN));
+        }
         if let Some(Err(e)) = self.job().map(|j| j.check()) {
             ui.label(RichText::new(e).small().color(theme::WARN));
         }

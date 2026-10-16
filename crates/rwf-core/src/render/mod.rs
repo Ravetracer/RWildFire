@@ -25,8 +25,10 @@ pub mod cpu;
 pub mod de;
 pub mod denoise;
 pub mod dof;
+pub mod effects;
 pub mod oidn;
 pub mod filter;
+pub mod post;
 pub mod prepared;
 pub mod solid;
 pub mod tonemap;
@@ -70,6 +72,7 @@ fn iteration_key(flame: &Flame) -> Flame {
     f.post_denoiser_only_for_cpu = false;
     f.post_denoiser_detail = 0.0;
     f.post_denoiser_sharpen = 0.0;
+    f.effects = Default::default();
     // Solid rendering: only the shadow map projection affects the iteration; materials,
     // ambient occlusion, light colors and the bokeh are applied when shading.
     let s = &mut f.solid;

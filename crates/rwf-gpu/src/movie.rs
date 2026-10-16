@@ -39,7 +39,7 @@ pub fn render_movie_frame(movie: &Movie, frame: u32, gpu: Option<&mut GpuRendere
             r.accumulate_packets(&packets, w, h, q)?;
             r.tonemap();
             let mut img = r.read_image().ok_or("readback failed")?;
-            r.apply_post_denoiser(first, &mut img, w, h).map_err(|e| format!("denoiser: {e}"))?;
+            r.apply_post_processing(first, &mut img, w, h).map_err(|e| format!("denoiser: {e}"))?;
             img
         }
         None => {
@@ -47,7 +47,7 @@ pub fn render_movie_frame(movie: &Movie, frame: u32, gpu: Option<&mut GpuRendere
             let opts = RenderOptions { width: w, height: h, threads, max_density: Some(q), seed: 0x5EED + frame as u64, zbuffer: false };
             let r = CpuRender::start_packets(&packets, opts).wait();
             let mut img = r.image(false);
-            r.apply_post_denoiser(&mut img, false).map_err(|e| format!("denoiser: {e}"))?;
+            r.apply_post_processing(&mut img, false).map_err(|e| format!("denoiser: {e}"))?;
             img
         }
     };

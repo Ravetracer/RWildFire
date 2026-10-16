@@ -254,14 +254,14 @@ fn render_anim_cmd() {
                     eprintln!("{e}");
                     std::process::exit(1);
                 });
-                let denoised = r.apply_post_denoiser(&flame, &mut img, w, h);
+                let denoised = r.apply_post_processing(&flame, &mut img, w, h);
                 (img, denoised)
             }
             None => {
                 let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
                 let r = CpuRender::start_frame(&flame, frame as f64, RenderOptions { width: w, height: h, threads, max_density: Some(q), seed: 42 + frame as u64, zbuffer: false }).wait();
                 let mut img = r.image(false);
-                let denoised = r.apply_post_denoiser(&mut img, false);
+                let denoised = r.apply_post_processing(&mut img, false);
                 (img, denoised)
             }
         };
@@ -944,7 +944,7 @@ fn main() {
             }
             r.tonemap();
             let mut img = r.read_image().ok_or_else(|| "readback failed".to_string())?;
-            gpu_denoise_note = Some(r.apply_post_denoiser(flame, &mut img, w, h));
+            gpu_denoise_note = Some(r.apply_post_processing(flame, &mut img, w, h));
             Ok(img)
         })();
         match result {
@@ -970,18 +970,20 @@ fn main() {
             Vec::new()
         } else {
             let mut img = r.image(flame.bg_transparency);
-            gpu_denoise_note = Some(r.apply_post_denoiser(&mut img, flame.bg_transparency));
+            gpu_denoise_note = Some(r.apply_post_processing(&mut img, flame.bg_transparency));
             img
         }
     };
     let mut rgba = rgba;
     if hdr.is_none() {
-        let outcome = gpu_denoise_note.take().unwrap_or_else(|| rwf_core::render::denoise::apply_post_denoiser(flame, &mut rgba, w, h, gpu));
+        let outcome = gpu_denoise_note.take().unwrap_or_else(|| rwf_core::render::post::process(flame, &mut rgba, None, w, h, gpu, None));
         match outcome {
-            Ok(o) if o.denoised() || flame.ai_post_denoiser != rwf_core::render::denoise::Denoiser::None => eprintln!("{}", o.describe()),
+            Ok(o) if o.worth_reporting(flame) => eprintln!("{}", o.describe()),
             Ok(_) => {}
             Err(e) => eprintln!("warning: denoiser failed: {e}"),
         }
+    } else if flame.ai_post_denoiser != rwf_core::render::denoise::Denoiser::None || flame.effects.is_active() {
+        eprintln!("{}", rwf_core::render::post::hdr_note(flame));
     }
     let dt = t0.elapsed();
     let written = match &hdr {

@@ -127,8 +127,8 @@ image with the same framing, and stitches them seamlessly into one PNG.
 The finished tiles are kept in a folder next to the output (`<output>.quilt-tiles`). If you stop
 and later start the same quilt again (same flame, size, grid and quality), the finished tiles
 are reused and only the rest is rendered. The preview shows the tiles as they finish; the
-progress shows the tiles done, elapsed and remaining time. The denoiser is not applied to
-quilts.
+progress shows the tiles done, elapsed and remaining time. The denoiser and the image effects
+are not applied to quilts: they work on the whole image, and tiles would get seams.
 
 ## Movie maker
 

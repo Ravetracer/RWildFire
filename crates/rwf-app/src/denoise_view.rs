@@ -23,11 +23,12 @@ use std::time::{Duration, Instant};
 
 use egui::{Color32, FontId, Painter, Pos2, Rect, vec2};
 use rwf_core::Flame;
-use rwf_core::render::denoise::{DenoiseAux, DenoiseOutcome, apply_post_denoiser_from};
+use rwf_core::render::denoise::DenoiseAux;
+use rwf_core::render::post::{PostOutcome, process};
 
 use crate::theme;
 
-type JobResult = Result<(DenoiseOutcome, Vec<u8>, Duration), String>;
+type JobResult = Result<(PostOutcome, Vec<u8>, Duration), String>;
 
 #[derive(Default)]
 pub struct DenoisedView {
@@ -36,7 +37,7 @@ pub struct DenoisedView {
     shown: Option<u64>,
     texture: Option<egui::TextureHandle>,
     size: (u32, u32),
-    outcome: Option<Result<(DenoiseOutcome, Duration), String>>,
+    outcome: Option<Result<(PostOutcome, Duration), String>>,
     last_start: Option<Instant>,
 }
 
@@ -49,6 +50,7 @@ pub fn key(revision: u64, flame: &Flame, gpu_render: bool) -> u64 {
     flame.post_denoiser_only_for_cpu.hash(&mut h);
     flame.post_denoiser_detail.to_bits().hash(&mut h);
     flame.post_denoiser_sharpen.to_bits().hash(&mut h);
+    format!("{:?}", flame.effects).hash(&mut h);
     gpu_render.hash(&mut h);
     h.finish()
 }
@@ -69,7 +71,7 @@ impl DenoisedView {
         let flame = flame.clone();
         std::thread::spawn(move || {
             let t0 = Instant::now();
-            let r = apply_post_denoiser_from(&flame, &mut rgba, source.as_deref(), w, h, gpu_render, aux.as_ref()).map(|o| (o, rgba, t0.elapsed()));
+            let r = process(&flame, &mut rgba, source.as_deref(), w, h, gpu_render, aux.as_ref()).map(|o| (o, rgba, t0.elapsed()));
             let _ = tx.send(r);
         });
         self.job = Some((key, rx));
@@ -124,8 +126,8 @@ impl DenoisedView {
             return Some(("Denoising…".into(), true));
         }
         Some(match self.outcome.as_ref()? {
-            Ok((o, took)) if o.denoised() => (format!("{} ({} ms)", capitalize(&o.describe()), took.as_millis()), true),
-            Ok((o, _)) => (capitalize(&o.describe()), false),
+            Ok((o, took)) if o.denoised() => (format!("{}{} ({} ms)", capitalize(&o.denoise.describe()), effects_note(o), took.as_millis()), true),
+            Ok((o, _)) => (format!("{}{}", capitalize(&o.denoise.describe()), effects_note(o)), false),
             Err(e) => (format!("Denoiser failed: {e}"), false),
         })
     }
@@ -139,6 +141,10 @@ impl DenoisedView {
         painter.rect_filled(r, 6, theme::PANEL.gamma_multiply(0.92));
         painter.galley(r.min + vec2(8.0, 4.0), galley, color);
     }
+}
+
+fn effects_note(o: &PostOutcome) -> &'static str {
+    if o.effects { "; image effects applied" } else { "" }
 }
 
 fn capitalize(s: &str) -> String {

@@ -23,6 +23,7 @@ pub mod batch;
 pub mod movie;
 pub mod codegen;
 pub mod dance;
+pub mod effects;
 pub mod quilt;
 pub mod renderer;
 mod solid;

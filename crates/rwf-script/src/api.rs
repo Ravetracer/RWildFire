@@ -190,12 +190,37 @@ fn flame_number(f: &Flame, key: &str) -> Option<f64> {
         "de_curve" => f.de_curve,
         "antialias_amount" => f.antialias_amount,
         "antialias_radius" => f.antialias_radius,
+        "post_denoiser_blend" => f.post_denoiser_blend,
+        "post_denoiser_detail" => f.post_denoiser_detail,
+        "post_denoiser_sharpen" => f.post_denoiser_sharpen,
+        k if k.starts_with("effects_") => *effect_field(&mut f.effects.clone(), k)?,
         "frame_count" => f.animation.frame_count as f64,
         "fps" => f.animation.fps,
         "layer_count" => f.layers.len() as f64,
         "xform_count" => f.layers.first().map_or(0, |l| l.xforms.len()) as f64,
         "final_count" => f.layers.first().map_or(0, |l| l.final_xforms.len()) as f64,
         _ => return get_prop(f, key),
+    })
+}
+
+/// The image effect `effects_<name>` (`effects_exposure`, …).
+fn effect_field<'a>(fx: &'a mut rwf_core::render::effects::ImageEffects, key: &str) -> Option<&'a mut f64> {
+    Some(match key.strip_prefix("effects_")? {
+        "exposure" => &mut fx.exposure,
+        "contrast" => &mut fx.contrast,
+        "highlights" => &mut fx.highlights,
+        "shadows" => &mut fx.shadows,
+        "whites" => &mut fx.whites,
+        "blacks" => &mut fx.blacks,
+        "texture" => &mut fx.texture,
+        "clarity" => &mut fx.clarity,
+        "dehaze" => &mut fx.dehaze,
+        "vignette" => &mut fx.vignette,
+        "vignette_size" => &mut fx.vignette_size,
+        "vignette_feather" => &mut fx.vignette_feather,
+        "grain" => &mut fx.grain,
+        "grain_size" => &mut fx.grain_size,
+        _ => return None,
     })
 }
 
@@ -216,6 +241,13 @@ fn set_flame_number(f: &mut Flame, key: &str, v: f64) -> Result<bool> {
         "de_curve" => f.de_curve = v,
         "antialias_amount" => f.antialias_amount = v,
         "antialias_radius" => f.antialias_radius = v,
+        "post_denoiser_blend" => f.post_denoiser_blend = v.clamp(0.0, 1.0),
+        "post_denoiser_detail" => f.post_denoiser_detail = v.clamp(0.0, 1.0),
+        "post_denoiser_sharpen" => f.post_denoiser_sharpen = v.clamp(0.0, 1.0),
+        k if k.starts_with("effects_") => match effect_field(&mut f.effects, k) {
+            Some(slot) => *slot = v,
+            None => return Ok(set_prop(f, key, v)),
+        },
         "frame_count" => f.animation.frame_count = count(v, "frame_count")?,
         "fps" => f.animation.fps = v,
         "layer_count" | "xform_count" | "final_count" => return err(format!("{key} is read-only (use add_/remove_ functions)")),
